@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=42", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "druglab"
+version = "0.0.1"
+description = "A personal toolkit for computational drug design."
+dependencies = [
+  "numpy >=1.21",
+  "rdkit >=2024",
+  "mpire",
+  "scikit-learn",
+  "pyyaml"
+]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.package-data]
+"druglab.pharm" = ["definitions.yaml"]
