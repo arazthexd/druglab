@@ -6,7 +6,7 @@ import numpy as np
 from rdkit import Chem
 
 from .io import load_mols_file
-from .featurize import BaseFeaturizer
+from ..featurize import BaseFeaturizer
 from .base import BaseStorage
 
 class ConformerStorage(BaseStorage):
@@ -18,7 +18,7 @@ class MolStorage(BaseStorage):
                  fdtype: Type[np.dtype] = np.float32,
                  feats: np.ndarray = None,
                  fnames: List[str] = None,
-                 featurizers: List[BaseFeaturizer] = None):
+                 featurizers: List[BaseFeaturizer | dict] = None):
         super().__init__(mols, 
                          fdtype=fdtype, 
                          feats=feats, 

@@ -10,7 +10,7 @@ from rdkit import Chem
 from rdkit.Chem.rdChemReactions import ChemicalReaction as Rxn
 
 from .io import load_rxns_file
-from .featurize import BaseFeaturizer
+from ..featurize import BaseFeaturizer
 from .base import BaseStorage
 from .mol import MolStorage
 
@@ -20,7 +20,7 @@ class RxnStorage(BaseStorage):
                  fdtype: Type[np.dtype] = np.float32,
                  feats: np.ndarray = None,
                  fnames: List[str] = None,
-                 featurizers: List[BaseFeaturizer] = None):
+                 featurizers: List[BaseFeaturizer | dict] = None):
         super().__init__(rxns, 
                          fdtype=fdtype, 
                          feats=feats, 
@@ -67,7 +67,7 @@ class RxnStorage(BaseStorage):
         mols = MolStorage(mols) if isinstance(mols, list) else mols
 
         mol_idx = [
-            idx for idx, mol in enumerate(mols) if any(
+            idx for idx, mol in enumerate(tqdm(mols)) if any(
                 mol.HasSubstructMatch(rt)
                 for rxn in self 
                 for rt in rxn.GetReactants()
@@ -75,7 +75,7 @@ class RxnStorage(BaseStorage):
         ]
 
         idx2rxnr: Dict[int, List] = defaultdict(list)
-        for rxnid, (rxn, stores) in enumerate(zip(self, self.mstores)):
+        for rxnid, (rxn, stores) in enumerate(zip(self, tqdm(self.mstores))):
             rxn: Rxn
             for rid, (reactant_template, 
                       store) in enumerate(zip(rxn.GetReactants(), stores)):

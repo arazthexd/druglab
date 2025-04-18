@@ -17,9 +17,9 @@ def load_mols_file(filename: str) -> List[Chem.Mol]:
     suffix = filename.split(".")[-1]
     if suffix == "sdf":
         suppl = Chem.SDMolSupplier(filename)
-        return [mol for mol in suppl]
+        return [mol for mol in suppl if mol is not None]
     elif suffix in ["smi", "txt"]:
         suppl = Chem.SmilesMolSupplier(filename)
-        return [mol for mol in suppl]
+        return [mol for mol in suppl if mol is not None]
     else:
         raise NotImplementedError()

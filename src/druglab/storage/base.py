@@ -9,18 +9,18 @@ from mpire import WorkerPool
 import numpy as np
 from sklearn.neighbors import NearestNeighbors
 
-from .featurize import BaseFeaturizer
+from ..featurize import BaseFeaturizer
 
-class BaseStorage(list):
+class BaseStorage:
     def __init__(self, 
                  objects: List[Any] = None, 
                  fdtype: Type[np.dtype] = np.float32,
                  feats: np.ndarray = None,
                  fnames: List[str] = None,
-                 featurizers: List[BaseFeaturizer] = None):
+                 featurizers: List[BaseFeaturizer | dict] = None):
         if objects is None:
             objects = []
-        super().__init__(objects)
+        self.objects: List[Any] = objects
 
         self._fdtype = fdtype if feats is None else feats.dtype
         self.feats: np.ndarray = \
@@ -28,6 +28,11 @@ class BaseStorage(list):
         self.fnames: List[str] = [] if fnames is None else fnames
         self.featurizers: List[BaseFeaturizer] = \
             [] if featurizers is None else featurizers
+        self.featurizers = [fizer if isinstance(fizer, BaseFeaturizer)
+                            else BaseFeaturizer.load(fizer)
+                            for fizer in self.featurizers]
+                            
+                            
 
         self.knn: NearestNeighbors = None
     
@@ -54,19 +59,22 @@ class BaseStorage(list):
         
         if n_workers == 1:
             newfeats = [featurizer.featurize(obj) for obj in self]
+            newfeats = np.concatenate(newfeats)
         
         elif n_workers > 1:
             with WorkerPool(n_workers) as pool:
-                newfeats = pool.map(featurizer.featurize, self)
+                newfeats = pool.map(lambda obj: featurizer.featurize(obj), 
+                                    self.objects, progress_bar=True)
         
         elif n_workers == -1:
-            with WorkerPool(mpire.cpu_count) as pool:
-                newfeats = pool.map(featurizer.featurize, self)
+            with WorkerPool(mpire.cpu_count()) as pool:
+                newfeats = pool.map(lambda obj: featurizer.featurize(obj), 
+                                    self.objects, progress_bar=True)
 
         else:
             raise ValueError("Invalid n_workers: {}".format(n_workers))
         
-        self.feats = np.concatenate((self.feats, np.array(newfeats)), axis=1)
+        self.feats = np.concatenate((self.feats, newfeats), axis=1)
         self.fnames.extend(featurizer.fnames)
         self.featurizers.append(featurizer)
 
@@ -75,9 +83,10 @@ class BaseStorage(list):
         self.knn.fit(self.feats)
 
     def extend(self, storage: BaseStorage):
+        if isinstance(storage, list):
+            storage = self.__class__(storage)
         assert self.fnames == storage.fnames
-
-        super().extend(storage)
+        self.objects.extend(storage.objects)
         self.feats = np.concatenate((self.feats, storage.feats), axis=0)
 
     def subset(self, 
@@ -100,20 +109,35 @@ class BaseStorage(list):
 
     def __getitem__(self, idx: int | List[int] | np.ndarray):
         if isinstance(idx, int):
-            return super().__getitem__(idx)
+            return self.objects[idx]
         
         if isinstance(idx, list) \
             or (isinstance(idx, np.ndarray) and idx.ndim == 1):
-            return [super().__getitem__(i) for i in idx]
+            return [self.objects[i] for i in idx]
         
         if isinstance(idx, np.ndarray) and idx.ndim == 2:
-            return [[super().__getitem__(i) for i in ids] for ids in idx]
+            return [[self.objects[i] for i in ids] for ids in idx]
         
-        return super().__getitem__(idx)
+        return self.objects[idx]
+    
+    def __setitem__(self, idx, obj):
+        self.objects[idx] = obj
+
+    def __delitem__(self, index):
+        del self.objects[index]
     
     def __repr__(self):
         return self.__class__.__name__ + \
             "({} objects, {} feats)".format(len(self), self.feats.shape[1])
+    
+    def __len__(self):
+        return len(self.objects)
+    
+    def __iter__(self):
+        return iter(self.objects)
+    
+    def __contains__(self, obj):
+        return obj in self.objects
 
     @property
     def fdtype(self):
