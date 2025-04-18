@@ -137,19 +137,36 @@ class SynRouteSampler:
             options = SynRouteSamplerOpts()
         self.options = options
     
-    def sample(self, only_last: bool = True) -> List[SynthesisRoute]:
+    def sample(
+            self, 
+            only_last: bool = True,
+            filter_func: Callable[[SynthesisRoute], bool] = lambda x: True) \
+                -> List[SynthesisRoute]:
         
+        found = False
         for _ in range(self.options.max_construct_attempts):
             nodes = self.construct()
             for i in range(self.options.max_sample_attempts):
                 [node.reset() for node in nodes]
-                products = nodes[-1].sample(self.options.rpool_sample_size)
-                if len(products) > 0:
+                try:
+                    products = nodes[-1].sample(self.options.rpool_sample_size)
+                    routes = nodes[-1].routes()
+                except:
+                    continue
+                routes = [route for route in routes if filter_func(route)]
+                if len(routes) > 0:
+                    found = True
                     break
             
+            if not found:
+                return []
+            
             if only_last:
-                return nodes[-1].routes()
-            return [route for node in nodes for route in node.routes()]
+                routes = nodes[-1].routes()
+            else:
+                routes = [route for node in nodes for route in node.routes()]
+            
+            return routes
 
     def construct(self) -> List[RxnProductSampler]:
         n_steps = random.randint(self.options.min_steps,
