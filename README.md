@@ -15,9 +15,10 @@ TODO
 
 ## Features
 Current submodules are as follows:
-1. storage
-2. pharm
-3. synthesize
+1. featurize
+2. storage
+3. pharm
+4. synthesize
 
 ## Documentation
 TODO

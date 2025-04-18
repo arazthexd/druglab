@@ -11,7 +11,8 @@ dependencies = [
   "rdkit >=2024",
   "mpire",
   "scikit-learn",
-  "pyyaml"
+  "pyyaml",
+  "dill"
 ]
 
 [project.optional-dependencies]
