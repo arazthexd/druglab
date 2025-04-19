@@ -4,8 +4,9 @@
 
 DrugLab is a personal collection of computational drug design utilities.
 
-## Planned
-None for now...
+## TODOs
+- [ ] Clean up the pharm modules (remove unwanted methods, classes)
+- [ ] No saving for featurizers... (pickling problems)
 
 ## Installation
 TODO
