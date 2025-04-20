@@ -28,12 +28,21 @@ class BaseStorage:
         self.fnames: List[str] = [] if fnames is None else fnames
         self.featurizers: List[BaseFeaturizer] = \
             [] if featurizers is None else featurizers
-        self.featurizers = [fizer if isinstance(fizer, BaseFeaturizer)
-                            else BaseFeaturizer.load(fizer)
-                            for fizer in self.featurizers]
-                            
-                            
-
+        
+        if featurizers is None:
+            featurizers = []
+        self.featurizers = []
+        for featurizer in featurizers:
+            if isinstance(featurizer, dict):
+                self.featurizers.append(BaseFeaturizer(**featurizer))
+            elif featurizer is None:
+                self.featurizers.append(None)
+            else:
+                try:
+                    self.featurizers.append(BaseFeaturizer.load(featurizer))
+                except:
+                    self.featurizers.append(featurizer)
+                
         self.knn: NearestNeighbors = None
     
     def sample(self, n: int = 1):

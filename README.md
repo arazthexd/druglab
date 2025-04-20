@@ -7,7 +7,7 @@ DrugLab is a personal collection of computational drug design utilities.
 ## TODOs
 - [ ] Clean up the pharm modules (remove unwanted methods, classes)
 - [ ] No saving for featurizers... (pickling problems)
-- [ ] Fix indexing bug for synthesis route storage
+- [x] Fix indexing bug for synthesis route storage
 - [ ] Develop storage class for pharmacophores
 
 ## Installation

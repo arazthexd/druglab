@@ -4,10 +4,12 @@ import numpy as np
 
 from rdkit import Chem
 from rdkit.Chem import Draw
+from rdkit.Chem import rdChemReactions as rdRxn
+from rdkit.Chem.rdChemReactions import ChemicalReaction as Rxn
 
 from ..storage import BaseStorage, MolStorage, RxnStorage
 from ..featurize import BaseFeaturizer
-from .route import SynthesisRoute, ActionTypes
+from .route import SynthesisRoute, ActionTypes, _SequenceMember
 from .featurize import SynRouteFeaturizer
     
 class SynRouteStorage(BaseStorage):
@@ -17,36 +19,81 @@ class SynRouteStorage(BaseStorage):
                  feats: np.ndarray = None,
                  fnames: List[str] = None,
                  featurizers: List[BaseFeaturizer | dict] = None):
-        
-        routes_ = []
 
-        self.pstore: MolStorage = MolStorage()
-        self.rstore: MolStorage = MolStorage()
-        self.rxnstore: RxnStorage = RxnStorage()
+        self._psmi: List[str] = []
+        self._rsmi: List[str] = []
+        self._rxnsmi: List[str] = []
+        self._ps: List[Chem.Mol] = []
+        self._rs: List[Chem.Mol] = []
+        self._rxns: List[Rxn] = []
+
+        self.seqs: List[List[_SequenceMember]] = []
 
         for route in routes:
-            route_ = SynthesisRoute()
-            route_.start()
+            seq: List[_SequenceMember] = []
+            _cpids: List[Chem.Mol] = []
             for mem in route.seq:
-                if mem.type == ActionTypes.REACTION:
-                    route_.add_reaction(route.reactions[mem.idx])
-                    route_.seq[-1].idx += len(self.rxnstore)
+                if mem.type == ActionTypes.START:
+                    seq.append(_SequenceMember(ActionTypes.START))
+                
                 elif mem.type == ActionTypes.REACTANT:
-                    route_.add_reactant(route.reactants[mem.idx])
-                    route_.seq[-1].idx += len(self.rstore)
+                    smi = Chem.MolToSmiles(route.reactants[mem.idx])
+                    try:
+                        idx = self._rsmi.index(smi)
+                    except ValueError:
+                        idx = len(self._rsmi)
+                        self._rsmi.append(smi)
+                        self._rs.append(route.reactants[mem.idx])
+                    seq.append(_SequenceMember(
+                        type=ActionTypes.REACTANT, 
+                        idx=idx
+                    ))
+                
+                elif mem.type == ActionTypes.REACTION:
+                    smi = rdRxn.ReactionToSmiles(route.reactions[mem.idx])
+                    try:
+                        idx = self._rxnsmi.index(smi)
+                    except ValueError:
+                        idx = len(self._rxnsmi)
+                        self._rxnsmi.append(smi)
+                        self._rxns.append(route.reactions[mem.idx])
+                    seq.append(_SequenceMember(
+                        type=ActionTypes.REACTION, 
+                        idx=idx
+                    ))
+                
                 elif mem.type == ActionTypes.PRODUCT:
-                    route_.add_product(route.products[mem.idx])
-                    route_.seq[-1].idx += len(self.pstore)
+                    smi = Chem.MolToSmiles(route.products[mem.idx])
+                    try:
+                        idx = self._psmi.index(smi)
+                    except ValueError:
+                        idx = len(self._psmi)
+                        self._psmi.append(smi)
+                        self._ps.append(route.products[mem.idx])
+                    seq.append(_SequenceMember(
+                        type=ActionTypes.PRODUCT, 
+                        idx=idx
+                    ))
+                    _cpids.append(idx)
+                
                 elif mem.type == ActionTypes.USEPROD:
-                    route_.use_product()
-            route_.end()
-            routes_.append(route_)
+                    seq.append(_SequenceMember(
+                        type=ActionTypes.USEPROD,
+                        idx=_cpids.pop()
+                    ))
+                
+                elif mem.type == ActionTypes.END:
+                    seq.append(_SequenceMember(
+                        type=ActionTypes.END
+                    ))
 
-            self.pstore.extend(MolStorage(route.products))
-            self.rstore.extend(MolStorage(route.reactants))
-            self.rxnstore.extend(RxnStorage(route.reactions))
+            self.seqs.append(seq)
 
-        super().__init__(routes_, 
+        self.rstore = MolStorage(self._rs)
+        self.pstore = MolStorage(self._ps)
+        self.rxnstore = RxnStorage(self._rxns)
+
+        super().__init__(routes, 
                          fdtype=fdtype, 
                          feats=feats, 
                          fnames=fnames, 
@@ -60,6 +107,14 @@ class SynRouteStorage(BaseStorage):
         self.pstore.featurize(featurizer.pfeaturizer, overwrite, n_workers)
         self.rstore.featurize(featurizer.rfeaturizer, overwrite, n_workers)
         self.rxnstore.featurize(featurizer.rxnfeaturizer, overwrite, n_workers)
+
+    def subset(self, 
+               idx: List[int] | np.ndarray, 
+               inplace: bool = False) -> BaseStorage | None:
+        new: None | SynRouteStorage = super().subset(idx, inplace)
+        if inplace:
+            self.seqs = [self.seqs[i] for i in idx]
+        return new
 
     def visualize(self, idx: int):
         vislist = []
