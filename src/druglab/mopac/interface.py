@@ -10,7 +10,7 @@ from rdkit import Chem
 
 DATA_UNIQUE_CODE_LEN = 6
 import random, string
-from config import MOPACConfig, MOPACMozymeConfig
+from .config import MOPACConfig, MOPACMozymeConfig
 
 def generate_random_str(n: int):
     return "".join(random.choices(string.ascii_uppercase + string.digits, k=n))

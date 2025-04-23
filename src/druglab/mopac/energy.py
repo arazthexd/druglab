@@ -2,7 +2,7 @@ from typing import Dict, Any, Union, List
 from dataclasses import dataclass
 from copy import deepcopy
 from rdkit import Chem
-from interface import MOPACInterface
+from .interface import MOPACInterface
 
 @dataclass
 class MOPACEnergyCalculator(MOPACInterface):
