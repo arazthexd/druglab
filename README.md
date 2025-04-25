@@ -9,9 +9,15 @@ DrugLab is a personal collection of computational drug design utilities.
 - [ ] No saving for featurizers... (pickling problems)
 - [x] Fix indexing bug for synthesis route storage
 - [ ] Develop storage class for pharmacophores
+- [x] Figure out why base.yaml is not moved during install
 
 ## Installation
-TODO
+1. Create a virtual environment either in conda, mamba, or pip.
+2. (conda/mamba) Install packages that you want to be installed only from conda/mamba
+3. Install the druglab package from this github repo.
+```shell
+pip install druglab@git+https://github.com/arazthexd/druglab
+```
 
 ## Quickstart
 TODO
