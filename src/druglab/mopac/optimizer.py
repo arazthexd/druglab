@@ -4,20 +4,17 @@ from dataclasses import dataclass
 from copy import deepcopy
 from rdkit import Chem
 from .interface import MOPACInterface
+from .config import MOPACConfig
 
+@dataclass
 @dataclass
 class MOPACOptimizer(MOPACInterface):
     def run_optimization(self, 
-                        molecules: Union[Chem.Mol, List[Chem.Mol]], 
                         debug: bool = False) -> Dict[str, Any]:
-        self.reset_config()
-        self.update_config(molecules)
-        
         if not any(kw in self.config.keywords for kw in ["EF", "TS", "PRECISE"]):
             self.config.keywords.append("EF")
-            
-        out_path, _ = self.run_job(base_dir=".", debug=debug)
-        
+        out_path, _ = self.run_job(base_dir=self.output_dir, debug=debug)
+        print(out_path)
         with open(out_path, "r") as f:
             out_str = f.read()
 

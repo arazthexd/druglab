@@ -5,6 +5,7 @@ import glob
 import subprocess
 from copy import deepcopy
 from dataclasses import dataclass, field
+import shutil
 
 from rdkit import Chem
 
@@ -15,72 +16,61 @@ from .config import MOPACConfig, MOPACMozymeConfig
 def generate_random_str(n: int):
     return "".join(random.choices(string.ascii_uppercase + string.digits, k=n))
 
-
 @dataclass
 class MOPACInterface:
+    mopac_path: str = field(default="auto")
+    output_dir: str = field(default="auto")
     config: MOPACConfig = field(default_factory=MOPACConfig)
-    
+
     def __post_init__(self):
+        self._resolve_paths()
         self.init_config = deepcopy(self.config)
-    
-    def reset_config(self) -> None:
-        self.config = deepcopy(self.init_config)
-    
-    def update_config(self, 
-                     molecules: Chem.Mol | List[Chem.Mol]) -> None:
-        if isinstance(molecules, Chem.Mol):
-            self.config.add_molecule(molecules)
-        elif isinstance(molecules, list):
-            for mol in molecules:
-                self.config.add_molecule(mol)
-    
-    def run_job(self, 
-               base_dir: str, 
-               debug: bool = False) -> Tuple[str, str]:
-        path = self.generate_random_input_file(
-            base_dir=base_dir, 
-            key_length=DATA_UNIQUE_CODE_LEN
+
+    def _resolve_paths(self):
+        """Resolve MOPAC path and output directory"""
+        if self.mopac_path == "auto":
+            self.mopac_path = self._find_mopac_executable()
+        if self.output_dir == "auto":
+            self.output_dir = os.getcwd()
+        os.makedirs(self.output_dir, exist_ok=True)
+
+    def _find_mopac_executable(self) -> str:
+        exe_names = ['mopac', 'MOPAC', 'mopac.exe', 'MOPAC.exe']
+        for name in exe_names:
+            path = shutil.which(name)
+            if path: return path
+        raise FileNotFoundError("MOPAC executable not found in PATH")
+
+    def run_job(self, config: Optional[MOPACConfig] = None, 
+               base_dir: Optional[str] = None, debug: bool = False) -> Tuple[str, str]:
+        config = config or self.config
+        base_dir = base_dir or self.output_dir
+        path = self._generate_input_path(base_dir)
+
+        with open(path, "w") as f:
+            f.write(config.get_config_str())
+
+        self._execute_mopac(path, debug)
+        return (
+            str(path.with_suffix('.out')),
+            str(path.with_suffix('.arc'))
         )
 
-        if debug:
-            print("MOPAC input file written:", path)
+    def _generate_input_path(self, base_dir: str) -> pathlib.Path:
+        base_path = pathlib.Path(base_dir)
+        while True:
+            random_name = generate_random_str(8) + ".mop"
+            candidate = base_path / random_name
+            if not candidate.exists():
+                return candidate
 
-        self.write_and_run_mopac(path, self.config, debug)
-
-        out_path = pathlib.Path(path).with_suffix('.out').as_posix()
-        arc_path = pathlib.Path(path).with_suffix('.arc').as_posix()
-        
-        return out_path, arc_path
-
-    @staticmethod
-    def write_and_run_mopac(path: str | os.PathLike, 
-                           mopac_config: MOPACConfig, 
-                           debug: bool = False) -> None:
-
-        path = pathlib.Path(path)
-        cur_dir = pathlib.Path.cwd()
-        with open(path, "w") as f:
-            f.write(mopac_config.get_config_str())
-
-        os.chdir(path.parent)
+    def _execute_mopac(self, path: pathlib.Path, debug: bool):
         try:
             subprocess.run(
-                ["mopac", path.name], 
-                capture_output=not debug,
-                check=True
+                [self.mopac_path, str(path.name)],
+                cwd=str(path.parent),
+                check=True,
+                capture_output=not debug
             )
-        finally:
-            os.chdir(cur_dir)
-    
-    @staticmethod
-    def generate_random_input_file(base_dir: str, 
-                                 key_length: int) -> str:
-        base_dir = pathlib.Path(base_dir)
-        base_dir.mkdir(parents=True, exist_ok=True)
-        
-        while True:
-            random_key = generate_random_str(key_length)
-            candidate = base_dir / f"{random_key}.mop"
-            
-            if not candidate.exists():
-                return candidate.as_posix()
+        except subprocess.CalledProcessError as e:
+            raise RuntimeError(f"MOPAC calculation failed: {e.stderr}")

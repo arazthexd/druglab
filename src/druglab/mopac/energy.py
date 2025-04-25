@@ -7,13 +7,10 @@ from .interface import MOPACInterface
 @dataclass
 class MOPACEnergyCalculator(MOPACInterface):
     def calculate_energy(self, 
-                        molecules: Union[Chem.Mol, List[Chem.Mol]], 
                         debug: bool = False) -> Dict[str, Any]:
-        self.reset_config()
-        self.update_config(molecules)
         if not any(kw in self.config.keywords for kw in ["1SCF", "SINGLE"]):
             self.config.keywords.append("1SCF")
-        out_path, _ = self.run_job(base_dir=".", debug=debug)
+        out_path, _ = self.run_job(base_dir=self.output_dir, debug=debug)
         with open(out_path, "r") as f:
             out_str = f.read()
 
