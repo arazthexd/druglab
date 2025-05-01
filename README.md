@@ -5,11 +5,7 @@
 DrugLab is a personal collection of computational drug design utilities.
 
 ## TODOs
-- [ ] Clean up the pharm modules (remove unwanted methods, classes)
-- [ ] No saving for featurizers... (pickling problems)
-- [x] Fix indexing bug for synthesis route storage
-- [ ] Develop storage class for pharmacophores
-- [x] Figure out why base.yaml is not moved during install
+Moved to [TODO.md](./TODO.md)...
 
 ## Installation
 1. Create a virtual environment either in conda, mamba, or pip.
