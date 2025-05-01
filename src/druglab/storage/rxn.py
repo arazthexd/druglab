@@ -9,7 +9,7 @@ import numpy as np
 from rdkit import Chem
 from rdkit.Chem.rdChemReactions import ChemicalReaction as Rxn
 
-from .io import load_rxns_file
+from ..io import load_rxns_file
 from ..featurize import BaseFeaturizer
 from .base import BaseStorage
 from .mol import MolStorage

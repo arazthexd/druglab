@@ -5,7 +5,7 @@ import numpy as np
 
 from rdkit import Chem
 
-from .io import load_mols_file
+from ..io import load_mols_file
 from ..featurize import BaseFeaturizer
 from .base import BaseStorage
 

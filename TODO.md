@@ -18,6 +18,15 @@
 
 ### Ideas...
 - [ ] Featurizer wrapper for molfeat package's Transformer class
+- [ ] Atom, Bond Featurizers
+
+### Done.
+
+## Storage
+### Next...
+
+### Ideas...
+- [ ] Atom, Bond Storage and searching
 
 ### Done.
 
