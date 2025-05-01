@@ -1,138 +1,108 @@
 from __future__ import annotations
-from typing import List
-from dataclasses import dataclass, field
+from typing import List, Tuple
+import itertools
 
 import numpy as np
-from scipy.spatial.distance import pdist, squareform
+from scipy.spatial.distance import cdist
 
 from .ftypes import (
-    BasePharmType,
-    PharmSingleType, PharmSingleTypes,
-    PharmPairType, PharmPairTypes
+    PharmFeatureType,
+    PharmArrowType, PharmSphereType
 )
 from .features import (
-    PharmArrowSingles, PharmSphereSingles,
-    PharmDistancePairs
+    PharmFeatures,
+    PharmArrowFeats, PharmSphereFeats, 
 )
 
-@dataclass(repr=False)
 class Pharmacophore:
-    arrows: PharmArrowSingles
-    spheres: PharmSphereSingles 
-    distances: PharmDistancePairs
-
-    @classmethod
-    def empty(cls, 
-              stypes: PharmSingleTypes, 
-              ptypes: PharmPairTypes = None) -> Pharmacophore:
-        arrows = PharmArrowSingles(types=stypes.arrows)
-        spheres = PharmSphereSingles(types=stypes.spheres)
-
-        if ptypes is None:
-            ptypes = PharmPairTypes()
-        distances = PharmDistancePairs(types=ptypes.distances)
-
-        return cls(arrows=arrows, 
-                   spheres=spheres, 
-                   distances=distances)
+    def __init__(self):
+        self.ftypes: List[PharmFeatureType] = []
+        self.feats: List[PharmFeatures] = []
     
-    def infere_distances(self, overwrite: bool = True):
+    def add_single(self, 
+                   ftype: PharmFeatureType, 
+                   *args, 
+                   atidx: Tuple[int] = None):
+        assert isinstance(ftype, PharmFeatureType)
 
-        if overwrite:
-            self.distances = PharmDistancePairs(types=self.ptypes.distances)
+        if ftype.name not in self.ftype_names:
+            self.ftypes.append(ftype)
+            self.feats.append(ftype.initiate_features())
         
-        tyidx_arrow = self.arrows.tyidx
-        tyidx_sphere = self.spheres.tyidx
-        tyidx = np.concatenate((tyidx_arrow, 
-                                tyidx_sphere+len(self.arrows.types)), axis=0)
+        ftypeidx = self.ftype_names.index(ftype.name)
+        self.feats[ftypeidx].add_features(*args, atidx=[atidx])
 
-        pos_arrow = self.arrows.pos
-        pos_sphere = self.spheres.pos
-        pos = np.concatenate((pos_arrow, pos_sphere), axis=0)
-        dists_matrix = squareform(pdist(pos))
-
-        for pairtypeidx, (tyname1, tyname2) in enumerate(
-            zip(self.ptypes.distances.memnames1, 
-                self.ptypes.distances.memnames2)):
-            
-            typeidx1 = self.stypes.names.index(tyname1)
-            typeidx2 = self.stypes.names.index(tyname2)
-
-            idx1 = np.where(tyidx == typeidx1)[0]
-            idx2 = np.where(tyidx == typeidx2)[0]
-            
-            dists = []
-            memidx = []
-            for i in idx1:
-                for j in idx2:
-                    if i < j:  # ensure we only get each pair once
-                        memidx.append([i, j])
-                        dists.append(dists_matrix[i,j])
-            dists = np.array(dists)
-
-            pairs = PharmDistancePairs(
-                types=self.ptypes.distances,
-                tyidx=(np.ones(dists.shape[0]) * pairtypeidx).astype(int),
-                memidx=np.array(memidx),
-                diff=dists
-            )
-            self.add_distances(pairs)
+    def draw(self, view) -> None:
+        for ftype, feat in zip(self.ftypes, self.feats):
+            feat.draw(view, ftype.drawopts)
     
-    def add_stypes(self, stypes: PharmSingleTypes):
-        self.arrows.types += stypes.arrows
-        self.spheres.types += stypes.spheres
-
-    def add_ptypes(self, ptypes: PharmPairTypes):
-        self.distances.types += ptypes.distances
+    def get_distance(self, idx1: int, idx2: int) -> float:
+        return np.linalg.norm(self.pos[idx1] - self.pos[idx2])
     
-    def add_arrows(self, arrows: PharmArrowSingles):
-        self.arrows += arrows
+    def get_ftype(self, idx: int) -> PharmFeatureType:
+        for i, cumul in enumerate(
+            itertools.accumulate([feat.pos.shape[0] 
+                                  for feat in self.feats])):
+            if idx < cumul:
+                return self.ftypes[i]
 
-    def remove_arrows(self, idx: int | List[int] | np.ndarray):
-        if isinstance(idx, int):
-            idx = [idx]
-        idx = list(idx)
-        self.arrows = self.arrows[[i for i in range(len(self.arrows)) 
-                                   if i not in idx]]
+    def __add__(self, other: Pharmacophore) -> Pharmacophore:
+        new = Pharmacophore()
+        new.ftypes = self.ftypes.copy()
+        new.feats = self.feats.copy()
+
+        for ftype, feat in zip(other.ftypes, other.feats):
+            if ftype.name in new.ftype_names:
+                ftypeidx = new.ftype_names.index(ftype.name)
+                new.feats[ftypeidx].add_features(*feat.tuple(), 
+                                                 atidx=feat.origin_atidx)
+            else:
+                new.ftypes.append(ftype)
+                new.feats.append(feat)
         
-        dist_idx = [i for i in range(len(self.distances))
-                    if i in self.distances.memidx.flatten()]
-        self.remove_distances(dist_idx)
+        return new
     
-    def add_spheres(self, spheres: PharmSphereSingles):
-        self.spheres += spheres
-
-    def add_distances(self, distances: PharmDistancePairs):
-        self.distances += distances
-
-    def remove_distances(self, idx: int | List[int] | np.ndarray):
-        if isinstance(idx, int):
-            idx = [idx]
-        idx = list(idx)
-        self.distances = self.distances[[i for i in range(len(self.distances)) 
-                                         if i not in idx]]
-
-    def __add__(self, other: Pharmacophore):
-        return Pharmacophore(
-            arrows=self.arrows + other.arrows,
-            spheres=self.spheres + other.spheres,
-            distances=self.distances + other.distances
-        )
-
-    @property
-    def types(self) -> List[BasePharmType]:
-        return (
-            list(self.arrows.types) 
-            + list(self.spheres.types) 
-            + list(self.distances.types)
-        )
+    def __radd__(self, other: Pharmacophore) -> Pharmacophore:
+        if other == 0:
+            return self
+        else:
+            return self.__add__(other)
     
     @property
-    def stypes(self) -> PharmSingleTypes:
-        return self.arrows.types + self.spheres.types
+    def ftype_names(self) -> List[str]:
+        return [ftype.name for ftype in self.ftypes]
     
     @property
-    def ptypes(self) -> PharmPairTypes:
-        return self.distances.types
+    def n_feats(self) -> int:
+        return sum([feat.pos.shape[0] for feat in self.feats])
     
+    @property
+    def pos(self) -> np.ndarray:
+        return np.concatenate([feat.pos for feat in self.feats], axis=0)
+    
+    @property
+    def vec(self) -> np.ndarray:
+        vs = np.zeros((self.n_feats, 3))
 
+        stid = 0
+        for feat in self.feats:
+            if isinstance(feat, PharmArrowFeats):
+                vs[stid:stid+feat.pos.shape[0]] = feat.vec
+            else:
+                vs[stid:stid+feat.pos.shape[0]] = np.nan
+            stid += feat.pos.shape[0]
+        
+        return vs
+    
+    @property
+    def radius(self) -> np.ndarray:
+        return np.concatenate([feat.radius for feat in self.feats], axis=0)
+        # TODO: I should be careful about adding other types of features...
+    
+    @property
+    def orig_atids(self) -> List[Tuple[int]]:
+        return sum([feat.origin_atidx for feat in self.feats], start=[])
+    
+    def tyidx(self, ftypes: List[PharmFeatureType]) -> np.ndarray:
+        return np.concatenate([np.ones(feat.pos.shape[0])*ftypes.index(self.ftypes[i])
+                               for i, feat in enumerate(self.feats)])

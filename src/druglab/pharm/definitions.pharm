@@ -1,0 +1,112 @@
+
+DRAWOPTS GreenArrow color=[0.2,0.9,0.2] radius=0.25 length=1.8
+DRAWOPTS PurpleArrow color=[0.9,0.1,0.9] radius=0.25 length=1.8
+DRAWOPTS CyanArrow color=[0.0,0.8,0.8] radius=0.25 length=2.0
+DRAWOPTS Red color=[0.8,0.1,0.1]
+DRAWOPTS Blue color=[0.1,0.1,0.8]
+DRAWOPTS OrangeArrow color=[0.8,0.3,0.0] radius=0.25 length=2.0
+
+PATTERN EtherLike [v2X2^3]
+PATTERN FuranLike [v2X2^2]
+PATTERN KetoLike [v2X1^2]
+PATTERN ImineLike [v3X2^2]
+PATTERN AmineLike [v3X3^3]
+
+PATTERN AtomHBA [#7!+,#8!+]
+
+FEATURETYPE HBondAcc type=ARROW drawopts={GreenArrow}
+FEATURETYPE HBondHyd type=ARROW drawopts={PurpleArrow}
+FEATURETYPE Aromatic type=ARROW drawopts={OrangeArrow}
+FEATURETYPE Cationic type=SPHERE drawopts={Blue}
+FEATURETYPE Anionic type=SPHERE drawopts={Red}
+
+GROUP PolarHyd [#1&$(*-[{AtomHBA},*+])]
+    CALCULATE
+        v1 << direction NEI(0,0) 0
+    ENDCALC
+    FEATURE HBondHyd 0 v1 VOL(0)
+ENDGROUP
+
+GROUP EtherLikeHBA [{AtomHBA};{EtherLike}]
+    CALCULATE
+        v1,v2 << tetrahedral3 0 NEI(0,0) NEI(0,1)
+    ENDCALC
+    FEATURE HBondAcc 0 v1 VOL(0)
+    FEATURE HBondAcc 0 v2 VOL(0)
+ENDGROUP
+
+GROUP KetoLikeHBA [{AtomHBA};{KetoLike}]
+    CALCULATE
+        v1,v2 << eplane3 0 NEI(0,0) NON(0,0,0)
+    ENDCALC
+    FEATURE HBondAcc 0 v1 VOL(0)
+    FEATURE HBondAcc 0 v2 VOL(0)
+ENDGROUP
+
+GROUP FuranLikeHBA [{AtomHBA};{FuranLike}]
+    CALCULATE
+        v1 << plane3 0 NEI(0,0) NEI(0,1)
+    ENDCALC
+    FEATURE HBondAcc 0 v1 VOL(0)
+ENDGROUP
+
+GROUP ImineLikeHBA [{AtomHBA};{ImineLike}]
+    CALCULATE
+        v1 << plane3 0 NEI(0,0) NEI(0,1)
+    ENDCALC
+    FEATURE HBondAcc 0 v1 VOL(0)
+ENDGROUP
+
+GROUP AmineLikeHBA [{AtomHBA};{AmineLike}]
+    CALCULATE
+        b1 << direction NEI(0,0) 0
+        b2 << direction NEI(0,1) 0
+        b3 << direction NEI(0,2) 0
+        v1 << pmean b1 b2 b3
+        v2 << norm v1
+    ENDCALC
+    FEATURE HBondAcc 0 v2 VOL(0)
+ENDGROUP
+
+GROUP Aromatic6 a1aaaaa1
+    CALCULATE
+        x << pmean 0 1 2 3 4 5
+        b1 << direction 1 0
+        b2 << direction 1 2
+        v1 << perpendicular b1 b2
+        v2 << perpendicular b2 b1
+        vol << sum VOL(0) VOL(1) VOL(2) VOL(3) VOL(4) VOL(5)
+        vol << multiply vol 0.33
+    ENDCALC
+    FEATURE Aromatic x v1 vol
+    FEATURE Aromatic x v2 vol
+ENDGROUP
+
+GROUP Aromatic5 a1aaaa1
+    CALCULATE
+        x << pmean 0 1 2 3 4 
+        b1 << direction 1 0
+        b2 << direction 1 2
+        v1 << perpendicular b1 b2
+        v2 << perpendicular b2 b1
+        vol << sum VOL(0) VOL(1) VOL(2) VOL(3) VOL(4)
+        vol << multiply vol 0.33
+    ENDCALC
+    FEATURE Aromatic x v1 vol
+    FEATURE Aromatic x v2 vol
+ENDGROUP
+
+GROUP Cation4 [X4+](*)(*)(*)*
+    CALCULATE
+        vol << sum VOL(0) VOL(1) VOL(2) VOL(3) VOL(4)
+        vol << multiply vol 0.33
+    ENDCALC
+    FEATURE Cationic 0 vol
+ENDGROUP
+
+GROUP Anion1 [X1-]*
+    CALCULATE
+    ENDCALC
+    FEATURE Anionic 0 VOL(0)
+ENDGROUP
+

@@ -1,55 +1,53 @@
-from typing import List
+
+from typing import Any, List
 
 from rdkit import Chem
 
-def parse_neighboring_key(key: str):
-    if key.startswith("nn"):
-        ntype, nidx, nnidx = key.split("-")
-    elif key.startswith("n"):
-        ntype, nidx = key.split("-")
-        nnidx = 0
-    else:
-        raise NotImplementedError()
-    
-    if nnidx == "a":
-        nnidx = -1
-    if nidx == "a":
-        nidx = -1
-    nnidx, nidx = int(nnidx), int(nidx)
-    
-    atomidx = int(ntype.strip("n()"))
-    ntype = ntype.split("(")[0]
-    return atomidx, ntype, nidx, nnidx
+ELEM_TABLE = Chem.GetPeriodicTable()
 
-def get_neighboring(mol: Chem.Mol, 
-                    atomidx: int, ntype: str, 
-                    nidx: int = -1, nnidx: int = -1):
+def parse_varname(varname: str, 
+                  mol: Chem.Mol, 
+                  match: List[int],
+                  vars: dict = None,
+                  confid: int = -1) -> Any:
     
-    atom = mol.GetAtomWithIdx(atomidx)
-    neis: List[int] = [nei.GetIdx() for nei in atom.GetNeighbors()]
+    if vars is None:
+        vars = dict()
     
-    if ntype == "n":
-        if nidx == -1:
-            return neis
-        return neis[nidx]
-    
-    if ntype == "nn":
-        nns = []
-        for nei in atom.GetNeighbors():
-            nei: Chem.Atom
-            nneis = get_neighboring(mol,
-                                    atomidx=nei.GetIdx(),
-                                    ntype="n",
-                                    nidx=-1)
-            nneis.remove(atom.GetIdx())
-            nns.append(nneis)
+    try:
+        idx = int(varname)
+        return mol.GetConformer(confid).GetPositions()[match[idx]]
+    except:
+        pass
+
+    try:
+        num = float(varname)
+        return num
+    except:
+        pass
+
+    if varname[:3] in ["VOL", "NEI", "NON"]:
+        args = varname.split("(")[1].split(")")[0].split(",")
         
-        if nidx > -1:
-            nns = nns[nidx]
-            if nnidx > -1:
-                return nns[nnidx]
-            return nns
+        if varname.startswith("VOL"):
+            assert len(args) == 1
+            at = mol.GetAtomWithIdx(match[int(args[0])])
+            return ELEM_TABLE.GetRvdw(at.GetAtomicNum())
         
-        if nnidx > -1:
-            return [ns[nnidx] for ns in nns]
-        return nns
+        if varname.startswith("NEI"):
+            assert len(args) == 2
+            atomidx, neiidx = match[int(args[0])], int(args[1])
+            at = mol.GetAtomWithIdx(atomidx)
+            nei: Chem.Atom = list(at.GetNeighbors())[neiidx]
+            return mol.GetConformer(confid).GetPositions()[nei.GetIdx()]
+        
+        if varname.startswith("NON"):
+            assert len(args) == 3
+            atomidx = match[int(args[0])]
+            neiidx, nonidx = int(args[1]), int(args[2])
+            at = mol.GetAtomWithIdx(atomidx)
+            nei: Chem.Atom = list(at.GetNeighbors())[neiidx]
+            non: Chem.Atom = list(nei.GetNeighbors())[nonidx]
+            return mol.GetConformer(confid).GetPositions()[non.GetIdx()]
+    
+    return vars[varname]
