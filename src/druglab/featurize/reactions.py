@@ -31,6 +31,6 @@ class RxnOneHotFeaturizer(BaseFeaturizer):
         }
     
     def set_params(self, **kwargs):
-        self._smiles = kwargs["smiles"]
+        self._smiles = kwargs.get("smiles", self._smiles)
         self._fnames = [f"rxn_{i}" for i in range(len(self._smiles))]
         

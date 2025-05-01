@@ -16,7 +16,7 @@ class MorganFPFeaturizer(BaseFeaturizer):
     def featurize(self, mol: Chem.Mol) -> np.ndarray:
         fp: np.ndarray = self.generator.GetFingerprintAsNumPy(mol)
         fp = fp.reshape(1, -1)
-        return fp.astype(np.bool)
+        return fp.astype(bool)
     
     def get_params(self):
         return {
@@ -25,7 +25,7 @@ class MorganFPFeaturizer(BaseFeaturizer):
         }
     
     def set_params(self, **kwargs):
-        self.radius = kwargs["radius"]
-        self.size = kwargs["size"]
+        self.radius = kwargs.get("radius", self.radius)
+        self.size = kwargs.get("size", self.size)
         self.generator = rdFP.GetMorganGenerator(self.radius, fpSize=self.size)
         self._fnames = [f"morgan{self.radius}_{i}" for i in range(self.size)]

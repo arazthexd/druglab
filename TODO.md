@@ -14,9 +14,10 @@
 
 ## Featurize
 ### Next...
+- [ ] No saving for featurizers... (pickling problems)
 
 ### Ideas...
-- [ ] No saving for featurizers... (pickling problems)
+- [ ] Featurizer wrapper for molfeat package's Transformer class
 
 ### Done.
 
