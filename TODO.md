@@ -15,6 +15,7 @@
 ## Featurize
 ### Next...
 - [ ] No saving for featurizers... (pickling problems)
+- [ ] PCA, and MCA featurizers (+ in composite featurizers)
 
 ### Ideas...
 - [ ] Featurizer wrapper for molfeat package's Transformer class
@@ -27,6 +28,7 @@
 
 ### Ideas...
 - [ ] Atom, Bond Storage and searching
+- [ ] Filter method
 
 ### Done.
 
