@@ -44,14 +44,16 @@ class _SequenceMember:
     
 class SynthesisRoute:
     def __init__(self, 
-                    seq: List[_SequenceMember] = None,
-                    reactants: List[Chem.Mol] = None,
-                    reactions: List[Rxn] = None,
-                    products: List[Chem.Mol] = None):
+                 seq: List[_SequenceMember] = None,
+                 reactants: List[Chem.Mol] = None,
+                 reactions: List[Rxn] = None,
+                 products: List[Chem.Mol] = None,
+                 check: bool = True):
         self.seq = seq or list()
         self.reactants = reactants or list()
         self.reactions = reactions or list()
         self.products = products or list()
+        self.check = check
     
     def __repr__(self):
         return f"SynthesisRoute(" + \
@@ -61,20 +63,24 @@ class SynthesisRoute:
             f"products={len(self.products)})"
     
     def start(self):
-        assert len(self.seq) == 0
+        if self.check:
+            assert len(self.seq) == 0
         self.seq.append(_SequenceMember(ActionTypes.START))
 
     def add_reactant(self, reactant: Chem.Mol):
-        assert self.seq[-1].type in [ActionTypes.START, 
-                                     ActionTypes.PRODUCT,
-                                     ActionTypes.REACTANT,
-                                     ActionTypes.USEPROD]
+        if self.check:
+            assert self.seq[-1].type in [ActionTypes.START, 
+                                        ActionTypes.PRODUCT,
+                                        ActionTypes.REACTANT,
+                                        ActionTypes.USEPROD]
         member = _SequenceMember(ActionTypes.REACTANT, len(self.reactants))
         self.seq.append(member)
         self.reactants.append(reactant)
 
     def add_reaction(self, rxn: Rxn):
-        assert self.seq[-1].type in [ActionTypes.REACTANT, ActionTypes.USEPROD]
+        if self.check:
+            assert self.seq[-1].type in [ActionTypes.REACTANT, 
+                                         ActionTypes.USEPROD]
 
         member = _SequenceMember(ActionTypes.REACTION, len(self.reactions))
         self.seq.append(member)

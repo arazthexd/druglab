@@ -1,261 +1,156 @@
 from __future__ import annotations
-from typing import List, Union, Tuple, Callable, Dict
-
-import random
-from itertools import product
+from typing import List, Tuple, Any
 from dataclasses import dataclass, field
+import random, math
+import mpire
+
+import numpy as np
 
 from rdkit import Chem
-from rdkit.Chem import Draw
-from rdkit.Chem import rdChemReactions as rdRxn
+from rdkit.Chem import rdDepictor
 from rdkit.Chem.rdChemReactions import ChemicalReaction as Rxn
 
-from ..storage import MolStorage, RxnStorage
+from ..storage import RxnStorage
 from .route import SynthesisRoute, ActionTypes
-
-class RxnProductSampler:
-    def __init__(self,
-                 rxn: Rxn,
-                 rpools: List[MolStorage | RxnProductSampler]):
-        self.rpools = rpools.copy()
-        self.rxn = rxn
-
-        self._isrun = False
-
-        self._reactants: List[Chem.Mol] = []
-        self._products: List[Chem.Mol] = []
-    
-    def reset(self):
-        self._isrun = False
-
-    def sample(self, n_st: int = 1) -> List[Chem.Mol]:
-        if self._isrun:
-            return self._products
-        
-        rcandidates: List[List[Chem.Mol]] = []
-        for rpool in self.rpools:
-            if isinstance(rpool, MolStorage):
-                rcandidates.append(rpool.sample(n_st))
-            elif isinstance(rpool, RxnProductSampler):
-                rcandidates.append(rpool.sample(n_st))
-            else:
-                raise TypeError("rpool must be MolStorage or RxnProductSampler")
-        
-        for i in range(len(rcandidates)):
-            if isinstance(rcandidates[i], Chem.Mol):
-                rcandidates[i] = [rcandidates[i]]
-        
-        rscombs = list(product(*rcandidates))
-        random.shuffle(rscombs)
-
-        for rs in rscombs:
-            self._reactants = rs
-            self._products = [
-                prod 
-                for prods in self.rxn.RunReactants(self._reactants) 
-                for prod in prods
-            ]
-            [Chem.SanitizeMol(p) for p in self._products]
-            [p.UpdatePropertyCache() for p in self._products]
-            if len(self._products) > 0:
-                break
-
-        self._isrun = True
-        return self._products
-    
-    def routes(self) -> List[SynthesisRoute]:
-        prev_routes: List[SynthesisRoute] = []
-        for rid in range(len(self._reactants)):
-            if isinstance(self.rpools[rid], RxnProductSampler):
-                routes = self.rpools[rid].routes()
-                correct_route = [
-                    ro for ro in routes 
-                    if Chem.MolToSmiles(ro.products[-1]) == \
-                        Chem.MolToSmiles(self._reactants[rid])
-                ][0]
-                prev_routes.append(correct_route)
-        
-        route = SynthesisRoute()
-        route.start()
-        route: SynthesisRoute = sum(reversed(prev_routes), start=route)
-        
-        for rid in range(len(self._reactants)):
-            if isinstance(self.rpools[rid], RxnProductSampler):
-                route.use_product()
-            
-            if isinstance(self.rpools[rid], MolStorage):
-                route.add_reactant(self._reactants[rid])
-
-        route.add_reaction(self.rxn)
-
-        route_plus_ps: List[SynthesisRoute] = []
-        for product in self._products:
-            out_route: SynthesisRoute = route.copy()
-            out_route.add_product(product)
-            out_route.end()
-            route_plus_ps.append(out_route)
-        
-        return route_plus_ps
-    
-    def has_avaiable_input(self) -> bool:
-        return sum([isinstance(rpool, MolStorage) 
-                    for rpool in self.rpools]) > 0
-    
-    def available_rids(self) -> List[int]:
-        return [i for i in range(len(self.rpools))
-                if isinstance(self.rpools[i], MolStorage)]
-        
-@dataclass
-class SynRouteSamplerOpts:
-    max_sample_attempts: int = 100
-    max_construct_attempts: int = 10
-    rpool_sample_size: int = 10
-    min_steps: int = 2
-    max_steps: int = 4
+from .storage import SynRouteStorage
+from .utils import SamplingUtils
 
 class SynRouteSampler:
-    def __init__(self,
-                 bbs: MolStorage,
-                 rxns: RxnStorage,
-                 bb2rxnr: Dict[int, List[Tuple[int, int]]] = None,
-                 processed: bool = False,
-                 options: SynRouteSamplerOpts = None):
+    def __init__(self, 
+                 min_steps: int = 1, 
+                 max_steps: int = 4,
+                 n_template_batch: int = 6,
+                 n_route_batch: int = 100,
+                 templates: List[List[int]] | None = None):
         
-        self.bbs = bbs
-        self.rxns = rxns
+        self.min_steps = min_steps
+        self.max_steps = max_steps
+        self.n_template_batch = n_template_batch
+        self.n_route_batch = n_route_batch
+        self.templates = templates
 
-        if not processed:
-            self.bbs.clean()
-            self.rxns.add_mols(self.bbs)
-            self.rxns.clean()
+    def sample(self, 
+               rxns: RxnStorage, 
+               only_final: bool = True, 
+               num_processes: int = 2):
         
-        if bb2rxnr is None:
-            bb2rxnr = self.rxns.match_mols(bbs)
-        self.bb2rxnr = bb2rxnr
-
-        if options is None:
-            options = SynRouteSamplerOpts()
-        self.options = options
-    
-    def sample(
-            self, 
-            only_last: bool = True,
-            filter_func: Callable[[SynthesisRoute], bool] = lambda x: True) \
-                -> List[SynthesisRoute]:
-        
-        found = False
-        for _ in range(self.options.max_construct_attempts):
-            nodes = self.construct()
-            for i in range(self.options.max_sample_attempts):
-                [node.reset() for node in nodes]
-                try:
-                    products = nodes[-1].sample(self.options.rpool_sample_size)
-                    routes = nodes[-1].routes()
-                except:
-                    continue
-                routes = [route for route in routes if filter_func(route)]
-                if len(routes) > 0:
-                    found = True
-                    break
-            
-            if not found:
-                return []
-            
-            if only_last:
-                routes = nodes[-1].routes()
-            else:
-                routes = [route for node in nodes for route in node.routes()]
-            
-            return routes
-
-    def construct(self) -> List[RxnProductSampler]:
-        n_steps = random.randint(self.options.min_steps,
-                                 self.options.max_steps)
-        
-        nodes: List[RxnProductSampler] = []
-        for i in range(n_steps):
-            rxnid = random.randint(0, len(self.rxns)-1)
-            node = RxnProductSampler(
-                rxn=self.rxns[rxnid],
-                rpools=self.rxns.mstores[rxnid]
+        with mpire.WorkerPool(num_processes) as pool:
+            samproutes_process = pool.map(
+                lambda _: self._sample_for_random_template(rxns, only_final),
+                range(self.n_template_batch),
+                progress_bar=True
             )
-            nodes.append(node)
-
-        for i in range(n_steps-2, -1, -1):
-            current_node = nodes[i]
-
-            available_targets = []
-            for j in range(i+1, n_steps):
-                if nodes[j].has_avaiable_input():
-                    available_targets.append(j)
-
-            target_idx: int = random.choice(available_targets)
-            target_node: RxnProductSampler = nodes[target_idx]
-            rid = random.choice(target_node.available_rids())
-            target_node.rpools[rid] = current_node
-
-        return nodes
-
-
-    # def sample_construct(self):
-    #     n_branches = random.randint(self.options.min_branches, 
-    #                                 self.options.max_branches)
-    #     n_steps = random.randint(self.options.min_steps,
-    #                              self.options.max_steps)
-    #     n_steps = max(n_steps, n_branches+1)
-    #     n_fellows = n_steps - n_branches
-    #     print(n_branches, n_steps, n_fellows)
         
-    #     depth = random.randint(self.options.min_depth,
-    #                            self.options.max_depth)
+        return SynRouteStorage(sum(samproutes_process, start=[]))
 
-    #     branch_samplers: List[RxnProductSampler] = []
-    #     for _ in range(n_branches):
-    #         rxnid = random.choice(range(len(self.rxns)))
-    #         rxn = self.rxns[rxnid]
-    #         fellow_sampler = RxnProductSampler(
-    #             rxn=rxn,
-    #             rpools=self.rxns.mstores[rxnid]
-    #         )
-    #         branch_samplers.append(fellow_sampler)
+    def _sample_for_random_template(self, 
+                                    rxns: RxnStorage, 
+                                    only_final: bool = True):
+        sampled_routes = []
+
+        template_seq = SamplingUtils.sample_sequence_variable(
+            Lmin=self.min_steps,
+            Lmax=self.max_steps
+        )
+
+        available_routes: List[List[SynthesisRoute]] = []
+        for n_uprods in template_seq:
+            component = _SynRouteSamplingComponent(n_uprods)
+            uprod_candidates = [available_routes.pop() 
+                                for _ in range(n_uprods)]
+            results = component.sample(rxns, 
+                                        *uprod_candidates, 
+                                        n_batch=self.n_route_batch)
+            available_routes.append(results)
         
-    #     fellow_samplers: List[RxnProductSampler] = []
-    #     for _ in range(n_fellows):
-    #         rxnid = random.choice(range(len(self.rxns)))
-    #         rxn = self.rxns[rxnid]
-    #         fellow_sampler = RxnProductSampler(
-    #             rxn=rxn,
-    #             rpools=self.rxns.mstores[rxnid]
-    #         )
-    #         fellow_samplers.append(fellow_sampler)
+        if only_final:
+            sampled_routes.extend(available_routes[-1])
+        
+        else:
+            [sampled_routes.extend(avs) for avs in available_routes]
+    
+        return sampled_routes
 
-    #     for branch_sampler in branch_samplers:
-    #         n_connects = random.randint(1, len(fellow_samplers))
-    #         connect_idx = list(range(len(fellow_samplers)))
-    #         random.shuffle(connect_idx)
-    #         connect_idx = connect_idx[:n_connects]
-    #         for idx in connect_idx:
-    #             rids = [i for i in range(len(fellow_samplers[idx].rpools))
-    #                     if isinstance(fellow_samplers[idx].rpools[i],
-    #                                   MolStorage)]
-    #             if len(rids) == 0:
-    #                 continue
-    #             rid = random.choice(rids)
-    #             fellow_samplers[idx].rpools[rid] = branch_sampler
+class _SynRouteSamplingComponent:
+    def __init__(self, n_uprods: int):
+        self.n_uprods = n_uprods
+
+    def sample(self, 
+               rxns: RxnStorage, 
+               *uprod_candidates: List[SynthesisRoute],
+               n_batch: int = 100):
+        assert len(uprod_candidates) == self.n_uprods
+        uprod_candidates = tuple([upcs.copy() for upcs in uprod_candidates])
+        
+        rxn_candidate_ids = [
+            i for i in range(len(rxns)) 
+            if rxns[i].GetNumReactantTemplates() >= self.n_uprods
+        ]
+        
+        rxn_storage = rxns.subset(rxn_candidate_ids)
+        rxnids = [random.randint(0, len(rxn_storage)-1) 
+                  for _ in range(n_batch)]
+
+        results: List[SynthesisRoute] = []
+        for rxnid in rxnids:
+            rxn: Rxn = rxn_storage[rxnid]
+            n_rs = rxn.GetNumReactantTemplates()
+
+            current_route = SynthesisRoute(check=False)
+            current_route.start()
             
-    #     for i, fellow_sampler in enumerate(fellow_samplers[:-1]):
-    #         tempdepth = min(depth, len(fellow_samplers)-i-1)
-    #         n_connects = random.randint(1, tempdepth) # len(fellow_samplers)-i-1
-    #         connect_idx = list(range(i+1, i+1+tempdepth)) # len(fellow_samplers)
-    #         random.shuffle(connect_idx)
-    #         connect_idx = connect_idx[:n_connects]
-    #         for idx in connect_idx:
-    #             rids = [i for i in range(len(fellow_samplers[idx].rpools))
-    #                     if isinstance(fellow_samplers[idx].rpools[i],
-    #                                   MolStorage)]
-    #             if len(rids) == 0:
-    #                 continue
-    #             rid = random.choice(rids)
-    #             fellow_samplers[idx].rpools[rid] = fellow_sampler
+            prev_routes: List[SynthesisRoute] = []
+            
+            uprodids = random.sample(range(n_rs), k=self.n_uprods)
+            current_rs: List[Chem.Mol] = []
+            for rid in range(n_rs):
+                reactant_template = rxn.GetReactants()[rid]
+                reactant_candidates = rxn_storage.mstores[rxnid][rid]
 
-    #     return branch_samplers + fellow_samplers
+                if rid not in uprodids:
+                    r: Chem.Mol = reactant_candidates.sample()
+                    current_rs.append(r)
+                    continue
+                
+                upcrs = uprod_candidates[uprodids.index(rid)]
+                upcid = None
+                for i, upcr in enumerate(upcrs):
+                    upcr: SynthesisRoute
+                    if upcr.products[-1].HasSubstructMatch(reactant_template):
+                        upcid = i
+                        current_rs.append(upcr.products[-1])
+                        break
+                
+                if upcid is None:
+                    break
+
+                prev_routes = [upcrs.pop(upcid)] + prev_routes
+
+            if len(prev_routes) < self.n_uprods:
+                continue
+            elif len(prev_routes) > self.n_uprods:
+                raise ValueError("should be equal or lower...")
+            
+            try:
+                products = [p for ps in rxn.RunReactants(current_rs) for p in ps]
+                [Chem.SanitizeMol(p) for p in products]
+                [rdDepictor.Compute2DCoords(p) for p in products]
+            except:
+                continue
+
+            final_route = SynthesisRoute()
+            final_route.start()
+            final_route = sum(prev_routes, start=final_route)
+
+            for rid in range(n_rs):
+                if rid in uprodids:
+                    final_route.use_product()
+                else:
+                    final_route.add_reactant(current_rs[rid])
+            
+            final_route.add_reaction(rxn)
+            final_route.add_product(random.choice(products))
+            final_route.end()
+            results.append(final_route)
+
+        return results

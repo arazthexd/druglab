@@ -32,6 +32,7 @@
 
 ## Synthesize
 ### Next...
+- [ ] Optimization Algorithms (RL?) for score-based sampling
 
 ### Ideas...
 
