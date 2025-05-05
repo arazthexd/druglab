@@ -44,6 +44,12 @@ class PharmDistProfile(PharmProfile):
         idx = np.flip(np.argsort(score))
         return score[idx], [soids[i] for i in idx]
     
+    def difference(self, other: PharmDistProfile):
+        diff = self._diff_matrix(other)
+        sidx, oidx = linear_sum_assignment(diff)
+        diff = diff[sidx, oidx]
+        return diff.mean()
+    
     def screen(self, 
                profs: List[PharmDistProfile],
                pharms: List[Pharmacophore]):

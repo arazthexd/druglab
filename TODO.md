@@ -2,12 +2,18 @@
 
 ## Pharm
 ### Next...
-- [ ] Optimization of conformers to match profiles
-- [ ] Position profile to perform similarity search directly on single feats
+- [ ] Develop storage class for pharmacophores
+- [ ] Allow pharmacophore and profile classes to include multiple confs
+- [ ] Define weights for confs and use them for mol vs mol similarities
+- [ ] Utility function for profiles and pharms:
+    - Mols as input, clustered confs using TFD (faster) and Butina
+    - Determine pharms and profiles
+    - Output pharmacophore storage instance
 
 ### Ideas...
-- [ ] Develop storage class for pharmacophores
 - [ ] Profile distributions by sampling multiple conformers
+- [ ] Optimization of conformers to match profiles
+- [ ] Position profile to perform similarity search directly on single feats
 
 ### Done.
 - [x] Clean up the pharm modules (remove unwanted methods, classes) - reworked.
