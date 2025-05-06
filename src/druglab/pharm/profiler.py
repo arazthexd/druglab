@@ -8,9 +8,9 @@ from scipy.optimize import linear_sum_assignment
 from scipy.spatial.distance import pdist
 
 from .ftypes import PharmFeatureType, PharmArrowType
-from .pharmacophore import Pharmacophore
+from .pharmacophore import Pharmacophore, PharmacophoreList
 from .pprofile import (
-    PharmProfile, PharmDAProfile
+    PharmProfile, PharmDefaultProfile, PharmProfileList
 )
 
 class PharmProfiler:
@@ -27,7 +27,9 @@ class PharmProfiler:
     def combinations(ftypes: List[PharmFeatureType]):
         raise NotImplementedError()
 
-    def profile(self, pharmacophore: Pharmacophore) -> PharmProfile:
+    def profile(self, 
+                pharmacophore: Pharmacophore | PharmacophoreList) \
+                    -> PharmProfile | PharmProfileList:
         raise NotImplementedError()
     
     def _get_fts(self, pharmacophore: Pharmacophore, *ids: Tuple[int]):
@@ -61,7 +63,13 @@ class PharmDefaultProfiler(PharmProfiler):
             for j in range(len(ftypes))
         ]
 
-    def profile(self, pharmacophore: Pharmacophore):
+    def profile(self, 
+                pharmacophore: Pharmacophore | PharmacophoreList) \
+                    -> PharmProfile | PharmProfileList:
+        if isinstance(pharmacophore, PharmacophoreList):
+            return self._profile_list(pharmacophore)
+
+        assert isinstance(pharmacophore, Pharmacophore)
         ids1, ids2 = [], []
         ftids1, ftids2 = [], []
         for i, j in combinations(range(pharmacophore.n_feats), 2):
@@ -93,7 +101,7 @@ class PharmDefaultProfiler(PharmProfiler):
         angles = np.clip(np.sum(angles, axis=-1), -1, 1)
         angles: np.ndarray = np.arccos(angles)
 
-        dp = PharmDAProfile(
+        dp = PharmDefaultProfile(
             typeids=ftids,
             pharm=pharmacophore,
             featids=ids,
@@ -101,3 +109,9 @@ class PharmDefaultProfiler(PharmProfiler):
             angles=angles.reshape(-1, 1)
         )
         return dp
+    
+    def _profile_list(self, plist: PharmacophoreList):
+        profiles = []
+        for pharm in plist.pharms:
+            profiles.append(self.profile(pharm))
+        return PharmProfileList(profiles)

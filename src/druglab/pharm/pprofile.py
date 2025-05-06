@@ -1,7 +1,7 @@
 from __future__ import annotations
 from typing import List, Tuple, Dict, OrderedDict, Union, Callable
 from dataclasses import dataclass, field
-from itertools import combinations
+from itertools import combinations, product
 
 import numpy as np
 from scipy.optimize import linear_sum_assignment
@@ -105,6 +105,52 @@ class PharmDefaultProfile(PharmProfile):
     @property
     def _maximize(self) -> bool:
         return True
+    
+@dataclass(repr=False)
+class PharmProfileList:
+    profiles: List[PharmProfile] = field(default_factory=list)
+
+    def __repr__(self):
+        return (f"{self.__class__.__name__}({len(self.profiles)})")
+
+    def match(self, other: PharmProfileList):
+        scores = np.empty((len(self.profiles), len(other.profiles)))
+        for i, prof1 in enumerate(self.profiles):
+            for j, prof2 in enumerate(other.profiles):
+                scores[i, j] = prof1.score(prof2)
+        # print(np.where(scores == scores.max()))
+        idx1, idx2 = np.where(scores == scores.max())
+        idx1: int = idx1[0]
+        idx2: int = idx2[0]
+
+        return idx1, idx2, scores[idx1, idx2]
+    
+    def screen(self, plists: List[PharmProfileList], normalize: bool = True):
+        
+        ids1, ids2, scores = [], [], []
+        for plist in plists:
+            idx1, idx2, score = self.match(plist)
+            prof_self = self.profiles[idx1]
+            prof_other = plist.profiles[idx2]
+            if normalize:
+                score = score / prof_other.pharm.n_feats
+            ids1.append(idx1)
+            ids2.append(idx2)
+            scores.append(score)
+        
+        ids1 = np.array(ids1)
+        ids2 = np.array(ids2)
+        scores = np.array(scores)
+        idx = np.argsort(scores)
+        if self.profiles[0]._maximize:
+            idx = np.flip(idx)
+        print(idx)
+        return ids1[idx], ids2[idx], scores[idx]
+            
+            
+
+        
+    
 
 
 

@@ -51,14 +51,17 @@ class PharmGenerator:
         if self._loaded == False:
             self.load_file(BASE_DEFINITIONS_PATH)
         
-        if isinstance(confid, int):
-            out = Pharmacophore()
-        elif confid == "all":
-            out = PharmacophoreList()
-
+        if confid == "all":
+            return self._generate_list(mol)
+        
+        out = Pharmacophore()
         for group in self.groups:
             out += group.generate(mol, confid)
         return out
+    
+    def _generate_list(self, mol: Chem.Mol):
+        return PharmacophoreList([self.generate(mol, confid=i) 
+                                  for i in range(mol.GetNumConformers())])
     
     @property
     def ftype_names(self) -> List[str]:
