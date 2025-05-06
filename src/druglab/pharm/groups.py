@@ -1,11 +1,11 @@
-from typing import List, Callable, Dict, Any
+from typing import List, Callable, Dict, Any, Literal
 from dataclasses import dataclass, field
 
 from rdkit import Chem
 
 from .ftypes import PharmFeatureType
 from .features import PharmFeatures
-from .pharmacophore import Pharmacophore
+from .pharmacophore import Pharmacophore, PharmacophoreList
 from .utilities import parse_varname
 from .calculations import PharmCalculation
 
@@ -19,14 +19,19 @@ class PharmGroup:
 
     def generate(self, 
                  mol: Chem.Mol, 
-                 confid: int = -1) -> Pharmacophore:
-
-        pcores = []
+                 confid: int | Literal["all"] = -1) \
+                    -> Pharmacophore | PharmacophoreList:
         
+        if confid == "all":
+            pharms = [self.generate(mol, confid=i) 
+                      for i in range(mol.GetNumConformers())]
+            return PharmacophoreList(pharms)
+
+        pharms = []
         matches = mol.GetSubstructMatches(self.query)
         for match in matches:
 
-            pcore = Pharmacophore()
+            pharm = Pharmacophore()
             
             vars = {}
             for calc in self.calcs:
@@ -38,10 +43,10 @@ class PharmGroup:
                                   confid=confid, vars=vars)
                     for arg in args
                 ]
-                pcore.add_single(ftype, *args, atidx=match)
+                pharm.add_feature(ftype, *args, atidx=match)
             
-            pcores.append(pcore)
+            pharms.append(pharm)
         
-        return sum(pcores, start=Pharmacophore())
+        return sum(pharms, start=Pharmacophore())
             
             
