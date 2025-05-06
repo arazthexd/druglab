@@ -9,7 +9,9 @@ from scipy.spatial.distance import pdist
 
 from .ftypes import PharmFeatureType, PharmArrowType
 from .pharmacophore import Pharmacophore
-from .pprofile import PharmProfile, PharmDistProfile
+from .pprofile import (
+    PharmProfile, PharmDAProfile
+)
 
 class PharmProfiler:
 
@@ -32,8 +34,8 @@ class PharmProfiler:
         return (pharmacophore.get_ftype(i) for i in ids)
     
     def _get_ftids(self, pharmacophore: Pharmacophore, *ids: Tuple[int]):
-        return (self.ftypes.index(ft) 
-                for ft in self._get_fts(pharmacophore, *ids))
+        return tuple(self.ftypes.index(ft) 
+                     for ft in self._get_fts(pharmacophore, *ids))
     
     def _get_dists(self, pharmacophore: Pharmacophore, *ids: Tuple[int]):
         pos = pharmacophore.pos[list(ids)]
@@ -45,70 +47,8 @@ class PharmProfiler:
         rad = pharmacophore.radius[list(ids)]
         assert np.isnan(vec).sum() == 0
         return pos + vec * rad
-
     
-class PharmFFFProfiler(PharmProfiler):
-
-    @staticmethod
-    def combinations(ftypes: List[PharmFeatureType]) \
-        -> List[Tuple[int, int, int]]:
-        
-        return [(i,j,k) 
-                for i in range(len(ftypes))
-                for j in range(i, len(ftypes))
-                for k in range(j, len(ftypes))]
-    
-    def profile(self, pharmacophore: Pharmacophore) -> PharmDistProfile:
-
-        combtypeids = []
-        all_dists = []
-        orig_atids = []
-
-        for i, j, k in combinations(range(pharmacophore.n_feats), r=3):
-            ftidi, ftidj, ftidk = self._get_ftids(pharmacophore, i, j, k)
-            
-            try:
-                combtypeid = self.combids.index((ftidi, ftidj, ftidk))
-            except:
-                continue
-            
-            dists = self._get_dists(pharmacophore, i, j, k)
-
-            if min(dists) < 0.05:
-                continue
-            
-            combtypeids.append(combtypeid)
-            orig_atids.append(
-                (
-                    pharmacophore.orig_atids[i],
-                    pharmacophore.orig_atids[j],
-                    pharmacophore.orig_atids[k]
-                )
-            )
-            all_dists.append(dists)
-
-        keep_origatids = set()
-        keep_idx = []
-        for i, oatids in enumerate(orig_atids):
-            if oatids not in keep_origatids:
-                keep_origatids.add(oatids)
-                keep_idx.append(i)
-
-        combtypeids = np.array(combtypeids)[keep_idx]
-        orig_atids = [orig_atids[i] for i in keep_idx]
-        if len(all_dists) > 0:
-            dists = np.stack(all_dists, axis=0)[keep_idx]
-        else:
-            dists = np.zeros((0, 3))
-        
-        return PharmDistProfile(
-            combtypeids=combtypeids,
-            orig_atids=orig_atids,
-            dists=dists
-        )
-    
-class PharmAFProfiler(PharmProfiler):
-    
+class PharmDefaultProfiler(PharmProfiler):
     @staticmethod
     def combinations(ftypes: List[PharmFeatureType]) \
         -> List[Tuple[int, int]]:
@@ -120,53 +60,44 @@ class PharmAFProfiler(PharmProfiler):
             for i in arrowftids
             for j in range(len(ftypes))
         ]
-    
-    def profile(self, pharmacophore: Pharmacophore) -> PharmDistProfile:
+
+    def profile(self, pharmacophore: Pharmacophore):
+        ids1, ids2 = [], []
+        ftids1, ftids2 = [], []
+        for i, j in combinations(range(pharmacophore.n_feats), 2):
+            ftids = self._get_ftids(pharmacophore, i, j)
+            if ftids in self.combids:
+                ids1.append(i)
+                ids2.append(j)
+                ftids1.append(ftids[0])
+                ftids2.append(ftids[1])
+
+
+        ftids = np.array([ftids1, ftids2]).T
+        ids = np.array([ids1, ids2]).T
+        dirs = pharmacophore.vec
+        dirs = dirs[ids1]
+
+        vectors = pharmacophore.pos[ids2] - pharmacophore.pos[ids1]
+        distances = np.linalg.norm(vectors, axis=-1)
+
+        keep_idx = np.where(distances > 0.05)
+        ftids = ftids[keep_idx]
+        dirs = dirs[keep_idx]
+        vectors = vectors[keep_idx]
+        distances: np.ndarray = distances[keep_idx]
         
-        combtypeids = []
-        all_dists = []
-        orig_atids = []
+        vectors = vectors / distances[:, None]
 
-        for i, j in combinations(range(pharmacophore.n_feats), r=2):
-            ftidi, ftidj = self._get_ftids(pharmacophore, i, j)
-            
-            try:
-                combtypeid = self.combids.index((ftidi, ftidj))
-            except:
-                continue
-            
-            pos = pharmacophore.pos[[i, j]]
-            pos = np.append(pos, self._get_tips(pharmacophore, i), axis=0)
-            dists = pdist(pos)
+        angles = dirs * vectors
+        angles = np.clip(np.sum(angles, axis=-1), -1, 1)
+        angles: np.ndarray = np.arccos(angles)
 
-            if min(dists) < 0.01:
-                continue
-            
-            combtypeids.append(combtypeid)
-            orig_atids.append(
-                (
-                    pharmacophore.orig_atids[i],
-                    pharmacophore.orig_atids[j],
-                )
-            )
-            all_dists.append(dists)
-
-        keep_origatids = set()
-        keep_idx = []
-        for i, oatids in enumerate(orig_atids):
-            if oatids not in keep_origatids:
-                keep_origatids.add(oatids)
-                keep_idx.append(i)
-
-        combtypeids = np.array(combtypeids)[keep_idx]
-        orig_atids = [orig_atids[i] for i in keep_idx]
-        if len(all_dists) > 0:
-            dists = np.stack(all_dists, axis=0)[keep_idx]
-        else:
-            dists = np.zeros((0, 3))
-        
-        return PharmDistProfile(
-            combtypeids=combtypeids,
-            orig_atids=orig_atids,
-            dists=dists
+        dp = PharmDAProfile(
+            typeids=ftids,
+            pharm=pharmacophore,
+            featids=ids,
+            dists=distances.reshape(-1, 1),
+            angles=angles.reshape(-1, 1)
         )
+        return dp

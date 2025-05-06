@@ -5,5 +5,5 @@ from .generator import PharmGenerator
 from .groups import PharmGroup
 from .parser import PharmDefinitions, PharmDefaultParser
 from .pharmacophore import Pharmacophore
-from .pprofile import PharmDistProfile
-from .profiler import PharmAFProfiler, PharmFFFProfiler
+from .pprofile import PharmDAProfile
+# from .profiler import PharmAFProfiler, PharmFFFProfiler

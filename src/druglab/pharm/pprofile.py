@@ -1,5 +1,5 @@
 from __future__ import annotations
-from typing import List, Tuple, Dict, OrderedDict
+from typing import List, Tuple, Dict, OrderedDict, Union, Callable
 from dataclasses import dataclass, field
 from itertools import combinations
 
@@ -11,56 +11,102 @@ from .pharmacophore import Pharmacophore
 
 @dataclass(repr=False)
 class PharmProfile:
-    combtypeids: np.ndarray
-    orig_atids: List[Tuple[Tuple[int]]]
+    typeids: np.ndarray # (n_data, ...) TODO: not a single id but ftids
+    pharm: Pharmacophore
+    featids: np.ndarray
+    agg_func: Callable[[np.ndarray], int] = None
+    orig_atids: List[Tuple[Tuple[int]]] = None
+
+    def __post_init__(self):
+        if self.agg_func is None:
+            self.agg_func = np.sum
+        if self.orig_atids is None:
+            self.orig_atids = [(tuple(), ) 
+                               for _ in range(self.typeids.shape[0])]
 
     def __repr__(self):
-        return (f"{self.__class__.__name__}({self.combtypeids.shape[0]})")
+        return (f"{self.__class__.__name__}({self.typeids.shape[0]})")
     
-@dataclass(repr=False)
-class PharmDistProfile(PharmProfile):
-    dists: np.ndarray # (n_dists, n_disttypes)
+    def match(self, 
+              other: PharmProfile,
+              return_vals: bool = False) -> Tuple[np.ndarray, ...]:
+        scores = self._score_matrix(other)
+        mask = (self.typeids[:, None] == other.typeids[None, :]).all(axis=-1)
+        
+        if self._maximize:
+            scores[~mask] = 0
+        else:
+            scores[~mask] = 1000
 
-    def _diff_matrix(self, other: PharmDistProfile):
-        assert self.dists.shape[1] == other.dists.shape[1]
-        diff = (self.dists[:, None, :] - other.dists[None, :, :]) ** 2
-
-        mask = self.combtypeids[:, None] == other.combtypeids[None, :]
-
-        diff = diff.mean(axis=2) ** 0.5
-        diff[~mask] = 1000
-        return diff
+        sidx, oidx = linear_sum_assignment(scores, maximize=self._maximize)
+        scores = scores[sidx, oidx]
+        if return_vals:
+            return sidx, oidx, scores
+        return sidx, oidx
     
-    def _score_matrix(self, diff: np.ndarray):
-        score = 1 / (1 + 3 * diff)
-        return score
-    
-    def match(self, other: PharmDistProfile):
-        diff = self._diff_matrix(other)
-        sidx, oidx = linear_sum_assignment(diff)
-        score = self._score_matrix(diff)
-        score = score[sidx, oidx]
-        soids = list(zip(sidx, oidx))
-        idx = np.flip(np.argsort(score))
-        return score[idx], [soids[i] for i in idx]
-    
-    def difference(self, other: PharmDistProfile):
-        diff = self._diff_matrix(other)
-        sidx, oidx = linear_sum_assignment(diff)
-        diff = diff[sidx, oidx]
-        return diff.mean()
+    def score(self, other: PharmProfile) -> float:
+        sidx, oidx, scores = self.match(other, return_vals=True)
+        return self.agg_func(scores)
     
     def screen(self, 
-               profs: List[PharmDistProfile],
-               pharms: List[Pharmacophore]):
-        
+               profiles: List[PharmProfile],
+               normalize: bool = True) -> Tuple[np.ndarray, np.ndarray]:
         scs = []
-        for prof, pharm in zip(profs, pharms):
-            sc, _ = self.match(prof)
-            sc = sc.sum() / pharm.n_feats
-            scs.append(sc)
+        for prof in profiles:
+            try:
+                sc = self.score(prof)
+                if normalize:
+                    sc = sc / prof.pharm.n_feats
+                scs.append(sc)
+            except:
+                print(f"An error occured for index {len(scs)}")
+                if self._maximize:
+                    scs.append(0)
+                else:
+                    scs.append(1000)
         
-        return np.array(scs)
+        scs = np.array(scs)
+        idx = np.argsort(scs)
+        if self._maximize:
+            idx = np.flip(idx)
+        return idx, scs[idx]
+        
+    def _score_matrix(self, other: PharmProfile) -> np.ndarray:
+        raise NotImplementedError()
+    
+    @property 
+    def _maximize(self) -> bool:
+        return False
+    
+@dataclass(repr=False)
+class PharmDefaultProfile(PharmProfile):
+    dists: np.ndarray = None
+    angles: np.ndarray = None
+
+    def __post_init__(self):
+        super().__post_init__()
+        if self.dists is None:
+            raise ValueError()
+        if self.angles is None:
+            raise ValueError()
+        
+    def _score_matrix(self, other: PharmDefaultProfile):
+        assert self.dists.shape[1] == other.dists.shape[1]
+        assert self.angles.shape[1] == other.angles.shape[1]
+        delta_dists = (self.dists[:, None, :] - other.dists[None, :, :]) ** 2
+        delta_angles = (self.angles[:, None, :] - other.angles[None, :, :]) ** 2
+        delta_dists = delta_dists.mean(axis=-1) ** 0.5
+        delta_angles = delta_angles.mean(axis=-1) ** 0.5
+
+        score_dists = 1 / (1 + 3*delta_dists)
+        score_angles = (1 + np.cos(delta_angles)) / 2
+        return score_dists * score_angles
+        
+    @property
+    def _maximize(self) -> bool:
+        return True
+
+
 
         
     
