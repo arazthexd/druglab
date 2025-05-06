@@ -144,8 +144,7 @@ class PharmProfileList:
         idx = np.argsort(scores)
         if self.profiles[0]._maximize:
             idx = np.flip(idx)
-        print(idx)
-        return ids1[idx], ids2[idx], scores[idx]
+        return ids1[idx], ids2[idx], idx, scores[idx]
             
             
 
