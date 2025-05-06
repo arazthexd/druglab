@@ -47,6 +47,9 @@ def parse_varname(varname: str,
             neiidx, nonidx = int(args[1]), int(args[2])
             at = mol.GetAtomWithIdx(atomidx)
             nei: Chem.Atom = list(at.GetNeighbors())[neiidx]
+
+            if nei.GetNeighbors()[0].GetIdx() == at.GetIdx():
+                nonidx += 1
             non: Chem.Atom = list(nei.GetNeighbors())[nonidx]
             return mol.GetConformer(confid).GetPositions()[non.GetIdx()]
     
