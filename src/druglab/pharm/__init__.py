@@ -5,5 +5,9 @@ from .generator import PharmGenerator
 from .groups import PharmGroup
 from .parser import PharmDefinitions, PharmDefaultParser
 from .pharmacophore import Pharmacophore
-from .pprofile import PharmDefaultProfile
-from .profiler import PharmDefaultProfiler
+from .pprofile import PharmProfile
+from .profiler import PharmProfiler
+from .bittify import (
+    PharmBittifier, PharmCompositeBittifier,
+    PharmValBinBittifier
+)

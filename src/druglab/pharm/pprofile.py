@@ -1,157 +1,110 @@
 from __future__ import annotations
-from typing import List, Tuple, Dict, OrderedDict, Union, Callable
-from dataclasses import dataclass, field
-from itertools import combinations, product
+from typing import List
+from dataclasses import dataclass
+import itertools
 
 import numpy as np
-from scipy.optimize import linear_sum_assignment
 
-from .ftypes import PharmFeatureType, PharmArrowType
-from .pharmacophore import Pharmacophore
+from .pharmacophore import Pharmacophore, PharmacophoreList
 
 @dataclass(repr=False)
 class PharmProfile:
-    typeids: np.ndarray # (n_data, ...) TODO: not a single id but ftids
-    pharm: Pharmacophore
-    featids: np.ndarray
-    agg_func: Callable[[np.ndarray], int] = None
-    orig_atids: List[Tuple[Tuple[int]]] = None
+    pharm: Pharmacophore | PharmacophoreList = None
+    subborderids: List[int] = None
+
+    tys: np.ndarray = None
+    tyids: np.ndarray = None
+    n_tyids: int = None
+
+    pair1tys: np.ndarray = None
+    pair1tyids: np.ndarray = None
+    pair1vals: np.ndarray = None
+    n_pair1tyids: int = None
+
+    pair2tys: np.ndarray = None
+    pair2tyids: np.ndarray = None
+    pair2vals: np.ndarray = None
+    n_pair2tyids: int = None
 
     def __post_init__(self):
-        if self.agg_func is None:
-            self.agg_func = np.sum
-        if self.orig_atids is None:
-            self.orig_atids = [(tuple(), ) 
-                               for _ in range(self.typeids.shape[0])]
-
-    def __repr__(self):
-        return (f"{self.__class__.__name__}({self.typeids.shape[0]})")
-    
-    def match(self, 
-              other: PharmProfile,
-              return_vals: bool = False) -> Tuple[np.ndarray, ...]:
-        scores = self._score_matrix(other)
-        mask = (self.typeids[:, None] == other.typeids[None, :]).all(axis=-1)
+        assert self.subborderids is not None or self.tyids is not None
+        if self.subborderids is not None and self.tyids is not None:
+            assert self.subborderids[-1] == self.tyids.shape[0]
         
-        if self._maximize:
-            scores[~mask] = 0
+        if self.subborderids is not None:
+            ntotal = self.subborderids[-1]
         else:
-            scores[~mask] = 1000
-
-        sidx, oidx = linear_sum_assignment(scores, maximize=self._maximize)
-        scores = scores[sidx, oidx]
-        if return_vals:
-            return sidx, oidx, scores
-        return sidx, oidx
-    
-    def score(self, other: PharmProfile) -> float:
-        sidx, oidx, scores = self.match(other, return_vals=True)
-        return self.agg_func(scores)
-    
-    def screen(self, 
-               profiles: List[PharmProfile],
-               normalize: bool = True) -> Tuple[np.ndarray, np.ndarray]:
-        scs = []
-        for prof in profiles:
-            try:
-                sc = self.score(prof)
-                if normalize:
-                    sc = sc / prof.pharm.n_feats
-                scs.append(sc)
-            except:
-                print(f"An error occured for index {len(scs)}")
-                if self._maximize:
-                    scs.append(0)
-                else:
-                    scs.append(1000)
+            ntotal = self.tyids.shape[0]
         
-        scs = np.array(scs)
-        idx = np.argsort(scs)
-        if self._maximize:
-            idx = np.flip(idx)
-        return idx, scs[idx]
+        if self.tys is None:
+            self.tys = np.zeros((ntotal, 0))
         
-    def _score_matrix(self, other: PharmProfile) -> np.ndarray:
-        raise NotImplementedError()
-    
-    @property 
-    def _maximize(self) -> bool:
-        return False
-    
-@dataclass(repr=False)
-class PharmDefaultProfile(PharmProfile):
-    dists: np.ndarray = None
-    angles: np.ndarray = None
-
-    def __post_init__(self):
-        super().__post_init__()
-        if self.dists is None:
-            raise ValueError()
-        if self.angles is None:
-            raise ValueError()
+        if self.tyids is None:
+            self.tyids = np.zeros((ntotal, ))
         
-    def _score_matrix(self, other: PharmDefaultProfile):
-        assert self.dists.shape[1] == other.dists.shape[1]
-        assert self.angles.shape[1] == other.angles.shape[1]
-        delta_dists = (self.dists[:, None, :] - other.dists[None, :, :]) ** 2
-        delta_angles = (self.angles[:, None, :] - other.angles[None, :, :]) ** 2
-        delta_dists = delta_dists.mean(axis=-1) ** 0.5
-        delta_angles = delta_angles.mean(axis=-1) ** 0.5
-
-        score_dists = 1 / (1 + 3*delta_dists)
-        score_angles = (1 + np.cos(delta_angles)) / 2
-        return score_dists * score_angles
+        if self.n_tyids is None:
+            if self.tyids is not None:
+                raise ValueError("tyids is defined without defining its n")
+            self.n_tyids = 1
         
-    @property
-    def _maximize(self) -> bool:
-        return True
-    
-@dataclass(repr=False)
-class PharmProfileList:
-    profiles: List[PharmProfile] = field(default_factory=list)
-
-    def __repr__(self):
-        return (f"{self.__class__.__name__}({len(self.profiles)})")
-
-    def match(self, other: PharmProfileList):
-        scores = np.empty((len(self.profiles), len(other.profiles)))
-        for i, prof1 in enumerate(self.profiles):
-            for j, prof2 in enumerate(other.profiles):
-                scores[i, j] = prof1.score(prof2)
-        # print(np.where(scores == scores.max()))
-        idx1, idx2 = np.where(scores == scores.max())
-        idx1: int = idx1[0]
-        idx2: int = idx2[0]
-
-        return idx1, idx2, scores[idx1, idx2]
-    
-    def screen(self, plists: List[PharmProfileList], normalize: bool = True):
+        if self.pair1tys is None:
+            self.pair1tys = np.zeros((ntotal, 0, 2))
         
-        ids1, ids2, scores = [], [], []
-        for plist in plists:
-            idx1, idx2, score = self.match(plist)
-            prof_self = self.profiles[idx1]
-            prof_other = plist.profiles[idx2]
-            if normalize:
-                score = score / prof_other.pharm.n_feats
-            ids1.append(idx1)
-            ids2.append(idx2)
-            scores.append(score)
+        if self.pair1tyids is None:
+            self.pair1tyids = np.zeros((ntotal, 0))
         
-        ids1 = np.array(ids1)
-        ids2 = np.array(ids2)
-        scores = np.array(scores)
-        idx = np.argsort(scores)
-        if self.profiles[0]._maximize:
-            idx = np.flip(idx)
-        return ids1[idx], ids2[idx], idx, scores[idx]
-            
+        if self.pair1vals is None:
+            self.pair1vals = np.zeros((ntotal, 0))
+        
+        if self.n_pair1tyids is None:
+            if self.pair1tyids is not None:
+                raise ValueError("pair1tyids is defined without defining its n")
+            self.n_pair1tyids = 0
+        
+        if self.pair2tys is None:
+            self.pair2tys = np.zeros((ntotal, 0, 2))
+        
+        if self.pair2tyids is None:
+            self.pair2tyids = np.zeros((ntotal, 0))
+        
+        if self.pair2vals is None:
+            self.pair2vals = np.zeros((ntotal, 0))
+        
+        if self.n_pair2tyids is None:
+            if self.pair2tyids is not None:
+                raise ValueError("pair2tyids is defined without defining its n")
+            self.n_pair2tyids = 0
+
+    @classmethod
+    def merge(cls, profiles: List[PharmProfile]):
+        subborderids_list = [prof.subborderids.copy() for prof in profiles]
+        addid = [sbi[-1] for sbi in subborderids_list]
+        addid = [0] + list(itertools.accumulate(addid))[:-1]
+        for i, toadd in enumerate(addid):
+            subborderids_list[i] = [sbi+toadd for sbi in subborderids_list[i]]
+
+        assert all(prof.n_tyids == profiles[0].n_tyids 
+                   for prof in profiles)
+        assert all(prof.n_pair1tyids == profiles[0].n_pair1tyids 
+                   for prof in profiles)
+        assert all(prof.n_pair2tyids == profiles[0].n_pair2tyids 
+                   for prof in profiles)
+
+        return cls(
+            subborderids=sum(subborderids_list, []),
+            tys=np.concatenate([prof.tys for prof in profiles]),
+            tyids=np.concatenate([prof.tyids for prof in profiles]),
+            n_tyids=profiles[0].n_tyids,
+            pair1tys=np.concatenate([prof.pair1tys for prof in profiles]),
+            pair1tyids=np.concatenate([prof.pair1tyids for prof in profiles]),
+            pair1vals=np.concatenate([prof.pair1vals for prof in profiles]),
+            n_pair1tyids=profiles[0].n_pair1tyids,
+            pair2tys=np.concatenate([prof.pair2tys for prof in profiles]),
+            pair2tyids=np.concatenate([prof.pair2tyids for prof in profiles]),
+            pair2vals=np.concatenate([prof.pair2vals for prof in profiles]),
+            n_pair2tyids=profiles[0].n_pair2tyids
+        )
             
 
-        
-    
-
-
-
-        
-    
+            
+# TODO: Managing "None"s and replacing them with empty numpy arrays
