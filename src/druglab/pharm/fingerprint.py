@@ -1,164 +1,123 @@
-from typing import List
+from typing import List, Tuple, Literal
 import itertools
 
 import numpy as np
 
-from druglab.pharm import PharmBittifier, PharmProfile
+from druglab.pharm import PharmProfile
+
+def _get_indexer(maxbits: np.ndarray) -> np.ndarray:
+    indexer = np.flip(np.flip(maxbits).cumprod())
+    indexer[:-1] = indexer[1:]
+    indexer[-1] = 1
+    return indexer
 
 class PharmFingerprinter:
     def __init__(self,
-                 type_bittifier: PharmBittifier | List[PharmBittifier] = None,
-                 pairs1_bittifier: PharmBittifier | List[PharmBittifier] = None,
-                 pairs2_bittifier: PharmBittifier | List[PharmBittifier] = None):
-        if isinstance(type_bittifier, PharmBittifier):
-            type_bittifier = [type_bittifier]
-        if isinstance(pairs1_bittifier, PharmBittifier):
-            pairs1_bittifier = [pairs1_bittifier]
-        if isinstance(pairs2_bittifier, PharmBittifier):
-            pairs2_bittifier = [pairs2_bittifier]
+                 fpsize: int = 1024):
+        self.fpsize = fpsize
 
-        self.tb = type_bittifier
-        self.pb1 = pairs1_bittifier
-        self.pb2 = pairs2_bittifier
-    
+    def bits(self,
+             profile: PharmProfile) -> Tuple[np.ndarray, float]:
+        raise NotImplementedError()
+
     def fingerprint(self,
                     profile: PharmProfile,
-                    fpsize: int = 1024,
-                    merge_confs: bool = False):
+                    merge_confs: bool = False) -> np.ndarray:
         
-        bits_list: List[List[np.ndarray]] = []
-        maxbit_list: List[List[int]] = []
-
-        if self.tb is not None:
-            c = 0
-            b = []
-            for tb in self.tb:
-                bits, maxbit = tb.bittify(profile.tys, 
-                                          profile.tyids, 
-                                          profile.n_tyids)
-                print(maxbit)
-                bits = bits + c
-                c += maxbit
-                b.append(bits)
-            
-            bits_list.append(b)
-            maxbit_list.append(c)
+        bits, maxbit = self.bits(profile)
+        bits = bits % self.fpsize
         
-        if self.pb1 is not None:
-            c = 0
-            b = []
-            for pb in self.pb1:
-                print(pb)
-                bits, maxbit = pb.bittify(profile.pair1tys,
-                                          profile.pair1tyids,
-                                          profile.n_pair1tyids,
-                                          profile.pair1vals)
-                print(maxbit)
-                bits = bits + c
-                c += maxbit
-                b.append(bits)
-                print(b, c)
-            
-            bits_list.append(b)
-            maxbit_list.append(c)
-        
-        if self.pb2 is not None:
-            c = 0
-            b = []
-            for pb in self.pb2:
-                bits, maxbit = pb.bittify(profile.pair2tys,
-                                          profile.pair2tyids,
-                                          profile.n_pair2tyids,
-                                          profile.pair2vals)
-                bits = bits + c
-                c += maxbit
-                b.append(bits)
-            
-            bits_list.append(b)
-            maxbit_list.append(c)
-
-        print(maxbit_list)
-
         if merge_confs:
-            fp = np.zeros((fpsize, ))
+            fp = np.zeros((1, self.fpsize), dtype=np.int8)
+            if bits.ndim == 2:
+                bits = bits.flatten()
+            fp[0, bits] = 1
+
         else:
-            fp = [np.zeros((fpsize, )) 
-                  for _ in range(len(profile.subborderids))]
-        
-        indexer = np.flip(np.array(maxbit_list))
-        indexer = indexer.cumprod().astype(np.uint64)
-        indexer = np.flip(indexer)
-        indexer[:-1] = indexer[1:]
-        indexer[-1] = 1
+            fp = np.zeros((len(profile.subids), self.fpsize), dtype=np.int8)
+            for i, subids in enumerate(profile.subids):
+                subids: List[int]
+                fp[i, bits[subids].flatten()] = 1
 
-        for bits_choice in itertools.product(*bits_list):
-            bits = np.stack(bits_choice, axis=-1)
-            bits = (bits * indexer).sum(axis=-1) % fpsize
-            bits = bits.astype(np.uint64)
-            
-            if merge_confs:
-                fp[bits] = 1
-            
-            else:
-                for i, (j, k) in enumerate(zip([0]+profile.subborderids, 
-                                               profile.subborderids)):
-                    fp[i][bits[j:k]] = 1
-        
         return fp
-
-
+    
+class PharmCompositeFingerprinter(PharmFingerprinter):
+    def __init__(self, 
+                 fpers: List[PharmFingerprinter],
+                 mode: Literal["sum", "prod"] = "prod",
+                 fpsize: int = 1024):
+        super().__init__(fpsize)
+        self.fpers = fpers
+        self.mode = mode
+    
+    def bits(self, 
+             profile: PharmProfile) -> Tuple[np.ndarray, float]:
         
-
-        # if self.pb1 is not None:
-        #     bit_choices.append(list())
-        #     maxbit_choices.append(list())
-        #     for pb in self.pb1:
-        #         bits, maxbit = pb.bittify(profile.pair1tys, 
-        #                                   profile.pair1tyids, 
-        #                                   profile.n_pair1tyids,
-        #                                   profile.pair1vals)
-        #         bit_choices[-1].append(bits)
-        #         maxbit_choices[-1].append(maxbit)
-
-        # if self.pb2 is not None:
-        #     bit_choices.append(list())
-        #     maxbit_choices.append(list())
-        #     for pb in self.pb2:
-        #         bits, maxbit = pb.bittify(profile.pair2tys, 
-        #                                   profile.pair2tyids, 
-        #                                   profile.n_pair2tyids,
-        #                                   profile.pair2vals)
-        #         bit_choices[-1].append(bits)
-        #         maxbit_choices[-1].append(maxbit)
-
-        # bit_choices = list(itertools.product(*bit_choices))
-        # maxbit_choices = list(itertools.product(*maxbit_choices))
-
-        # if merge_confs:
-        #     fp = np.zeros((fpsize, ))
-        # else:
-        #     fp = [np.zeros((fpsize, )) 
-        #           for _ in range(len(profile.subborderids))]
-            
-        # for bits_list, maxbit_list in zip(bit_choices, maxbit_choices):
-        #     maxbit = np.flip(np.array(maxbit_list))
-        #     maxbit = maxbit.cumprod().astype(np.uint64)
-        #     maxbit = np.flip(maxbit)
-        #     maxbit[0:-1] = maxbit[1:]
-        #     maxbit[-1] = 1
-
-        #     bits = np.stack(bits_list, axis=-1)
-        #     bits = (bits * maxbit).sum(axis=-1, dtype=np.uint64) % fpsize
-
-        #     if merge_confs:
-        #         fp[bits] = 1
-            
-        #     else:
-        #         for i, (j, k) in enumerate(zip([0]+profile.subborderids, 
-        #                                        profile.subborderids)):
-        #             fp[i][bits[j:k]] = 1
+        bits_list, maxbit_list = \
+            tuple(zip(*[fper.bits(profile) for fper in self.fpers]))
         
-        # return fp
+        if self.mode == "sum":
+            c = 0
+            for bits, maxbit in zip(bits_list, maxbit_list):
+                bits += c
+                c += maxbit
+            return np.concatenate(bits_list, axis=-1), c
+        
+        bit_stack_ls = [bits.shape[1] for bits in bits_list]
 
+        maxbits = np.array(maxbit_list)
+        indexer = _get_indexer(maxbits)
 
-            
+        bits = []
+        for idcombo in itertools.product(*[range(i) for i in bit_stack_ls]):
+            b = [bm[:, idcombo[i]] for i, bm in enumerate(bits_list)]
+            b = np.stack(b, axis=-1)
+            b = np.sum(b * indexer, axis=-1, keepdims=True)
+            bits.append(b)
+        
+        bits = np.concatenate(bits, axis=-1)
+
+        return (bits, np.prod(maxbits))
+
+class PharmDistFingerprinter(PharmFingerprinter):
+    def __init__(self, 
+                 bins: Tuple[int] = (1, 2, 3, 4, 5, 6, 7, 8), 
+                 fpsize: int = 1024):
+        super().__init__(fpsize)
+        self.bins = bins
+    
+    def bits(self, 
+             profile: PharmProfile) -> Tuple[np.ndarray, float]:
+        dists = profile.dists
+        distids = np.digitize(dists, self.bins)
+        maxbits = np.array([len(self.bins)+1] * dists.shape[1])
+        indexer = _get_indexer(maxbits)
+
+        return (
+            np.sum(distids * indexer, axis=-1, keepdims=True), 
+            np.prod(maxbits)
+        )
+    
+class PharmCosineFingerprinter(PharmFingerprinter):
+    def __init__(self, 
+                 bins: Tuple[float] = (-0.8, -0.6, -0.4, -0.2, 
+                                       0, 0.2, 0.4, 0.6, 0.8, 1.0), 
+                 nanval: float = 1.5,
+                 fpsize: int = 1024):
+        super().__init__(fpsize)
+        self.bins = bins
+        self.nanval = nanval
+    
+    def bits(self, 
+             profile: PharmProfile) -> Tuple[np.ndarray, float]:
+        cos = np.nan_to_num(profile.cos[:, :, 0], 
+                            posinf=self.nanval, 
+                            nan=self.nanval)
+        cosids = np.digitize(cos, self.bins)
+        maxbits = np.array([len(self.bins)+1] * cos.shape[1])
+        indexer = _get_indexer(maxbits)
+
+        return (
+            np.sum(cosids * indexer, axis=-1, keepdims=True), 
+            np.prod(maxbits)
+        )
