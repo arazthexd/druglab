@@ -16,7 +16,7 @@ class PharmAdjuster:
                pharmacophore: Pharmacophore | PharmacophoreList) -> None:
         pass
 
-class InternalStericAdjuster:
+class InternalStericAdjuster(PharmAdjuster):
 
     def __init__(self, tolerance: float = 0.2):
         self.tolerance = tolerance
