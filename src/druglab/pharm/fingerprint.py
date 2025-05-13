@@ -78,7 +78,20 @@ class PharmCompositeFingerprinter(PharmFingerprinter):
         bits = np.concatenate(bits, axis=-1)
 
         return (bits, np.prod(maxbits))
-
+    
+class PharmTypeIDFingerprinter(PharmFingerprinter):
+    def __init__(self, 
+                 fpsize: int = 1024):
+        super().__init__(fpsize)
+    
+    def bits(self,
+             profile: PharmProfile) -> Tuple[np.ndarray, float]:
+        tyids = profile.tyids
+        return (
+            tyids.reshape(-1, 1),
+            profile.n_tyids
+        )
+    
 class PharmDistFingerprinter(PharmFingerprinter):
     def __init__(self, 
                  bins: Tuple[int] = (1, 2, 3, 4, 5, 6, 7, 8), 

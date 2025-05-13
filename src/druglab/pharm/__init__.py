@@ -9,6 +9,6 @@ from .pprofile import PharmProfile
 from .profiler import PharmProfiler, PharmDefaultProfiler
 from .fingerprint import (
     PharmFingerprinter, PharmCompositeFingerprinter,
-    PharmDistFingerprinter, PharmCosineFingerprinter
+    PharmDistFingerprinter, PharmCosineFingerprinter, PharmTypeIDFingerprinter
 )
 from .featurizer import PharmFeaturizer

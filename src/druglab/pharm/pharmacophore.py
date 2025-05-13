@@ -5,6 +5,8 @@ import itertools
 import numpy as np
 from scipy.spatial.distance import cdist
 
+from rdkit import Chem
+
 from .ftypes import (
     PharmFeatureType,
     PharmArrowType, PharmSphereType
@@ -18,6 +20,7 @@ class Pharmacophore:
     def __init__(self):
         self.ftypes: List[PharmFeatureType] = []
         self.feats: List[PharmFeatures] = []
+        self.conformer: Chem.Conformer = None
     
     def add_feature(self, 
                     ftype: PharmFeatureType, 
@@ -143,3 +146,7 @@ class PharmacophoreList:
 
     def __add__(self, other: PharmacophoreList):
         return PharmacophoreList(self.pharms + other.pharms)
+    
+    @property
+    def conformer(self) -> List[Chem.Conformer]:
+        return [pharm.conformer for pharm in self.pharms]
