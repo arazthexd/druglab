@@ -1,172 +1,103 @@
-from __future__ import annotations
-from typing import List, Tuple, Dict, OrderedDict
-from dataclasses import dataclass, field
-from itertools import combinations
+from typing import List, Tuple, OrderedDict
+import itertools
 
 import numpy as np
-from scipy.optimize import linear_sum_assignment
-from scipy.spatial.distance import pdist
 
-from .ftypes import PharmFeatureType, PharmArrowType
-from .pharmacophore import Pharmacophore
-from .pprofile import PharmProfile, PharmDistProfile
+from .ftypes import PharmArrowType, PharmSphereType, PharmFeatureType
+from .features import PharmArrowFeats, PharmSphereFeats
+from .pprofile import PharmProfile
+from .pharmacophore import Pharmacophore, PharmacophoreList
 
 class PharmProfiler:
+    def __init__(self, 
+                 ftypes: List[PharmFeatureType]):
+        
+        if isinstance(ftypes, dict):
+            ftypes = list(ftypes.values())
+        self.ftypes = ftypes
 
-    def __init__(self, ftypes: OrderedDict[str, PharmFeatureType]):
-        self.ftypes: List[PharmFeatureType] = list(ftypes.values())
-        self.combids: List[Tuple[int]] = self.combinations(self.ftypes)
-
-    def __repr__(self):
-        return (f"{self.__class__.__name__}(nftypes={len(self.ftypes)}, "
-                f"ncombids={len(self.combids)})")
-    
-    @staticmethod
-    def combinations(ftypes: List[PharmFeatureType]):
-        raise NotImplementedError()
-
-    def profile(self, pharmacophore: Pharmacophore) -> PharmProfile:
+    def profile(self, pharm: Pharmacophore) -> PharmProfile:
         raise NotImplementedError()
     
-    def _get_fts(self, pharmacophore: Pharmacophore, *ids: Tuple[int]):
-        return (pharmacophore.get_ftype(i) for i in ids)
-    
-    def _get_ftids(self, pharmacophore: Pharmacophore, *ids: Tuple[int]):
-        return (self.ftypes.index(ft) 
-                for ft in self._get_fts(pharmacophore, *ids))
-    
-    def _get_dists(self, pharmacophore: Pharmacophore, *ids: Tuple[int]):
-        pos = pharmacophore.pos[list(ids)]
-        return pdist(pos)
-    
-    def _get_tips(self, pharmacophore: Pharmacophore, *ids: Tuple[int]):
-        pos = pharmacophore.pos[list(ids)]
-        vec = pharmacophore.vec[list(ids)]
-        rad = pharmacophore.radius[list(ids)]
-        assert np.isnan(vec).sum() == 0
-        return pos + vec * rad
-
-    
-class PharmFFFProfiler(PharmProfiler):
-
-    @staticmethod
-    def combinations(ftypes: List[PharmFeatureType]) \
-        -> List[Tuple[int, int, int]]:
+class PharmDefaultProfiler(PharmProfiler):
+    def __init__(self, 
+                 ftypes: List[PharmFeatureType], 
+                 ngroup: int = 2,
+                 mindist: float = 0.0):
         
-        return [(i,j,k) 
-                for i in range(len(ftypes))
-                for j in range(i, len(ftypes))
-                for k in range(j, len(ftypes))]
-    
-    def profile(self, pharmacophore: Pharmacophore) -> PharmDistProfile:
-
-        combtypeids = []
-        all_dists = []
-        orig_atids = []
-
-        for i, j, k in combinations(range(pharmacophore.n_feats), r=3):
-            ftidi, ftidj, ftidk = self._get_ftids(pharmacophore, i, j, k)
-            
-            try:
-                combtypeid = self.combids.index((ftidi, ftidj, ftidk))
-            except:
-                continue
-            
-            dists = self._get_dists(pharmacophore, i, j, k)
-
-            if min(dists) < 0.05:
-                continue
-            
-            combtypeids.append(combtypeid)
-            orig_atids.append(
-                (
-                    pharmacophore.orig_atids[i],
-                    pharmacophore.orig_atids[j],
-                    pharmacophore.orig_atids[k]
-                )
-            )
-            all_dists.append(dists)
-
-        keep_origatids = set()
-        keep_idx = []
-        for i, oatids in enumerate(orig_atids):
-            if oatids not in keep_origatids:
-                keep_origatids.add(oatids)
-                keep_idx.append(i)
-
-        combtypeids = np.array(combtypeids)[keep_idx]
-        orig_atids = [orig_atids[i] for i in keep_idx]
-        if len(all_dists) > 0:
-            dists = np.stack(all_dists, axis=0)[keep_idx]
-        else:
-            dists = np.zeros((0, 3))
+        super().__init__(ftypes)
+        self.ngroup = ngroup
+        self.mindist = mindist
         
-        return PharmDistProfile(
-            combtypeids=combtypeids,
-            orig_atids=orig_atids,
-            dists=dists
+    def profile(self, 
+                pharm: Pharmacophore | PharmacophoreList) -> PharmProfile:
+        if isinstance(pharm, PharmacophoreList):
+            profiles = [self.profile(pharm) for pharm in pharm.pharms]
+            return sum(profiles)
+
+        tys = np.array([
+            self.ftypes.index(ftype) 
+            for i, ftype in enumerate(pharm.ftypes) 
+            for _ in range(pharm.feats[i].pos.shape[0])
+        ])
+        pos = pharm.pos
+        dir = pharm.vec
+
+        idx = np.argsort(tys)
+        tys = tys[idx]
+        pos = pos[idx]
+        dir = dir[idx]
+
+        idx = np.array(list(itertools.combinations(range(pharm.n_feats), 
+                                                   r=self.ngroup)))
+        gtys = tys[idx]
+        gpos = pos[idx]
+        gdir = dir[idx]
+
+        possible_gtys = np.array(list(itertools.combinations_with_replacement(
+            range(len(self.ftypes)), r=self.ngroup
+        )))
+        
+        idx = np.array(list(itertools.combinations(range(gtys.shape[1]), r=2)))
+        pairtys = gtys[:, idx]
+        pairvecs = gpos[:, idx[:, 1]] - gpos[:, idx[:, 0]]
+        pairdirs = gdir[:, idx]
+        pairdists = np.linalg.norm(pairvecs, axis=-1)
+        paircos = np.divide(
+            (pairdirs * pairvecs[:, :, None, :]).sum(axis=-1),
+            np.linalg.norm(pairvecs, axis=-1, keepdims=True),
+            out=np.ones(pairdirs.shape[:-1]) * np.nan,
+            where=np.linalg.norm(pairvecs, axis=-1, keepdims=True) != 0
         )
-    
-class PharmAFProfiler(PharmProfiler):
-    
-    @staticmethod
-    def combinations(ftypes: List[PharmFeatureType]) \
-        -> List[Tuple[int, int]]:
-        
-        arrowftids = [i for i, ft in enumerate(ftypes) 
-                      if isinstance(ft, PharmArrowType)]
-        return [
-            (i, j)
-            for i in arrowftids
-            for j in range(len(ftypes))
-        ]
-    
-    def profile(self, pharmacophore: Pharmacophore) -> PharmDistProfile:
-        
-        combtypeids = []
-        all_dists = []
-        orig_atids = []
+        paircos = np.nan_to_num(paircos, nan=np.inf)
 
-        for i, j in combinations(range(pharmacophore.n_feats), r=2):
-            ftidi, ftidj = self._get_ftids(pharmacophore, i, j)
-            
-            try:
-                combtypeid = self.combids.index((ftidi, ftidj))
-            except:
-                continue
-            
-            pos = pharmacophore.pos[[i, j]]
-            pos = np.append(pos, self._get_tips(pharmacophore, i), axis=0)
-            dists = pdist(pos)
+        idx = np.where(pairdists >= self.mindist)[0]
+        pairtys = pairtys[idx]
+        pairvecs = pairvecs[idx]
+        pairdirs = pairdirs[idx]
+        pairdists = pairdists[idx]
+        paircos = paircos[idx]
 
-            if min(dists) < 0.01:
-                continue
-            
-            combtypeids.append(combtypeid)
-            orig_atids.append(
-                (
-                    pharmacophore.orig_atids[i],
-                    pharmacophore.orig_atids[j],
-                )
-            )
-            all_dists.append(dists)
+        idx = np.lexsort([pairdists, 
+                        *paircos.transpose(2, 0, 1),
+                        *pairtys.transpose(2, 0, 1)])
+        rowidx = np.arange(idx.shape[0]).reshape(-1, 1)
+        pairtys = pairtys[rowidx, idx]
+        pairvecs = pairvecs[rowidx, idx]
+        pairdirs = pairdirs[rowidx, idx]
+        pairdists = pairdists[rowidx, idx]
+        paircos = paircos[rowidx, idx]
 
-        keep_origatids = set()
-        keep_idx = []
-        for i, oatids in enumerate(orig_atids):
-            if oatids not in keep_origatids:
-                keep_origatids.add(oatids)
-                keep_idx.append(i)
+        tyids = np.where(
+            (gtys[:, None] == possible_gtys[None, :]).all(axis=-1))[1]
+        idx = np.argsort(tyids)
 
-        combtypeids = np.array(combtypeids)[keep_idx]
-        orig_atids = [orig_atids[i] for i in keep_idx]
-        if len(all_dists) > 0:
-            dists = np.stack(all_dists, axis=0)[keep_idx]
-        else:
-            dists = np.zeros((0, 3))
-        
-        return PharmDistProfile(
-            combtypeids=combtypeids,
-            orig_atids=orig_atids,
-            dists=dists
+        return PharmProfile(
+            pairtys[idx],
+            tyids[idx],
+            possible_gtys.shape[0],
+            pairvecs[idx],
+            pairdists[idx],
+            pairdirs[idx],
+            paircos[idx]
         )

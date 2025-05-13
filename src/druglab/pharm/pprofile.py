@@ -1,66 +1,61 @@
 from __future__ import annotations
-from typing import List, Tuple, Dict, OrderedDict
-from dataclasses import dataclass, field
-from itertools import combinations
+from typing import List
+from dataclasses import dataclass
+import itertools
 
 import numpy as np
-from scipy.optimize import linear_sum_assignment
 
-from .ftypes import PharmFeatureType, PharmArrowType
-from .pharmacophore import Pharmacophore
+from .pharmacophore import Pharmacophore, PharmacophoreList
 
 @dataclass(repr=False)
 class PharmProfile:
-    combtypeids: np.ndarray
-    orig_atids: List[Tuple[Tuple[int]]]
+    tys: np.ndarray
+    tyids: np.ndarray
+    n_tyids: int
 
-    def __repr__(self):
-        return (f"{self.__class__.__name__}({self.combtypeids.shape[0]})")
-    
-@dataclass(repr=False)
-class PharmDistProfile(PharmProfile):
-    dists: np.ndarray # (n_dists, n_disttypes)
+    vecs: np.ndarray
+    dists: np.ndarray
+    dirs: np.ndarray
+    cos: np.ndarray
 
-    def _diff_matrix(self, other: PharmDistProfile):
-        assert self.dists.shape[1] == other.dists.shape[1]
-        diff = (self.dists[:, None, :] - other.dists[None, :, :]) ** 2
+    subids: List[List[int]] = None
 
-        mask = self.combtypeids[:, None] == other.combtypeids[None, :]
+    def __post_init__(self):
+        if self.subids is None:
+            self.subids = [list(range(self.tys.shape[0]))]
+    
+    def __add__(self, other: PharmProfile):
+        assert self.n_tyids == other.n_tyids
 
-        diff = diff.mean(axis=2) ** 0.5
-        diff[~mask] = 1000
-        return diff
-    
-    def _score_matrix(self, diff: np.ndarray):
-        score = 1 / (1 + 3 * diff)
-        return score
-    
-    def match(self, other: PharmDistProfile):
-        diff = self._diff_matrix(other)
-        sidx, oidx = linear_sum_assignment(diff)
-        score = self._score_matrix(diff)
-        score = score[sidx, oidx]
-        soids = list(zip(sidx, oidx))
-        idx = np.flip(np.argsort(score))
-        return score[idx], [soids[i] for i in idx]
-    
-    def difference(self, other: PharmDistProfile):
-        diff = self._diff_matrix(other)
-        sidx, oidx = linear_sum_assignment(diff)
-        diff = diff[sidx, oidx]
-        return diff.mean()
-    
-    def screen(self, 
-               profs: List[PharmDistProfile],
-               pharms: List[Pharmacophore]):
-        
-        scs = []
-        for prof, pharm in zip(profs, pharms):
-            sc, _ = self.match(prof)
-            sc = sc.sum() / pharm.n_feats
-            scs.append(sc)
-        
-        return np.array(scs)
+        idadd = 0
+        for ids in self.subids:
+            idadd = max(idadd, max(ids)+1)
 
-        
+        new = PharmProfile(
+            np.concatenate([self.tys, other.tys]),
+            np.concatenate([self.tyids, other.tyids]),
+            self.n_tyids,
+            np.concatenate([self.vecs, other.vecs]),
+            np.concatenate([self.dists, other.dists]),
+            np.concatenate([self.dirs, other.dirs]),
+            np.concatenate([self.cos, other.cos]),
+            self.subids + [[i+idadd for i in ids] for ids in other.subids]
+        )
+        return new
     
+    def __radd__(self, other):
+        if other == 0:
+            return self
+        else:
+            return self.__add__(other)
+    
+    def __getitem__(self, idx):
+        return PharmProfile(
+            self.tys[self.subids[idx]],
+            self.tyids[self.subids[idx]],
+            self.n_tyids,
+            self.vecs[self.subids[idx]],
+            self.dists[self.subids[idx]],
+            self.dirs[self.subids[idx]],
+            self.cos[self.subids[idx]]
+        )

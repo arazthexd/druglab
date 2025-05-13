@@ -5,20 +5,30 @@ from scipy.spatial.distance import cdist
 
 from rdkit import Chem
 
-from .pharmacophore import Pharmacophore
+from .pharmacophore import Pharmacophore, PharmacophoreList
 from .ftypes import PharmArrowType
 from .features import PharmArrowFeats
 
 ELEM_TABLE = Chem.GetPeriodicTable()
 
-class InternalStericAdjuster:
+class PharmAdjuster:
+    def adjust(self, 
+               pharmacophore: Pharmacophore | PharmacophoreList) -> None:
+        pass
+
+class InternalStericAdjuster(PharmAdjuster):
 
     def __init__(self, tolerance: float = 0.2):
         self.tolerance = tolerance
 
-    def adjust(self, 
-               pharmacophore: Pharmacophore,
-               conformer: Chem.Conformer):
+    def adjust(self, pharmacophore: Pharmacophore | PharmacophoreList):
+        
+        if isinstance(pharmacophore, PharmacophoreList):
+            for pharm in pharmacophore.pharms:
+                self.adjust(pharm)
+            return
+        
+        conformer = pharmacophore.conformer
         atcoords = conformer.GetPositions()
         atradii = np.array([
             ELEM_TABLE.GetRvdw(at.GetAtomicNum())

@@ -5,6 +5,8 @@ import itertools
 import numpy as np
 from scipy.spatial.distance import cdist
 
+from rdkit import Chem
+
 from .ftypes import (
     PharmFeatureType,
     PharmArrowType, PharmSphereType
@@ -18,11 +20,12 @@ class Pharmacophore:
     def __init__(self):
         self.ftypes: List[PharmFeatureType] = []
         self.feats: List[PharmFeatures] = []
+        self.conformer: Chem.Conformer = None
     
-    def add_single(self, 
-                   ftype: PharmFeatureType, 
-                   *args, 
-                   atidx: Tuple[int] = None):
+    def add_feature(self, 
+                    ftype: PharmFeatureType, 
+                    *args, 
+                    atidx: Tuple[int] = None):
         assert isinstance(ftype, PharmFeatureType)
 
         if ftype.name not in self.ftype_names:
@@ -106,3 +109,44 @@ class Pharmacophore:
     def tyidx(self, ftypes: List[PharmFeatureType]) -> np.ndarray:
         return np.concatenate([np.ones(feat.pos.shape[0])*ftypes.index(self.ftypes[i])
                                for i, feat in enumerate(self.feats)])
+
+class PharmacophoreList:
+    def __init__(self, pharms: List[Pharmacophore] = None):
+        if pharms is None:
+            pharms = []
+
+        self.pharms: List[Pharmacophore] = pharms
+
+    def add_feature(self, 
+                    ftype: PharmFeatureType, 
+                    cid: int,
+                    *args, 
+                    atidx: Tuple[int] = None):
+        self.pharms[cid].add_feature(ftype, *args, atidx=atidx)
+    
+    def draw(self, view, cid: int) -> None:
+        self.pharms[cid].draw(view)
+    
+    def get_distance(self, cid: int, idx1: int, idx2: int) -> float:
+        return self.pharms[cid].get_distance(idx1, idx2)
+    
+    def get_ftype(self, cid: int, idx: int) -> PharmFeatureType:
+        return self.pharms[cid].get_ftype(idx)
+    
+    def append(self, other):
+        assert isinstance(other, Pharmacophore)
+        self.pharms.append(other)
+    
+    def extend(self, other: List[Pharmacophore] | PharmacophoreList):
+        if isinstance(other, list):
+            assert isinstance(other[0], Pharmacophore)
+            self.pharms.extend(other)
+        else:
+            self.pharms.extend(other.pharms)
+
+    def __add__(self, other: PharmacophoreList):
+        return PharmacophoreList(self.pharms + other.pharms)
+    
+    @property
+    def conformer(self) -> List[Chem.Conformer]:
+        return [pharm.conformer for pharm in self.pharms]

@@ -1,4 +1,4 @@
-from typing import List, Dict, Any, Tuple
+from typing import List, Dict, Any, Tuple, Literal
 import os
 from collections import OrderedDict
 
@@ -8,7 +8,7 @@ from .groups import PharmGroup
 from .drawopts import DrawOptions
 from .ftypes import PharmFeatureType
 from .parser import PharmDefaultParser, PharmParser, PharmDefinitions
-from .pharmacophore import Pharmacophore
+from .pharmacophore import Pharmacophore, PharmacophoreList
 
 BASE_DEFINITIONS_PATH = os.path.abspath(__file__).replace("generator.py", 
                                                           "definitions.pharm")
@@ -44,14 +44,28 @@ class PharmGenerator:
                        "Overwriting..."))
             self.ftypes[ftname] = ftype
     
-    def generate(self, mol: Chem.Mol, confid: int = -1) -> Pharmacophore:
+    def generate(self, 
+                 mol: Chem.Mol, 
+                 confid: int | Literal["all"] = -1) \
+                    -> Pharmacophore | PharmacophoreList:
         if self._loaded == False:
             self.load_file(BASE_DEFINITIONS_PATH)
         
-        pcore = Pharmacophore()
+        if confid == "all":
+            pl = self._generate_list(mol)
+            for c, p in zip(mol.GetConformers(), pl.pharms):
+                p.conformer = c
+            return pl
+        
+        out = Pharmacophore()
+        out.conformer = mol.GetConformer(confid)
         for group in self.groups:
-            pcore += group.generate(mol, confid)
-        return pcore
+            out += group.generate(mol, confid)
+        return out
+    
+    def _generate_list(self, mol: Chem.Mol):
+        return PharmacophoreList([self.generate(mol, confid=i) 
+                                  for i in range(mol.GetNumConformers())])
     
     @property
     def ftype_names(self) -> List[str]:
