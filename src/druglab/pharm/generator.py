@@ -52,9 +52,13 @@ class PharmGenerator:
             self.load_file(BASE_DEFINITIONS_PATH)
         
         if confid == "all":
-            return self._generate_list(mol)
+            pl = self._generate_list(mol)
+            for c, p in zip(mol.GetConformers(), pl.pharms):
+                p.conformer = c
+            return pl
         
         out = Pharmacophore()
+        out.conformer = mol.GetConformer(confid)
         for group in self.groups:
             out += group.generate(mol, confid)
         return out

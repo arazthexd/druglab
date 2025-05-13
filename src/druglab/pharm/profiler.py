@@ -10,19 +10,25 @@ from .pharmacophore import Pharmacophore, PharmacophoreList
 
 class PharmProfiler:
     def __init__(self, 
-                 ftypes: List[PharmFeatureType], 
-                 ngroup: int = 2):
+                 ftypes: List[PharmFeatureType]):
         
         if isinstance(ftypes, dict):
             ftypes = list(ftypes.values())
-
-        self.ngroup = ngroup
         self.ftypes = ftypes
 
     def profile(self, pharm: Pharmacophore) -> PharmProfile:
         raise NotImplementedError()
     
 class PharmDefaultProfiler(PharmProfiler):
+    def __init__(self, 
+                 ftypes: List[PharmFeatureType], 
+                 ngroup: int = 2,
+                 mindist: float = 0.0):
+        
+        super().__init__(ftypes)
+        self.ngroup = ngroup
+        self.mindist = mindist
+        
     def profile(self, 
                 pharm: Pharmacophore | PharmacophoreList) -> PharmProfile:
         if isinstance(pharm, PharmacophoreList):
@@ -64,6 +70,13 @@ class PharmDefaultProfiler(PharmProfiler):
             where=np.linalg.norm(pairvecs, axis=-1, keepdims=True) != 0
         )
         paircos = np.nan_to_num(paircos, nan=np.inf)
+
+        idx = np.where(pairdists >= self.mindist)[0]
+        pairtys = pairtys[idx]
+        pairvecs = pairvecs[idx]
+        pairdirs = pairdirs[idx]
+        pairdists = pairdists[idx]
+        paircos = paircos[idx]
 
         idx = np.lexsort([pairdists, 
                         *paircos.transpose(2, 0, 1),
