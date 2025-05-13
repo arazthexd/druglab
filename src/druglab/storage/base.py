@@ -65,19 +65,26 @@ class BaseStorage:
             self.feats = np.empty((len(self), 0), dtype=self._fdtype)
             self.fnames = []
             self.featurizers = []
+
+        def featurize_obj(obj):
+            try: 
+                return featurizer.featurize(obj)
+            except:
+                return np.ones((1, len(featurizer.fnames)),
+                               dtype=self._fdtype) * np.nan
         
         if n_workers == 1:
-            newfeats = [featurizer.featurize(obj) for obj in self]
+            newfeats = [featurize_obj(obj) for obj in self]
             newfeats = np.concatenate(newfeats)
         
         elif n_workers > 1:
             with WorkerPool(n_workers) as pool:
-                newfeats = pool.map(lambda obj: featurizer.featurize(obj), 
+                newfeats = pool.map(featurize_obj, 
                                     self.objects, progress_bar=True)
         
         elif n_workers == -1:
             with WorkerPool(mpire.cpu_count()) as pool:
-                newfeats = pool.map(lambda obj: featurizer.featurize(obj), 
+                newfeats = pool.map(featurize_obj, 
                                     self.objects, progress_bar=True)
 
         else:

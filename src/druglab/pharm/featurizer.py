@@ -5,20 +5,37 @@ import numpy as np
 from rdkit import Chem
 
 from ..featurize import BaseFeaturizer
-from .generator import PharmGenerator
+from .generator import PharmGenerator, BASE_DEFINITIONS_PATH
 from .profiler import PharmProfiler
 from .fingerprint import PharmFingerprinter
+from .adjusters import PharmAdjuster
 
 class PharmFeaturizer(BaseFeaturizer):
     def __init__(self, 
-                 generator: PharmGenerator, 
-                 profiler: PharmProfiler,
-                 fingerprinter: PharmFingerprinter):
+                 generator: PharmGenerator = None, 
+                 adjuster: PharmAdjuster = None,
+                 profiler: PharmProfiler = None,
+                 fingerprinter: PharmFingerprinter = None):
+        if generator is None:
+            generator = PharmGenerator()
+            generator.load_file(BASE_DEFINITIONS_PATH)
+        if adjuster is None:
+            adjuster = PharmAdjuster()
+        if profiler is None:
+            profiler = PharmProfiler(generator.ftypes)
+        if fingerprinter is None:
+            fingerprinter = PharmFingerprinter(fpsize=4096)
+
         super().__init__()
         self.generator = generator
+        self.adjuster = adjuster
         self.profiler = profiler
         self.fingerprinter = fingerprinter
         self.confid_overwrite = None
+
+        self._fnames = [
+            f"pharm_{i}" for i in range(self.fingerprinter.fpsize)
+        ]
     
     def featurize(self, object: Chem.Mol | Chem.Conformer) -> np.ndarray:
         if isinstance(object, Chem.Mol):
@@ -35,6 +52,7 @@ class PharmFeaturizer(BaseFeaturizer):
     
     def _featurize_mol(self, mol: Chem.Mol, confid: int) -> np.ndarray:
         pharm = self.generator.generate(mol, confid=confid)
+        self.adjuster.adjust(pharm)
         profile = self.profiler.profile(pharm)
         fp = self.fingerprinter.fingerprint(profile, merge_confs=True)
         return fp
