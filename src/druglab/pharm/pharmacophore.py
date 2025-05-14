@@ -63,6 +63,7 @@ class Pharmacophore:
                 new.ftypes.append(ftype)
                 new.feats.append(feat)
         
+        new.conformer = self.conformer or other.conformer
         return new
     
     def __radd__(self, other: Pharmacophore) -> Pharmacophore:

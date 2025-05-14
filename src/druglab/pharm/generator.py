@@ -58,9 +58,9 @@ class PharmGenerator:
             return pl
         
         out = Pharmacophore()
-        out.conformer = mol.GetConformer(confid)
         for group in self.groups:
             out += group.generate(mol, confid)
+        out.conformer = mol.GetConformer(confid)
         return out
     
     def _generate_list(self, mol: Chem.Mol):

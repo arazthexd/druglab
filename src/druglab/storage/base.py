@@ -1,5 +1,6 @@
 from __future__ import annotations
 from typing import List, Any, Tuple, Type, Dict
+import itertools
 
 import random
 
@@ -56,7 +57,7 @@ class BaseStorage:
         return self.knn.kneighbors(feats, 
                                    n_neighbors=k, 
                                    return_distance=True)
-    
+        
     def featurize(self, 
                   featurizer: BaseFeaturizer, 
                   overwrite: bool = False,
@@ -66,26 +67,30 @@ class BaseStorage:
             self.fnames = []
             self.featurizers = []
 
-        def featurize_obj(obj):
+        def featurize_obj(*obj):
+            if len(obj) == 1:
+                obj = obj[0]
+            
             try: 
                 return featurizer.featurize(obj)
             except:
-                return np.ones((1, len(featurizer.fnames)),
-                               dtype=self._fdtype) * np.nan
+                return np.ones((1, len(featurizer.fnames))) * np.nan
         
         if n_workers == 1:
-            newfeats = [featurize_obj(obj) for obj in self]
+            newfeats = [featurizer.featurize(obj) for obj in self]
             newfeats = np.concatenate(newfeats)
         
         elif n_workers > 1:
             with WorkerPool(n_workers) as pool:
                 newfeats = pool.map(featurize_obj, 
-                                    self.objects, progress_bar=True)
+                                    self.objects, 
+                                    progress_bar=True)
         
         elif n_workers == -1:
             with WorkerPool(mpire.cpu_count()) as pool:
                 newfeats = pool.map(featurize_obj, 
-                                    self.objects, progress_bar=True)
+                                    self.objects, 
+                                    progress_bar=True)
 
         else:
             raise ValueError("Invalid n_workers: {}".format(n_workers))

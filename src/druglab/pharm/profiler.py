@@ -71,12 +71,13 @@ class PharmDefaultProfiler(PharmProfiler):
         )
         paircos = np.nan_to_num(paircos, nan=np.inf)
 
-        idx = np.where(pairdists >= self.mindist)[0]
+        idx = np.where((pairdists >= self.mindist).all(axis=-1))[0]
         pairtys = pairtys[idx]
         pairvecs = pairvecs[idx]
         pairdirs = pairdirs[idx]
         pairdists = pairdists[idx]
         paircos = paircos[idx]
+        gtys = gtys[idx]
 
         idx = np.lexsort([pairdists, 
                         *paircos.transpose(2, 0, 1),
