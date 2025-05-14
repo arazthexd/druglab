@@ -11,8 +11,51 @@ from ..io import load_mols_file
 from ..featurize import BaseFeaturizer
 from .base import BaseStorage
 
+CSINPUT = List[Chem.Conformer] | List[Tuple[Chem.Mol, int]]
+
 class ConformerStorage(BaseStorage):
-    pass
+    def __init__(self, 
+                 conformers: CSINPUT = None, 
+                 fdtype: Type[np.dtype] = np.float32,
+                 feats: np.ndarray = None,
+                 fnames: List[str] = None,
+                 featurizers: List[BaseFeaturizer | dict] = None):
+        if conformers is None:
+            conformers = []
+        
+        if len(conformers) > 0:
+            if isinstance(conformers[0], Chem.Conformer):
+                mols = [conformer.GetOwningMol() for conformer in conformers]
+                cids = [conformer.GetId() for conformer in conformers]
+                objects = list(zip(mols, cids))
+            else:
+                objects = conformers
+        else:
+            objects = []
+        
+        super().__init__(objects, 
+                         fdtype=fdtype, 
+                         feats=feats, 
+                         fnames=fnames, 
+                         featurizers=featurizers)
+    
+    def extend(self, confs: ConformerStorage):
+        return super().extend(confs)
+    
+    def subset(self, idx, inplace = False):
+        return super().subset(idx, inplace)
+    
+    @staticmethod
+    def featurize_obj(obj, fer):
+        mol, cid = obj
+        mol: Chem.Mol
+        conformer = mol.GetConformer(cid)
+        return super().featurize_obj(conformer, fer)
+    
+    def get_mols(self, idx=None):
+        if idx is None:
+            return [Chem.Mol(mol, confId=cid) for mol, cid in self]
+        return [Chem.Mol(mol, confId=cid) for mol, cid in self.subset(idx)] 
 
 class MolStorage(BaseStorage):
     def __init__(self, 
@@ -104,10 +147,14 @@ class MolStorage(BaseStorage):
         self.initiate_conformers()
         
 
-    def featurize_conformers(self, featurizer: BaseFeaturizer):
-        cstore = ConformerStorage()
-        [cstore.extend(cs) for cs in self.cstores]
-        cstore.featurize(featurizer)
+    def featurize_conformers(self, 
+                             featurizer: BaseFeaturizer,
+                             overwrite: bool = False,
+                             n_workers: int = 1):
+        
+        self.get_merged_cstore().featurize(featurizer, 
+                                           overwrite=overwrite, 
+                                           n_workers=n_workers)
         
         newcs = []
         id1, id2 = 0, len(self.cstores[0])
@@ -116,4 +163,9 @@ class MolStorage(BaseStorage):
             id1 = id2
             id2 += len(cs)
         self.cstores = newcs
+
+    def get_merged_cstore(self) -> ConformerStorage:
+        cstore = ConformerStorage()
+        [cstore.extend(cs) for cs in self.cstores]
+        return cstore
 
