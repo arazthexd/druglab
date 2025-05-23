@@ -9,6 +9,7 @@ from rdkit.Chem import rdDistGeom, rdForceFieldHelpers
 
 from ..io import load_mols_file
 from ..featurize import BaseFeaturizer
+from ..prepare import BasePreparation
 from .base import BaseStorage
 
 CSINPUT = List[Chem.Conformer] | List[Tuple[Chem.Mol, int]]
@@ -116,7 +117,7 @@ class MolStorage(BaseStorage):
                 del self[i-counter]
                 counter += 1
 
-    def initiate_conformers(self):
+    def initiate_cstores(self):
         self.cstores = [ConformerStorage([
             conf for conf in mol.GetConformers()]) for mol in self.objects]
 

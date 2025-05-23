@@ -11,7 +11,20 @@ import numpy as np
 from sklearn.neighbors import NearestNeighbors
 
 from ..featurize import BaseFeaturizer
+from ..prepare import BasePreparation
 
+def parallel_run(func, iterable, n_workers: int = 1):
+    if n_workers == 1:
+        return [func(*a) for a in iterable]
+    elif n_workers > 1:
+        with WorkerPool(n_workers) as pool:
+            return pool.map(func, iterable, progress_bar=True)
+    elif n_workers == -1:
+        with WorkerPool(mpire.cpu_count()) as pool:
+            return pool.map(func, iterable, progress_bar=True)
+    else:
+        raise ValueError("Invalid n_workers: {}".format(n_workers))
+    
 class BaseStorage:
     def __init__(self, 
                  objects: List[Any] = None, 
@@ -57,6 +70,29 @@ class BaseStorage:
         return self.knn.kneighbors(feats, 
                                    n_neighbors=k, 
                                    return_distance=True)
+    
+    def prepare(self, 
+                preparation: BasePreparation,
+                inplace: bool = True,
+                n_workers: int = 1) -> Any:
+        
+        def prepare_obj(*obj):
+            if len(obj) == 1:
+                obj = obj[0]
+            
+            try: 
+                return preparation.prepare(obj)
+            except:
+                return None
+        
+        prepped_objs = parallel_run(prepare_obj,
+                                    self.objects,
+                                    n_workers=n_workers)
+        
+        if inplace:
+            self.objects = prepped_objs
+        else:
+            return self.__class__(prepped_objs)
         
     def featurize(self, 
                   featurizer: BaseFeaturizer, 
