@@ -1,6 +1,7 @@
 from __future__ import annotations
 from typing import List, Any, Tuple, Type, Dict
 import mpire
+import h5py
 
 import numpy as np
 
@@ -99,23 +100,22 @@ class MolStorage(BaseStorage):
         out.cstores = cstores
         return out
     
-    def clean(self):
+    def clean(self, clean_feats: bool = False):
         smiles = []
-        idx_keep = []
-        for i, mol in enumerate(self):
+        keep_idx = []
+        for i, mol in enumerate(self.objects):
+            if mol is None:
+                continue
+
             smi = Chem.MolToSmiles(mol)
             if smi in smiles:
                 continue
+            if clean_feats and np.isnan(self.feats[i]).any():
+                continue
             smiles.append(Chem.MolToSmiles(mol))
-            idx_keep.append(i)
-        
-        self.feats = self.feats[idx_keep]
+            keep_idx.append(i)
 
-        counter = 0
-        for i in range(len(self)):
-            if i not in idx_keep:
-                del self[i-counter]
-                counter += 1
+        self.subset(keep_idx, inplace=True)
 
     def initiate_cstores(self):
         self.cstores = [ConformerStorage([
@@ -153,14 +153,14 @@ class MolStorage(BaseStorage):
                              overwrite: bool = False,
                              n_workers: int = 1):
         
-        self.get_merged_cstore().featurize(featurizer, 
-                                           overwrite=overwrite, 
-                                           n_workers=n_workers)
+        cstore = self.get_merged_cstore()
+        cstore.featurize(featurizer, overwrite, n_workers)
         
         newcs = []
         id1, id2 = 0, len(self.cstores[0])
         for cs in self.cstores:
-            newcs.append(cs[id1:id2])
+            newcs.append(cstore.subset(list(range(id1, id2))))
+            cs.fnames = cstore.fnames
             id1 = id2
             id2 += len(cs)
         self.cstores = newcs
@@ -169,4 +169,39 @@ class MolStorage(BaseStorage):
         cstore = ConformerStorage()
         [cstore.extend(cs) for cs in self.cstores]
         return cstore
+    
+    def _serialize_object(self, obj):
+        return Chem.MolToJSON(obj)
+
+    def _unserialize_object(self, obj):
+        mol: Chem.Mol = Chem.JSONToMols(obj)[0]
+        Chem.SanitizeMol(mol)
+        mol.UpdatePropertyCache()
+        return mol
+    
+    def save_dict(self, save_confs: bool = False):
+        d = super().save_dict()
+        if save_confs:
+            cstore = self.get_merged_cstore()
+            d["cstore/feats"] = cstore.feats
+            d["cstore/fnames"] = cstore.fnames
+        return d
+    
+    def save(self, 
+             dst: str | h5py.Dataset, 
+             close: bool = True,
+             save_confs: bool = False):
+        d = self.save_dict(save_confs)
+        return self._save(d, dst, close=close)
+    
+    def _load(self, d: dict | Any):
+        super()._load(d)
+        if "cstore" in d:
+            self.initiate_cstores()
+            c = 0
+            for mol, cstore in zip(self.objects, self.cstores):
+                n = mol.GetNumConformers()
+                cstore.feats = d["cstore/feats"][c:c+n]
+                cstore.fnames = d["cstore/fnames"][:]
+                c += n
 

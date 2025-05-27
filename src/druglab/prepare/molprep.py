@@ -14,8 +14,10 @@ from .abstract import BasePreparation
 class MoleculePreparation(BasePreparation):
     def __init__(self,
                  addhs: bool = False,
+                 removehs: bool = False,
                  cgen: bool = False, 
                  cgen_n: int = 1, 
+                 cgen_maxatts: int = None,
                  cgen_params: rdDistGeom.EmbedParameters = None,
                  copt: bool = False,
                  copt_nthreads: int = 1,
@@ -28,10 +30,15 @@ class MoleculePreparation(BasePreparation):
         if cgen_params is None:
             cgen_params = rdDistGeom.ETKDGv3()
 
+        if cgen_maxatts is None:
+            cgen_maxatts = cgen_n * 4
+
         self.addhs = addhs
+        self.removehs = removehs
         self.cgen = cgen
         self.cgen_n = cgen_n
         self.cgen_params = cgen_params
+        self.cgen_params.maxIterations = cgen_maxatts
         self.copt = copt
         self.copt_nthreads = copt_nthreads
         self.copt_maxits = copt_maxits
@@ -77,6 +84,13 @@ class MoleculePreparation(BasePreparation):
 
         if self.calign:
             rdMolAlign.AlignMolConformers(mol)
+
+        if self.removehs: 
+            mol = Chem.RemoveHs(mol)
+
+        confs = mol.GetConformers()
+        for i in range(mol.GetNumConformers()):
+            confs[i].SetId(i)
         
         return mol
         

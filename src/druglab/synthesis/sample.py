@@ -7,7 +7,7 @@ import mpire
 import numpy as np
 
 from rdkit import Chem
-from rdkit.Chem import rdDepictor
+from rdkit.Chem import rdDepictor, rdBase
 from rdkit.Chem.rdChemReactions import ChemicalReaction as Rxn
 
 from ..storage import RxnStorage
@@ -32,16 +32,29 @@ class SynRouteSampler:
     def sample(self, 
                rxns: RxnStorage, 
                only_final: bool = True, 
-               num_processes: int = 2):
+               num_processes: int = 2,
+               return_storage: bool = True):
+        
+        rdBase.DisableLog("rdApp.*")
+        
+        def task(i):
+            try:
+                return self._sample_for_random_template(rxns, only_final)
+            except:
+                return None
         
         with mpire.WorkerPool(num_processes) as pool:
             samproutes_process = pool.map(
-                lambda _: self._sample_for_random_template(rxns, only_final),
+                task,
                 range(self.n_template_batch),
                 progress_bar=True
             )
+            samproutes_process = [r for r in samproutes_process 
+                                  if r is not None]
         
-        return SynRouteStorage(sum(samproutes_process, start=[]))
+        if return_storage:
+            return SynRouteStorage(sum(samproutes_process, start=[]))
+        return sum(samproutes_process, start=[])
 
     def _sample_for_random_template(self, 
                                     rxns: RxnStorage, 
@@ -59,8 +72,9 @@ class SynRouteSampler:
             uprod_candidates = [available_routes.pop() 
                                 for _ in range(n_uprods)]
             results = component.sample(rxns, 
-                                        *uprod_candidates, 
-                                        n_batch=self.n_route_batch)
+                                       *uprod_candidates, 
+                                       n_batch=self.n_route_batch)
+            assert len(results) > 0
             available_routes.append(results)
         
         if only_final:
@@ -88,6 +102,8 @@ class _SynRouteSamplingComponent:
         ]
         
         rxn_storage = rxns.subset(rxn_candidate_ids)
+        if len(rxn_storage) == 0:
+            return []
         rxnids = [random.randint(0, len(rxn_storage)-1) 
                   for _ in range(n_batch)]
 

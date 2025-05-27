@@ -29,7 +29,7 @@ class PharmProfile:
 
         idadd = 0
         for ids in self.subids:
-            idadd = max(idadd, max(ids)+1)
+            idadd = max(idadd, max(ids, default=-1)+1)
 
         new = PharmProfile(
             np.concatenate([self.tys, other.tys]),

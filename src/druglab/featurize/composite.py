@@ -5,8 +5,10 @@ import numpy as np
 from .base import BaseFeaturizer
 
 class CompositeFeaturizer(BaseFeaturizer):
-    def __init__(self, featurizers: List[BaseFeaturizer]):
+    def __init__(self, featurizers: List[BaseFeaturizer] = None):
         super().__init__()
+        if featurizers is None:
+            featurizers = []
         self.featurizers = featurizers
 
     def add_featurizer(self, featurizer: BaseFeaturizer):
@@ -18,6 +20,10 @@ class CompositeFeaturizer(BaseFeaturizer):
             feats = featurizer.featurize(object)
             all_feats.append(feats)
         return np.concatenate(all_feats, axis=1)
+    
+    def fit(self, objects) -> np.ndarray:
+        [fzer.fit(objects) for fzer in self.featurizers]
+        return self
     
     def get_params(self):
         return {

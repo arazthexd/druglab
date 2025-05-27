@@ -82,6 +82,8 @@ class Pharmacophore:
     
     @property
     def pos(self) -> np.ndarray:
+        if len(self.feats) == 0:
+            return np.zeros((0, 3))
         return np.concatenate([feat.pos for feat in self.feats], axis=0)
     
     @property

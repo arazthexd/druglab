@@ -12,3 +12,38 @@ from .fingerprint import (
     PharmDistFingerprinter, PharmCosineFingerprinter, PharmTypeIDFingerprinter
 )
 from .featurizer import PharmFeaturizer
+
+def get_default_pharm_fper(fpsize=7000):
+    return PharmCompositeFingerprinter(
+        fpers=[
+            PharmTypeIDFingerprinter(),
+            PharmCompositeFingerprinter(
+                fpers=[
+                    PharmDistFingerprinter(bins=(1, 4, 7, 10, 13)),
+                    PharmDistFingerprinter(bins=(2, 5, 8, 11, 14)),
+                    PharmDistFingerprinter(bins=(3, 6, 9, 12, 15)),
+                ],
+                mode="sum"
+            ),
+            PharmCompositeFingerprinter(
+                fpers=[
+                    PharmCosineFingerprinter(bins=(-0.5, 0.0, 0.5, 1.0)),
+                    PharmCosineFingerprinter(bins=(-0.75, -0.25, 0.25, 0.75, 1.0)),
+                ],
+                mode="sum"
+            )
+        ],
+        mode="prod",
+        fpsize=fpsize
+    )
+
+def get_default_pharm_featurizer(fpsize=7000, ngroup=4):
+    pgen = PharmGenerator()
+    pgen.load_file(BASE_DEFINITIONS_PATH)
+
+    return PharmFeaturizer(
+        generator=pgen,
+        adjuster=InternalStericAdjuster(),
+        profiler=PharmDefaultProfiler(pgen.ftypes, ngroup=ngroup, mindist=0.2),
+        fingerprinter=get_default_pharm_fper(fpsize=fpsize)
+    )

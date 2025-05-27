@@ -28,6 +28,11 @@ class PharmDefaultProfiler(PharmProfiler):
         super().__init__(ftypes)
         self.ngroup = ngroup
         self.mindist = mindist
+
+        self.possible_gtys = np.array(list(
+            itertools.combinations_with_replacement(
+                range(len(self.ftypes)), r=self.ngroup
+        ))).astype(int)
         
     def profile(self, 
                 pharm: Pharmacophore | PharmacophoreList) -> PharmProfile:
@@ -35,6 +40,18 @@ class PharmDefaultProfiler(PharmProfiler):
             profiles = [self.profile(pharm) for pharm in pharm.pharms]
             return sum(profiles)
 
+        if pharm.n_feats < self.ngroup:
+            nn = self.ngroup*(self.ngroup-1)//2
+            return PharmProfile(
+                tys=np.zeros((0, nn, 2), dtype=int),
+                tyids=np.zeros((0,), dtype=int),
+                n_tyids=self.possible_gtys.shape[0],
+                vecs=np.zeros((0, nn, 3)),
+                dists=np.zeros((0, nn)),
+                dirs=np.zeros((0, nn, 2, 3)),
+                cos=np.zeros((0, nn, 2)),
+            )
+        
         tys = np.array([
             self.ftypes.index(ftype) 
             for i, ftype in enumerate(pharm.ftypes) 
@@ -49,16 +66,13 @@ class PharmDefaultProfiler(PharmProfiler):
         dir = dir[idx]
 
         idx = np.array(list(itertools.combinations(range(pharm.n_feats), 
-                                                   r=self.ngroup)))
+                                                   r=self.ngroup))).astype(int)
         gtys = tys[idx]
         gpos = pos[idx]
         gdir = dir[idx]
-
-        possible_gtys = np.array(list(itertools.combinations_with_replacement(
-            range(len(self.ftypes)), r=self.ngroup
-        )))
         
-        idx = np.array(list(itertools.combinations(range(gtys.shape[1]), r=2)))
+        idx = np.array(list(itertools.combinations(range(gtys.shape[1]), 
+                                                   r=2))).astype(int)
         pairtys = gtys[:, idx]
         pairvecs = gpos[:, idx[:, 1]] - gpos[:, idx[:, 0]]
         pairdirs = gdir[:, idx]
@@ -90,13 +104,13 @@ class PharmDefaultProfiler(PharmProfiler):
         paircos = paircos[rowidx, idx]
 
         tyids = np.where(
-            (gtys[:, None] == possible_gtys[None, :]).all(axis=-1))[1]
+            (gtys[:, None] == self.possible_gtys[None, :]).all(axis=-1))[1]
         idx = np.argsort(tyids)
 
         return PharmProfile(
             pairtys[idx],
             tyids[idx],
-            possible_gtys.shape[0],
+            self.possible_gtys.shape[0],
             pairvecs[idx],
             pairdists[idx],
             pairdirs[idx],

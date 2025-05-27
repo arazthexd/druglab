@@ -1,3 +1,5 @@
+from typing import Tuple, Any
+
 import numpy as np
 
 from rdkit import Chem
@@ -13,19 +15,21 @@ class MorganFPFeaturizer(BaseFeaturizer):
         self.generator = rdFP.GetMorganGenerator(radius, fpSize=size)
         self._fnames = [f"morgan{radius}_{i}" for i in range(size)]
 
-    def featurize(self, mol: Chem.Mol) -> np.ndarray:
+    def featurize(self, mol: Chem.Mol | Tuple[Chem.Mol, int]) -> np.ndarray:
+        if isinstance(mol, tuple):
+            mol = mol[0]
         fp: np.ndarray = self.generator.GetFingerprintAsNumPy(mol)
         fp = fp.reshape(1, -1)
         return fp.astype(bool)
     
-    def get_params(self):
-        return {
-            "radius": self.radius,
-            "size": self.size
-        }
-    
-    def set_params(self, **kwargs):
-        self.radius = kwargs.get("radius", self.radius)
-        self.size = kwargs.get("size", self.size)
+    def save_dict(self):
+        d = super().save_dict()
+        d["radius"] = self.radius
+        d["size"] = self.size
+        return d
+
+    def _load(self, d: dict | Any):
+        super()._load(d)
+        self.radius = np.array(d["radius"]).item()
+        self.size = np.array(d["size"]).item()
         self.generator = rdFP.GetMorganGenerator(self.radius, fpSize=self.size)
-        self._fnames = [f"morgan{self.radius}_{i}" for i in range(self.size)]

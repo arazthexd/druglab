@@ -1,4 +1,5 @@
 from typing import Type, List
+import h5py
 
 import numpy as np
 
@@ -19,6 +20,9 @@ class SynRouteStorage(BaseStorage):
                  feats: np.ndarray = None,
                  fnames: List[str] = None,
                  featurizers: List[BaseFeaturizer | dict] = None):
+        
+        if routes is None:
+            routes = []
 
         self._psmi: List[str] = []
         self._rsmi: List[str] = []
@@ -119,18 +123,20 @@ class SynRouteStorage(BaseStorage):
     def visualize(self, idx: int):
         vislist = []
         vl = []
-        for mem in self.routes[idx].seq:
+        rxns: List[Rxn] = []
+        for mem in self.seqs[idx]:
             if mem.type == ActionTypes.REACTANT:
                 vl.append(self.rstore[mem.idx])
             elif mem.type in [ActionTypes.PRODUCT, ActionTypes.USEPROD]:
                 vl.append(self.pstore[mem.idx])
+            elif mem.type == ActionTypes.REACTION:
+                rxns.append(self.rxnstore[mem.idx])
             
             if mem.type == ActionTypes.PRODUCT: 
                 vislist.append(vl)
                 vl = []
         
-        l = max([rxn.GetNumReactantTemplates() 
-                 for rxn in self.routes[idx].reactions])+1
+        l = max([rxn.GetNumReactantTemplates() for rxn in rxns]) + 1
         vislist = [vl+[None]*(l-len(vl)) for vl in vislist]
         view = Draw.MolsToGridImage(
             mols=[v for vl in vislist for v in vl],
@@ -139,6 +145,60 @@ class SynRouteStorage(BaseStorage):
         )
         return view
     
+    def save(self, 
+             dst: str | h5py.Dataset | h5py.Group, 
+             close: bool = True):
+        if isinstance(dst, str):
+            dst = h5py.File(dst, "w")
+        dst.create_group("rstore")
+        dst.create_group("pstore")
+        dst.create_group("rxnstore")
+        dst.create_group("seqs")
+        dst.attrs["_name_"] = self.__class__.__name__
+
+        self.rstore.save(dst["rstore"], close=False)
+        self.pstore.save(dst["pstore"], close=False)
+        self.rxnstore.save(dst["rxnstore"], close=False)
+
+        for i, seq in enumerate(self.seqs):
+            arr = np.array([[m.type, m.idx] if m.idx is not None
+                            else [m.type, -1] for m in seq])
+            dst[f"seqs/{i}"] = arr
+        
+        if close:
+            dst.close()
+        else:
+            return dst
+        
+    def _load(self, grp: h5py.Group):
+        self.rstore = MolStorage()
+        self.rstore._load(grp["rstore"])
+        self.pstore = MolStorage()
+        self.pstore._load(grp["pstore"])
+        self.rxnstore = RxnStorage()
+        self.rxnstore._load(grp["rxnstore"])
+
+        self.seqs = [None] * len(grp["seqs"].keys())
+        for i in grp["seqs"].keys():
+            i = int(i)
+            arr = grp[f"seqs/{i}"]
+            seq = []
+            for j in range(arr.shape[0]):
+                seq.append(_SequenceMember(arr[j, 0], arr[j, 1]))
+            self.seqs[i] = seq
+        
+        for i, seq in enumerate(self.seqs):
+            route = SynthesisRoute(
+                seq=seq,
+                reactants=[self.rstore[j] for j in range(len(seq)) 
+                           if seq[j].type == ActionTypes.REACTANT],
+                products=[self.pstore[j] for j in range(len(seq)) 
+                          if seq[j].type == ActionTypes.PRODUCT],
+                reactions=[self.rxnstore[j] for j in range(len(seq)) 
+                           if seq[j].type == ActionTypes.REACTION]
+            )
+            self.objects.append(route)
+        
     @property
     def routes(self) -> List[SynthesisRoute]:
         return self.objects

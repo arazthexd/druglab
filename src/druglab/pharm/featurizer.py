@@ -24,7 +24,7 @@ class PharmFeaturizer(BaseFeaturizer):
         if profiler is None:
             profiler = PharmProfiler(generator.ftypes)
         if fingerprinter is None:
-            fingerprinter = PharmFingerprinter(fpsize=4096)
+            fingerprinter = PharmFingerprinter(fpsize=7000)
 
         super().__init__()
         self.generator = generator
