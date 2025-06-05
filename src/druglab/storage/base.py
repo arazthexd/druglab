@@ -1,306 +1,586 @@
 from __future__ import annotations
-from typing import List, Any, Tuple, Type, Dict
-import itertools
-import h5py
-
+from typing import List, Any, Tuple, Type, Dict, Optional, Union
+from abc import ABC, abstractmethod
+import logging
+from pathlib import Path
 import random
 
-import mpire
-from mpire import WorkerPool
-
+import h5py
 import numpy as np
+import pandas as pd
 from sklearn.neighbors import NearestNeighbors
 
-from ..featurize import BaseFeaturizer
-from ..prepare import BasePreparation
-from .. import featurize as featurize_submodule
-from .. import storage as storage_submodule
+try:
+    from ..featurize import BaseFeaturizer # for the sake of typing
+except ImportError:
+    pass
 
-def parallel_run(func, iterable, 
-                 n_workers: int = 1,
-                 desc: str = ""):
-    if n_workers == 1:
-        results = [func(a) for a in iterable]
-    elif n_workers > 1:
-        with WorkerPool(n_workers) as pool:
-            results = pool.map(func, iterable, progress_bar=True,
-                               concatenate_numpy_output=False,
-                               progress_bar_options={"desc": desc})
-    elif n_workers == -1:
-        with WorkerPool(mpire.cpu_count()) as pool:
-            results = pool.map(func, iterable, progress_bar=True,
-                               concatenate_numpy_output=False,
-                               progress_bar_options={"desc": desc})
-    else:
-        raise ValueError("Invalid n_workers: {}".format(n_workers))
+logger = logging.getLogger(__name__)
+
+
+class StorageMetadata:
+    """Generic metadata container that works as a dictionary."""
     
-    failed_idx = [i for i, x in enumerate(results) if x is None]
-    first_success_idx = next(i for i, x in enumerate(results) if x is not None)
-
-    if len(failed_idx) > 0:
-        print("WARNING: Failed to run for {} objects".format(len(failed_idx)))
+    def __init__(self, **kwargs):
+        self._data = kwargs
     
-    if isinstance(results[first_success_idx], np.ndarray):
-        results = np.concatenate([
-            results[i] if results[i] is not None
-            else np.ones(results[first_success_idx].shape) * np.nan
-            for i in range(len(results))
-        ], axis=0)
+    def __getitem__(self, key: str) -> Any:
+        return self._data[key]
     
-    return results
+    def __setitem__(self, key: str, value: Any) -> None:
+        self._data[key] = value
     
-class BaseStorage:
-    def __init__(self, 
-                 objects: List[Any] = None, 
-                 fdtype: Type[np.dtype] = np.float32,
-                 feats: np.ndarray = None,
-                 fnames: List[str] = None,
-                 featurizers: List[BaseFeaturizer | dict] = None):
-        if objects is None:
-            objects = []
-        self.objects: List[Any] = objects
-
-        self._fdtype = fdtype if feats is None else feats.dtype
-        self.fnames: List[str] = [] if fnames is None else fnames
-        self.feats: np.ndarray = \
-            np.empty((len(self), 
-                      len(self.fnames)), 
-                      dtype=fdtype) if feats is None else feats
-        self.featurizers: List[BaseFeaturizer] = \
-            [] if featurizers is None else featurizers
-        
-        if featurizers is None:
-            featurizers = []
-        self.featurizers = []
-        for featurizer in featurizers:
-            if isinstance(featurizer, dict):
-                self.featurizers.append(BaseFeaturizer(**featurizer))
-            elif featurizer is None:
-                self.featurizers.append(None)
-            else:
-                try:
-                    self.featurizers.append(BaseFeaturizer.load(featurizer))
-                except:
-                    self.featurizers.append(featurizer)
-                
-        self.knn: NearestNeighbors = None
+    def __delitem__(self, key: str) -> None:
+        del self._data[key]
     
-    def sample(self, n: int = 1):
-        idx = random.choices(range(len(self)), k=n)
-        if n == 1:
-            return self[idx[0]]
-        return [self[i] for i in idx]
-    
-    def nearest(self, feats: np.ndarray, k: int = None) -> Tuple[np.ndarray,
-                                                                 np.ndarray]:
-        return self.knn.kneighbors(feats, 
-                                   n_neighbors=k, 
-                                   return_distance=True)
-    
-    def prepare(self, 
-                preparation: BasePreparation,
-                inplace: bool = True,
-                n_workers: int = 1) -> Any:
-        
-        def prepare_obj(*obj):
-            if len(obj) == 1:
-                obj = obj[0]
-            
-            try: 
-                return preparation.prepare(obj)
-            except:
-                return None
-        
-        prepped = parallel_run(prepare_obj,
-                               self.objects,
-                               n_workers=n_workers,
-                               desc=f"Preparing {self.__class__.__name__}")
-        
-        if inplace:
-            self.objects = prepped
-        else:
-            return self.__class__(prepped)
-        
-    def featurize(self, 
-                  featurizer: BaseFeaturizer, 
-                  overwrite: bool = False,
-                  n_workers: int = 1):
-        if overwrite:
-            self.feats = np.empty((len(self), 0), dtype=self._fdtype)
-            self.fnames = []
-            self.featurizers = []
-
-        def featurize_obj(*obj):
-            if len(obj) == 1:
-                obj = obj[0]
-            
-            try: 
-                return featurizer.featurize(obj)
-            except:
-                return np.ones((1, len(featurizer.fnames))) * np.nan
-        
-        newfeats = parallel_run(featurize_obj,
-                                self.objects,
-                                n_workers=n_workers,
-                                desc=f"Featurizing {self.__class__.__name__}")
-        
-        self.feats = np.concatenate((self.feats, newfeats), axis=1)
-        self.fnames.extend(featurizer.fnames)
-        self.featurizers.append(featurizer)
-
-    def init_knn(self, knn: NearestNeighbors):
-        self.knn = knn
-        self.knn.fit(self.feats)
-
-    def extend(self, storage: BaseStorage):
-        if isinstance(storage, list):
-            storage = self.__class__(storage)
-        
-        if len(self) == 0:
-            self.objects = storage.objects.copy()
-            self.feats = storage.feats.copy()
-            self.fnames = storage.fnames.copy()
-            return
-        
-        assert self.fnames == storage.fnames
-        self.objects.extend(storage.objects)
-        self.feats = np.concatenate((self.feats, storage.feats), axis=0)
-
-    def subset(self, 
-               idx: List[int] | np.ndarray, 
-               inplace: bool = False) -> BaseStorage | None:
-        feats = self.feats[idx]
-        
-        if not inplace:
-            return self.__class__([self[i] for i in idx],
-                                  feats=feats,
-                                  fnames=self.fnames,
-                                  featurizers=self.featurizers)
-        
-        remove_idx = [i for i in range(len(self)) if i not in idx]
-        counter = 0
-        for idx in remove_idx:
-            del self[idx-counter]
-            counter += 1
-        self.feats = feats
-
-    def _serialize_object(self, obj):
-        raise NotImplementedError()
-
-    def _unserialize_object(self, obj):
-        raise NotImplementedError()
-    
-    def save_dict(self):
-        d = {
-            "objects": [self._serialize_object(obj) for obj in self.objects],
-            "feats": self.feats,
-            "fnames": self.fnames
-        }
-        for i, featurizer in enumerate(self.featurizers):
-            for k, v in featurizer.save_dict().items():
-                d[f"featurizer{i}/{k}"] = v
-        return d
-    
-    def save(self, dst: str | h5py.Dataset, close: bool = True):
-        f = self._save(self.save_dict(), dst, close=False)
-        if close:
-            f.close()
-        else:
-            return f
-
-    def _save(self, 
-              save_dict: dict, 
-              dst: str | h5py.Dataset, 
-              close: bool = True):
-        if isinstance(dst, str):
-            f = h5py.File(dst, "w")
-        else:
-            f = dst
-
-        f.attrs["_name_"] = self.__class__.__name__
-        for k, v in save_dict.items():
-            f[k] = v
-        for i, featurizer in enumerate(self.featurizers):
-            f[f"featurizer{i}"].attrs["_name_"] = featurizer.__class__.__name__
-        if close:
-            f.close()
-        else:
-            return f
-
-    def _load(self, d: h5py.Dataset | h5py.Group):
-        self.objects = [self._unserialize_object(obj) for obj in d["objects"]]
-        self.feats = d["feats"][:]
-        self.fnames = d["fnames"][:]
-        
-        for k, v in d.items():
-            if not k.startswith("featurizer"):
-                continue
-            featurizer: BaseFeaturizer = getattr(featurize_submodule, 
-                                                 v.attrs["_name_"])()
-            featurizer._load(v)
-            self.featurizers.append(featurizer)
-        
-    @classmethod
-    def load(cls, src: str | h5py.Dataset | h5py.Group):
-        if isinstance(src, str):
-            f = h5py.File(src, "r")
-        else:
-            f = src
-        
-        if cls != BaseStorage:
-            store = cls()
-            store._load(f)
-        else:
-            store: BaseStorage = getattr(storage_submodule, 
-                                         f.attrs["_name_"])()
-            store._load(f)
-        
-        if isinstance(src, str):
-            f.close()
-
-        return store
-
-    def __getitem__(self, idx: int | List[int] | np.ndarray):
-        if isinstance(idx, int):
-            return self.objects[idx]
-        
-        if isinstance(idx, list) \
-            or (isinstance(idx, np.ndarray) and idx.ndim == 1):
-            return [self.objects[i] for i in idx]
-        
-        if isinstance(idx, np.ndarray) and idx.ndim == 2:
-            return [[self.objects[i] for i in ids] for ids in idx]
-        
-        return self.objects[idx]
-    
-    def __setitem__(self, idx, obj):
-        self.objects[idx] = obj
-
-    def __delitem__(self, index):
-        del self.objects[index]
-    
-    def __repr__(self):
-        return self.__class__.__name__ + \
-            "({} objects, {} feats)".format(len(self), self.feats.shape[1])
-    
-    def __len__(self):
-        return len(self.objects)
+    def __contains__(self, key: str) -> bool:
+        return key in self._data
     
     def __iter__(self):
-        return iter(self.objects)
+        return iter(self._data)
     
-    def __contains__(self, obj):
-        return obj in self.objects
-
-    @property
-    def fdtype(self):
-        return self._fdtype
+    def keys(self):
+        return self._data.keys()
     
-    @fdtype.setter
-    def fdtype(self, fdtype):
-        self._fdtype = fdtype
-        self.feats = self.feats.astype(fdtype)
+    def values(self):
+        return self._data.values()
+    
+    def items(self):
+        return self._data.items()
+    
+    def get(self, key: str, default: Any = None) -> Any:
+        return self._data.get(key, default)
+    
+    def update(self, other: Union[dict, StorageMetadata]) -> None:
+        if isinstance(other, StorageMetadata):
+            self._data.update(other._data)
+        else:
+            self._data.update(other)
+    
+    def copy(self) -> StorageMetadata:
+        return StorageMetadata(**self._data.copy())
+    
+    def to_dict(self) -> Dict[str, Any]:
+        return self._data.copy()
+    
+    def is_compatible(self, other: StorageMetadata, 
+                     required_keys: Optional[List[str]] = None) -> bool:
+        """Check if two metadata objects are compatible."""
+        if required_keys is None:
+            required_keys = []
+        
+        for key in required_keys:
+            if self.get(key) != other.get(key):
+                return False
+        return True
 
+class StorageFeatures:
+    """Container for managing multiple feature sets with different dtypes and metadata."""
+    
+    def __init__(self):
+        self._features: Dict[str, np.ndarray] = {}
+        self._metadata: Dict[str, StorageMetadata] = {}
+        self._featurizers: Dict[str, Optional[BaseFeaturizer]] = {}
+    
+    def add_features(self, 
+                     key: str, 
+                     features: np.ndarray,
+                     dtype: Optional[Type[np.dtype]] = None,
+                     featurizer: Optional[BaseFeaturizer] = None,
+                     metadata: Optional[Dict[str, Any]] = None) -> None:
+        """Add a feature set with given key."""
+        if dtype is not None:
+            features = features.astype(dtype)
+        
+        self._features[key] = features
+        self._featurizers[key] = featurizer
+        
+        # Create metadata for this feature set
+        feat_metadata = StorageMetadata()
+        if featurizer is not None:
+            feat_metadata['feature_names'] = featurizer.fnames.copy()
+            feat_metadata['featurizer_class'] = featurizer.__class__.__name__
+        else:
+            feat_metadata['feature_names'] = [
+                f"{key}_feat_{i}" for i in range(features.shape[1])
+            ]
+        
+        if metadata:
+            assert not any(key in feat_metadata for key in metadata)
+            feat_metadata.update(metadata)
+        
+        self._metadata[key] = feat_metadata
+
+    def remove_features(self, key: str) -> bool:
+        """Remove a feature set."""
+        if key in self._features:
+            del self._features[key]
+            del self._metadata[key]
+            del self._featurizers[key]
+            return True
+        return False
+    
+    def get_features(self, key: str) -> Optional[np.ndarray]:
+        """Get features by key."""
+        return self._features.get(key)
+    
+    def get_all_features(self) -> Dict[str, np.ndarray]:
+        """Get all feature sets."""
+        return self._features.copy()
+    
+    def get_metadata(self, key: str) -> Optional[StorageMetadata]:
+        """Get metadata for a feature set."""
+        return self._metadata.get(key)
+    
+    def get_featurizer(self, key: str) -> Optional[BaseFeaturizer]:
+        """Get featurizer for a feature set."""
+        return self._featurizers.get(key)
+    
+    def keys(self):
+        """Get all feature keys."""
+        return self._features.keys()
+    
+    def subset(self, indices: Union[List[int], np.ndarray]) -> StorageFeatures:
+        """Create a subset of features."""
+        subset_features = StorageFeatures()
+        
+        for key in self._features.keys():
+            subset_features.add_features(
+                key=key,
+                features=self._features[key][indices],
+                featurizer=self._featurizers[key],
+                metadata=self._metadata[key].to_dict()
+            )
+        
+        return subset_features
+    
+    def extend(self, other: StorageFeatures) -> None:
+        """Extend with another StorageFeatures object."""
+        if set(other.keys()) != set(self.keys()):
+            logger.warning("Some feature keys are incompatible when extending "
+                           "StorageFeatures instance.")
+        
+        for key in other.keys():
+            assert key in self
+            assert self._metadata[key].is_compatible(other._metadata[key],
+                                                     required_keys=['feature_names'])
+            self._features[key] = np.vstack(
+                (self._features[key], other._features[key]),
+                dtype=self._features[key].dtype,
+            )
+    
+    def concatenate_all(self, dtype: Optional[Type[np.dtype]] = None) \
+        -> Tuple[np.ndarray, List[str]]:
+        """Concatenate all features into a single array."""
+        if not self._features:
+            return np.empty((0, 0)), []
+        
+        all_features = []
+        all_names = []
+        
+        for key in sorted(self._features.keys()):
+            all_features.append(self._features[key])
+            all_names.extend([name for name
+                              in self._metadata[key]['feature_names']])
+        
+        return np.hstack(all_features, dtype=dtype), all_names
+    
+    def to_dataframe(self, 
+                     feature_keys: Optional[Union[str, List[str]]] = None,
+                     include_metadata: bool = False) -> pd.DataFrame:
+        """Convert features to a pandas DataFrame.
+        
+        Args:
+            feature_keys: Specific feature keys to include. If None, includes all.
+            include_metadata: If True, adds metadata as DataFrame attributes.
+            
+        Returns:
+            DataFrame with features as columns.
+        """
+        if feature_keys is None:
+            feature_keys = list(self._features.keys())
+        elif isinstance(feature_keys, str):
+            feature_keys = [feature_keys]
+        
+        if not feature_keys:
+            return pd.DataFrame()
+        
+        # Collect features and column names
+        feature_arrays = []
+        column_names = []
+        metadata_dict = {}
+        
+        for key in feature_keys:
+            if key not in self._features:
+                logger.warning(f"Feature key '{key}' not found, skipping")
+                continue
+            
+            features = self._features[key]
+            metadata = self._metadata[key]
+            
+            feature_arrays.append(features)
+            
+            # Generate column names
+            if 'feature_names' in metadata:
+                names = [f"{name}" for name in metadata['feature_names']]
+            else:
+                names = [f"{key}_{i}" for i in range(features.shape[1])]
+            
+            column_names.extend(names)
+            
+            # Collect metadata if requested
+            if include_metadata:
+                metadata_dict[key] = metadata.to_dict()
+        
+        # Create DataFrame
+        if feature_arrays:
+            combined_features = np.hstack(feature_arrays)
+            df = pd.DataFrame(combined_features, columns=column_names)
+            
+            # Add metadata as attributes if requested
+            if include_metadata:
+                df.attrs['feature_metadata'] = metadata_dict
+            
+            return df
+        else:
+            return pd.DataFrame()
+    
+    def __dataframe__(self, 
+                      nan_as_null: bool = True, 
+                      allow_copy: bool = True) -> pd.DataFrame:
+        """Implement the dataframe interchange protocol."""
+        return self.to_dataframe()
+    
+    def __len__(self) -> int:
+        return len(self._features)
+    
+    def __contains__(self, key: str) -> bool:
+        return key in self._features
+    
+    def __iter__(self):
+        return iter(self._features)
+
+class BaseStorage(ABC):
+    """Abstract class for storing objects."""
+    
+    def __init__(self, 
+                 objects: Optional[Dict[str, List[Any]]] = None,
+                 features: Optional[StorageFeatures] = None,
+                 metadata: Optional[StorageMetadata] = None):
+        
+        if not objects:
+            objects = {key: list() for key in self.required_object_keys}
+        self._objects: Dict[str, List[Any]] = objects
+        self._features = features or StorageFeatures()
+        self._metadata = metadata or StorageMetadata()
+        self._knn: Optional[NearestNeighbors] = None
+
+        # TODO: Check object types as well using OBJECT_DTYPES
+        
+        # Initialize default object containers if not provided
+        provided_required_keys = set(self._objects.keys()).intersection(
+            self.required_object_keys)
+        if len(provided_required_keys) == 0:
+            for key in self.required_object_keys:
+                self._objects[key] = []
+            return
+        
+        ref_key = list(provided_required_keys)[0]
+        if len(self._objects) < len(self.required_object_keys):
+            for key in self.required_object_keys:
+                if key not in self._objects:
+                    self._objects[key] = [None] * len(self._objects[ref_key])
+        
+    # Properties
     @property
-    def nfeats(self) -> int:
-        return self.feats.shape[1]
+    def objects(self) -> Dict[str, List[Any]]:
+        """Get objects (read-only)."""
+        return {k: v.copy() for k, v in self._objects.items()}
+    
+    @property
+    @abstractmethod
+    def required_object_keys(self) -> List[str]:
+        pass
+    
+    @property
+    def features(self) -> StorageFeatures:
+        """Get features container."""
+        return self._features
+    
+    @property
+    def metadata(self) -> StorageMetadata:
+        """Get metadata."""
+        return self._metadata
+    
+    @property
+    def num_features(self) -> int:
+        """Get total number of feature sets."""
+        return len(self._features)
+    
+    @property
+    @abstractmethod
+    def save_dtypes(self) -> Dict[str, Type[np.dtype]]:
+        pass
+    
+    # Core operations
+    def sample(self, 
+               n: int = 1, 
+               object_keys: Optional[str | List[str]] = None) \
+                -> Union[Any, List[Any]]:
+        """Sample random objects."""
+        if object_keys is None:
+            object_keys = self.required_object_keys.copy()
+        if isinstance(object_keys, str):
+            object_keys = [object_keys]
+        
+        indices = random.choices(range(len(self)), k=n)
+        if n == 1:
+            return {k: v[indices[0]] 
+                    for k, v in self._objects.items()}
+        return {k: v[i] 
+                for k, v in self._objects.items() 
+                for i in indices}
+    
+    def extend(self, other: BaseStorage) -> None:
+        """Extend this storage with another storage."""
+        if not isinstance(other, self.__class__):
+            raise TypeError(f"Cannot extend {type(self)} with {type(other)}")
+        
+        if len(self) == 0:
+            # If empty, just copy everything
+            self._objects = {k: v.copy() for k, v in other._objects.items()}
+            self._features = StorageFeatures()
+            for key in other._features.keys():
+                self._features.add_features(
+                    key=key,
+                    features=other._features.get_features(key),
+                    featurizer=other._features.get_featurizer(key),
+                    metadata=other._features.get_metadata(key).to_dict()
+                )
+            self._metadata = other._metadata.copy()
+            return
+        
+        # Extend objects
+        for key in self._objects.keys():
+            if key in other._objects:
+                self._objects[key].extend(other._objects[key])
+            else:
+                self._objects[key].extend([None] * len(other))
+        
+        # Extend features
+        self._features.extend(other._features)
+    
+    def subset(self, indices: Union[List[int], np.ndarray]) -> BaseStorage:
+        """Create a subset of this storage."""
+        if isinstance(indices, np.ndarray):
+            indices = indices.tolist()
+        
+        subset_objects = {}
+        for key, objects_list in self._objects.items():
+            subset_objects[key] = [objects_list[i] for i in indices]
+        
+        subset_features = self._features.subset(indices)
+        
+        return self.__class__(
+            *[subset_objects[key] for key in self.required_object_keys],
+            features=subset_features,
+            metadata=self._metadata.copy(),
+        )
+    
+    # Save/Load methods
+    def _append_to_dataset(self, db: h5py.File, key: str, data: List[Any]):
+        if key not in db:
+            db.create_dataset(
+                name=key,
+                data=data,
+                dtype=self.save_dtypes[key],
+                maxshape=(None,), # TODO: shape as input
+                compression="gzip",
+                compression_opts=4,
+                chunks=True
+            ) # TODO: Have a `set_save_config` method to get these options
+        else:
+            db[key].resize(db[key].shape[0] + len(data), axis=0)
+            db[key][-len(data):] = data
+
+    def save_objects_to_file(self, db: h5py.File) -> None:
+        """Get the data that should be saved for a list of objects."""
+        for key, data in self.get_save_ready_objects().items():
+            self._append_to_dataset(db, key, data)
+
+            # Save object metadata directly to dataset
+            if key in self._metadata:
+                obj_metadata = self._metadata[key]
+                if isinstance(obj_metadata, StorageMetadata):
+                    for attr_key, value in obj_metadata.items():
+                        db[key].attrs[attr_key] = value
+    
+    @abstractmethod
+    def get_save_ready_objects(self) -> Dict[str, List[Any]]:
+        pass
+
+    def save_features_to_file(self, db: h5py.File) -> None:
+        # Save features as a group
+        if 'features' not in db:
+            features_group = db.create_group('features')
+        else:
+            features_group = db['features']
+        
+        for feat_key in self._features.keys():
+            features = self._features.get_features(feat_key)
+            metadata = self._features.get_metadata(feat_key)
+
+            self._append_to_dataset(features_group, feat_key, features)
+            if isinstance(metadata, StorageMetadata):
+                for key, val in metadata.items():
+                    features_group[feat_key].attrs[key] = val
+
+    def load_objects_from_file(self, 
+                               db: h5py.File, 
+                               indices: Optional[List[int] | np.ndarray | slice] = None,
+                               append: bool = False) -> None:
+        """Load objects from saved data."""
+
+        if isinstance(indices, np.ndarray):
+            indices = indices.tolist()
+        elif isinstance(indices, slice):
+            start, stop, step = indices.indices(db.attrs['num_objs']) # TODO: save this in metadata
+            indices = [i for i in range(start, stop, step)]
+        
+        for key, objs in self.get_load_ready_objects(db, indices).items():
+            if append:
+                self._objects[key].extend(objs)
+            else:
+                self._objects[key] = objs
+    
+    @abstractmethod
+    def get_load_ready_objects(self,
+                               db: h5py.File, 
+                               indices: List[int] = None) \
+                                -> Dict[str, List[Any]]:
+        pass
+
+    def load_features_from_file(self,
+                                db: h5py.File,
+                                indices: List[int] | np.ndarray | slice = None,
+                                append: bool = False) -> None:
+        if 'features' not in db:
+            return
+        
+        features = StorageFeatures()
+        
+        feat_grp = db['features']
+        for key in feat_grp:
+            features.add_features(key, 
+                                  feat_grp[key][indices], 
+                                  dtype=np.dtype(feat_grp[key].attrs['dtype']),
+                                  featurizer=None,
+                                  metadata=feat_grp[key].attrs[()])
+        
+        if append:
+            self.features.extend(features)
+        else:
+            for key in self.features.keys():
+                if key in features:
+                    self.features.add_features(
+                        key,
+                        features.get_features(key),
+                        dtype=features.get_metadata(key)['dtype'],
+                        metadata=features.get_metadata(key)
+                    )
+
+    def write(self, 
+              path: Union[str, Path], 
+              mode: str = 'w') -> None:
+        """Write storage to file. Mode can be 'w' (write) or 'a' (append)."""
+        
+        path = Path(path)
+
+        with h5py.File(path, mode) as f:
+            f.attrs['class_name'] = self.__class__.__name__
+
+            # Save objects
+            self.save_objects_to_file(f)
+
+            # Save features
+            self.save_features_to_file(f)
+    
+    @classmethod
+    def load(cls, 
+             path: Union[str, Path], 
+             indices: Optional[Union[List[int], np.ndarray]] = None) \
+                -> BaseStorage:
+        """Load storage from file, optionally loading specified indices."""
+                
+        path = Path(path)
+        with h5py.File(path, "r") as f:
+            storage = cls()
+            storage.load_objects_from_file(f, indices)
+            storage.load_features_from_file(f, indices, append=False)
+        return storage
+        
+    # Magic methods TODO: Needs extensive review
+    def __len__(self) -> int:
+        # Return length of first object list
+        if self._objects:
+            return len(list(self._objects.values())[0])
+        return 0
+    
+    def __getitem__(self, 
+                    idx: Union[int, List[int], np.ndarray]) \
+                        -> Union[Any, Dict[str, Any]]:
+        if isinstance(idx, int):
+            if len(self._objects) == 1:
+                return list(self._objects.values())[0][idx]
+            else:
+                return {key: obj_list[idx] 
+                        for key, obj_list in self._objects.items()}
+        elif isinstance(idx, (list, np.ndarray)):
+            if len(self._objects) == 1:
+                obj_list = list(self._objects.values())[0]
+                return [obj_list[i] for i in idx]
+            else:
+                return {key: [obj_list[i] for i in idx] 
+                        for key, obj_list in self._objects.items()}
+    
+    def __setitem__(self, idx: int, obj: Union[Any, Dict[str, Any]]) -> None:
+        if isinstance(obj, dict):
+            for key, value in obj.items():
+                if key in self._objects:
+                    self._objects[key][idx] = value
+        else:
+            # Set in first object list
+            self._objects[self.required_object_keys[0]][idx] = obj
+    
+    def __delitem__(self, idx: int) -> None:
+        for obj_list in self._objects.values():
+            if idx < len(obj_list):
+                del obj_list[idx]
+        
+        # Remove from all feature sets
+        for feat_key in self._features.keys():
+            features = self._features.get_features(feat_key)
+            if features is not None and idx < len(features):
+                updated_features = np.delete(features, idx, axis=0)
+                self._features.add_features(
+                    key=feat_key,
+                    features=updated_features,
+                    featurizer=self._features.get_featurizer(feat_key),
+                    metadata=self._features.get_metadata(feat_key).to_dict()
+                )
+    
+    def __iter__(self):
+        for i in range(len(self)):
+            yield {
+                key: objs[i]
+                for key, objs in self._objects.items()
+            }
+    
+    def __contains__(self, obj: Any) -> bool:
+        return any(obj in obj_list for obj_list in self._objects.values())
+    
+    def __repr__(self) -> str:
+        return (f"{self.__class__.__name__}({len(self)} objects, "
+                f"{self.num_features} feature sets, "
+                f"{len(self.objects)} object types)")
+    
