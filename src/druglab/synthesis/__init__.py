@@ -11,5 +11,5 @@ from .executor import (
     SynthesisExecutor, SynthesisResult
 )
 from .visualizer import (
-    SynthesisRouteVisualizer, visualize_synthesis_route,
+    SynthesisRouteVisualizer
 )
