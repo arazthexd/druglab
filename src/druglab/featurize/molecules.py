@@ -1,4 +1,4 @@
-from typing import Tuple, Any
+from typing import Tuple, Any, List
 
 import numpy as np
 
@@ -7,29 +7,37 @@ from rdkit.Chem import rdFingerprintGenerator as rdFP
 
 from .base import BaseFeaturizer
 
-class MorganFPFeaturizer(BaseFeaturizer):
-    def __init__(self, radius: int = 2, size: int = 1024):
-        super().__init__()
+class MoleculeFeaturizer(BaseFeaturizer):
+    pass
+
+class MorganFPFeaturizer(MoleculeFeaturizer):
+    def __init__(self, 
+                 size: int = 1024,
+                 radius: int = 2,
+                 count: bool = False,
+                 chirality: bool = False):
+        super().__init__(dtype=bool if not count else np.uint8)
         self.radius = radius
         self.size = size
-        self.generator = rdFP.GetMorganGenerator(radius, fpSize=size)
-        self._fnames = [f"morgan{radius}_{i}" for i in range(size)]
+        self.count = count
+        self.chirality = chirality
+        self._fnames = [f"MFP|{radius}|{i+1}/{size}" for i in range(size)]
 
-    def featurize(self, mol: Chem.Mol | Tuple[Chem.Mol, int]) -> np.ndarray:
-        if isinstance(mol, tuple):
-            mol = mol[0]
+    def featurize_(self, mol: Chem.Mol, *args) -> np.ndarray:
         fp: np.ndarray = self.generator.GetFingerprintAsNumPy(mol)
-        fp = fp.reshape(1, -1)
-        return fp.astype(bool)
+        return fp
     
-    def save_dict(self):
-        d = super().save_dict()
-        d["radius"] = self.radius
-        d["size"] = self.size
-        return d
-
-    def _load(self, d: dict | Any):
-        super()._load(d)
-        self.radius = np.array(d["radius"]).item()
-        self.size = np.array(d["size"]).item()
-        self.generator = rdFP.GetMorganGenerator(self.radius, fpSize=self.size)
+    @property
+    def fnames(self) -> List[str]:
+        return self._fnames
+    
+    @property
+    def generator(self) -> rdFP.FingerprintGenerator64:
+        return rdFP.GetMorganGenerator(radius=self.radius, 
+                                       fpSize=self.size,
+                                       countSimulation=self.count,
+                                       includeChirality=self.chirality)
+    
+    @property
+    def name(self) -> str:
+        return f"MorganFP|{self.radius}|{self.size}"

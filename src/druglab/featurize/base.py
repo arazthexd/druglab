@@ -1,58 +1,49 @@
-from typing import List, Any
+from __future__ import annotations
+from typing import List, Any, Type, Optional
 import dill
-import h5py
+from abc import ABC, abstractmethod
 
 import numpy as np
 
 from druglab import featurize as featurize_submodule
 
-class BaseFeaturizer:
-    def __init__(self):
-        self._fnames: List[str] = []
-
-    def featurize(self, object) -> np.ndarray:
-        raise NotImplementedError()
+class BaseFeaturizer(ABC):
+    def __init__(self, dtype: Optional[Type[np.dtype]] = None):
+        self._dtype = dtype
+        
     
-    def fit(self, objects: List[Any]):
-        return self
+    def featurize(self, *objects) -> np.ndarray:
+        """Featurize objects (not a batch!) into a numpy array.
+        
+        This method should not consider the dimension for stacking object feats
+            and will be one dimensional if features only need one dimension.
+        """
+        feats = self.featurize_(*objects)
+        return feats.astype(self.dtype)
     
-    def save_dict(self):
-        return {
-            "fnames": self._fnames,
-        }
+    @abstractmethod
+    def featurize_(self, *objects) -> np.ndarray:
+        pass
     
-    def save(self, path, close: bool = True):
-        f = self._save(self.save_dict(), path, close=False)
-        f.attrs["_name_"] = self.__class__.__name__
-        if close:
-            f.close()
-        else:
-            return f
-    
-    @staticmethod
-    def _save(save_dict: dict, path: str, close: bool = True):
-        f = h5py.File(path, "w")
-        for k, v in save_dict.items():
-            f[k] = v
-        if close:
-            f.close()
-        else:
-            return f
-    
-    def _load(self, d: h5py.Dataset):
-        self._fnames = d["fnames"][:]
+    def save(self, path):
+        with open(path, "wb") as f:
+            dill.dump(self, f)
 
     @staticmethod
-    def load(src: str | h5py.Group):
-        if isinstance(src, str):
-            f = h5py.File(src, "r")
-        else:
-            f = src
-        name = f.attrs["_name_"]
-        featurizer: BaseFeaturizer = getattr(featurize_submodule, name)()
-        featurizer._load(f)
-        return featurizer
+    def load(path):
+        with open(path, "rb") as f:
+            fzer = dill.load(f)
+        return fzer
+        
+    @property
+    @abstractmethod
+    def fnames(self) -> List[str]:
+        pass
+
+    @property
+    def dtype(self) -> Type[np.dtype]:
+        return self._dtype
     
     @property
-    def fnames(self) -> List[str]:
-        return self._fnames
+    def name(self) -> str | None:
+        return None
