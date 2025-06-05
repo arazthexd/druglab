@@ -1,168 +1,132 @@
 from __future__ import annotations
-from typing import List, Union, Tuple, Callable
-
-import random
-from itertools import product
+from typing import List, Dict, Optional
 from dataclasses import dataclass, field
+from enum import Enum
 
-from rdkit import Chem
-from rdkit.Chem import Draw
-from rdkit.Chem import rdChemReactions as rdRxn
-from rdkit.Chem.rdChemReactions import ChemicalReaction as Rxn
+from ..storage import RxnStorage, MolStorage
 
-class ActionTypes:
-    START = 0
-    REACTANT = 1
-    REACTION = 2
-    PRODUCT = 3
-    USEPROD = 4
-    END = 5
+class StepType(Enum):
+    """Types of synthesis steps."""
+    START = "start"
+    ADD_REACTANT = "add_reactant"  
+    USE_INTERMEDIATE = "use_intermediate"
+    APPLY_REACTION = "apply_reaction"
+    END = "end"
 
-    @classmethod
-    def idx2str(cls, idx: int):
-        return {
-            0: "START",
-            1: "REACTANT",
-            2: "REACTION",
-            3: "PRODUCT",
-            4: "USEPROD",
-            5: "END",
-        }[idx]
+@dataclass
+class SynthesisStep:
+    """Represents a single step in synthesis route."""
+    step_type: StepType
+    rxn_idx: Optional[int] = None
+    reactant_idx: Optional[int] = None  # Index in RxnStorage.mol_storage
+    mol_idx: Optional[int] = None       # Index in RxnStorage.mol_storage or product store
+    product_idx: Optional[int] = None   # Index in products list in reaction
+    metadata: Dict = field(default_factory=dict)
 
 @dataclass(repr=False)
-class _SequenceMember:
-    type: int
-    idx: int = None
-
-    def __repr__(self):
-        if self.type in [ActionTypes.START, ActionTypes.END]:
-            return f"SeqMember({ActionTypes.idx2str(self.type)})"
-        return f"SeqMember({ActionTypes.idx2str(self.type)}, {self.idx})"
-    
-    def copy(self):
-        return _SequenceMember(self.type, self.idx)
-    
 class SynthesisRoute:
-    def __init__(self, 
-                 seq: List[_SequenceMember] = None,
-                 reactants: List[Chem.Mol] = None,
-                 reactions: List[Rxn] = None,
-                 products: List[Chem.Mol] = None,
-                 check: bool = True):
-        self.seq = seq or list()
-        self.reactants = reactants or list()
-        self.reactions = reactions or list()
-        self.products = products or list()
-        self.check = check
+    """Memory-efficient synthesis route using indices."""
+    steps: List[SynthesisStep] = field(default_factory=list)
+    final_product_idx: Optional[int] = None
+    route_id: Optional[str] = None
+    metadata: Dict = field(default_factory=dict)
+    
+    def add_step(self, step: SynthesisStep) -> None:
+        """Add a synthesis step."""
+        self.steps.append(step)
+    
+    def start(self) -> None:
+        """Mark route start."""
+        self.add_step(SynthesisStep(StepType.START))
+    
+    def end(self) -> None: #, final_product_idx: Optional[int] = None) -> None:
+        """Mark route end."""
+        # if final_product_idx is not None:
+        #     self.final_product_idx = final_product_idx
+        self.add_step(SynthesisStep(StepType.END))
+    
+    def add_reactant(self, mol_idx: int) -> None:
+        """Add a reactant molecule."""
+        self.add_step(SynthesisStep(
+            step_type=StepType.ADD_REACTANT,
+            mol_idx=mol_idx
+        ))
+    
+    def use_intermediate(self, mol_idx: int) -> None:
+        """Use an intermediate product (ID is from a prod store)."""
+        self.add_step(SynthesisStep(
+            step_type=StepType.USE_INTERMEDIATE, 
+            mol_idx=mol_idx
+        ))
+    
+    def apply_reaction(self, 
+                       rxn_idx: int, 
+                       product_idx: int = 0,
+                       mol_idx: int = None) -> None:
+        """Apply a reaction and select product."""
+        self.add_step(SynthesisStep(
+            step_type=StepType.APPLY_REACTION,
+            rxn_idx=rxn_idx,
+            product_idx=product_idx,
+            mol_idx=mol_idx
+        ))
+        if self.final_product_idx is None:
+            self.final_product_idx = product_idx
+    
+    def get_reactant_indices(self) -> List[int]:
+        """Get all reactant molecule indices used in route."""
+        return [step.mol_idx for step in self.steps 
+                if step.step_type in [StepType.ADD_REACTANT, 
+                                      StepType.USE_INTERMEDIATE]
+                and step.mol_idx is not None]
+    
+    def get_reaction_indices(self) -> List[int]:
+        """Get all reaction indices used in route."""
+        return [step.rxn_idx for step in self.steps 
+                if step.step_type == StepType.APPLY_REACTION
+                and step.rxn_idx is not None]
+    
+    def validate(self, 
+                 rxn_storage: RxnStorage, 
+                 mol_storage: MolStorage) -> bool:
+        """Validate route against storage."""
+        try:
+            for step in self.steps:
+                if step.rxn_idx is not None \
+                    and step.rxn_idx >= len(rxn_storage):
+                    return False
+                if step.mol_idx is not None \
+                    and step.mol_idx >= len(mol_storage):
+                    return False
+            return True
+        except Exception:
+            return False
+    
+    def __len__(self) -> int:
+        """Number of synthesis steps."""
+        return len([s for s in self.steps 
+                    if s.step_type == StepType.APPLY_REACTION])
+    
+    def copy(self) -> SynthesisRoute:
+        """Create a deep copy of the route."""
+        return SynthesisRoute(
+            steps=[SynthesisStep(
+                step_type=step.step_type,
+                rxn_idx=step.rxn_idx,
+                reactant_idx=step.reactant_idx,
+                mol_idx=step.mol_idx,
+                product_idx=step.product_idx,
+                metadata=step.metadata.copy()
+            ) for step in self.steps],
+            final_product_idx=self.final_product_idx,
+            route_id=self.route_id,
+            metadata=self.metadata.copy()
+        )
     
     def __repr__(self):
-        return f"SynthesisRoute(" + \
-            f"seq={len(self.seq)}, " + \
-            f"reactants={len(self.reactants)}, " + \
-            f"reactions={len(self.reactions)}, " + \
-            f"products={len(self.products)})"
-    
-    def start(self):
-        if self.check:
-            assert len(self.seq) == 0
-        self.seq.append(_SequenceMember(ActionTypes.START))
-
-    def add_reactant(self, reactant: Chem.Mol):
-        if self.check:
-            assert self.seq[-1].type in [ActionTypes.START, 
-                                        ActionTypes.PRODUCT,
-                                        ActionTypes.REACTANT,
-                                        ActionTypes.USEPROD]
-        member = _SequenceMember(ActionTypes.REACTANT, len(self.reactants))
-        self.seq.append(member)
-        self.reactants.append(reactant)
-
-    def add_reaction(self, rxn: Rxn):
-        if self.check:
-            assert self.seq[-1].type in [ActionTypes.REACTANT, 
-                                         ActionTypes.USEPROD]
-
-        member = _SequenceMember(ActionTypes.REACTION, len(self.reactions))
-        self.seq.append(member)
-        self.reactions.append(rxn)
-
-    @property
-    def last_unused_pseqid(self) -> int:
-        helper_idx = 0
-        for i, mem in enumerate(reversed(self.seq)):
-            if mem.type == ActionTypes.USEPROD:
-                helper_idx += 1
-            if mem.type == ActionTypes.PRODUCT:
-                if helper_idx == 0:
-                    return len(self.seq)-i-1
-                else:
-                    helper_idx -= 1
-    
-    def add_product(self, product: Chem.Mol):
-        member = _SequenceMember(ActionTypes.PRODUCT, len(self.products))
-        self.seq.append(member)
-        self.products.append(product)
-
-    def use_product(self):
-        last_free_pidx = self.seq[self.last_unused_pseqid].idx
-        member = _SequenceMember(ActionTypes.USEPROD, last_free_pidx)
-        self.seq.append(member)
-
-    def end(self):
-        self.seq.append(_SequenceMember(ActionTypes.END))
-
-    def __add__(self, other: SynthesisRoute):
-        selfseq: List[_SequenceMember] = [
-            mem.copy() 
-            for mem in self.seq 
-            if mem.type not in [ActionTypes.START, ActionTypes.END]
-        ]
-        otherseq: List[_SequenceMember] = [
-            mem.copy() 
-            for mem in other.seq 
-            if mem.type not in [ActionTypes.START, ActionTypes.END]
-        ]
-        for othermem in otherseq:
-            if othermem.type in [ActionTypes.PRODUCT, ActionTypes.USEPROD]:
-                othermem.idx += len(self.products)
-            elif othermem.type in [ActionTypes.REACTANT]:
-                othermem.idx += len(self.reactants)
-            elif othermem.type in [ActionTypes.REACTION]:
-                othermem.idx += len(self.reactions)
-
-        return SynthesisRoute(
-            seq=[_SequenceMember(ActionTypes.START)] + selfseq + otherseq,
-            reactants=self.reactants + other.reactants,
-            reactions=self.reactions + other.reactions,
-            products=self.products + other.products
+        name = self.__class__.__name__
+        return (
+            f"{name}(\n\t" +
+            "\n\t".join([step.__repr__() for step in self.steps]) +
+            "\n)"
         )
-    
-    def copy(self):
-        return SynthesisRoute(
-            seq=self.seq.copy(),
-            reactants=self.reactants.copy(),
-            reactions=self.reactions.copy(),
-            products=self.products.copy()
-        )
-    
-    def visualize(self):
-        vislist = []
-        vl = []
-        for mem in self.seq:
-            if mem.type == ActionTypes.REACTANT:
-                vl.append(self.reactants[mem.idx])
-            elif mem.type in [ActionTypes.PRODUCT, ActionTypes.USEPROD]:
-                vl.append(self.products[mem.idx])
-            
-            if mem.type == ActionTypes.PRODUCT: 
-                vislist.append(vl)
-                vl = []
-        
-        l = max([rxn.GetNumReactantTemplates() for rxn in self.reactions])+1
-        vislist = [vl+[None]*(l-len(vl)) for vl in vislist]
-        view = Draw.MolsToGridImage(
-            mols=[v for vl in vislist for v in vl],
-            molsPerRow=l,
-            subImgSize=(300, 200)
-        )
-        return view
