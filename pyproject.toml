@@ -21,6 +21,9 @@ dev = ["pytest"]
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[project.scripts]
+druglab = "druglab_scripts.cli:cli"
+
 [tool.setuptools]
 include-package-data = true
 
