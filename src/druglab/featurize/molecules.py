@@ -1,9 +1,10 @@
-from typing import Tuple, Any, List
+from typing import List, Type, Optional
 
 import numpy as np
 
 from rdkit import Chem
 from rdkit.Chem import rdFingerprintGenerator as rdFP
+from rdkit.Chem import Descriptors3D
 
 from .base import BaseFeaturizer
 
@@ -41,3 +42,27 @@ class MorganFPFeaturizer(MoleculeFeaturizer):
     @property
     def name(self) -> str:
         return f"MorganFP|{self.radius}|{self.size}"
+    
+class RDKitDesc3DFeaturizer(MoleculeFeaturizer):
+    def __init__(self, 
+                 subset: List[str] = None,
+                 dtype: Optional[Type[np.dtype]] = None):
+        super().__init__(dtype=dtype)
+        if subset is None:
+            self._fnames, self._descs = zip(*Descriptors3D.descList)
+        else:
+            self._fnames, self._descs = zip(*[d for d in Descriptors3D.descList 
+                                              if d[0] in subset])
+        
+        self._fnames = list(self._fnames)
+    
+    def featurize_(self, mol: Chem.Mol, *args) -> np.ndarray:
+        return np.array([d(mol) for d in self._descs])
+    
+    @property
+    def fnames(self) -> List[str]:
+        return self._fnames
+    
+    @property
+    def name(self) -> str:
+        return "RDKitDesc3D"
