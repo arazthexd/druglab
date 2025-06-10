@@ -1,4 +1,4 @@
-from typing import Tuple, Optional, List
+from typing import Tuple, Optional, List, Iterator
 from pathlib import Path
 import tempfile
 import h5py
@@ -16,6 +16,33 @@ from druglab.io import load_mols_file
 
 MFNAMES = list(MOLFEATURIZER_GENERATORS.keys())
 CFNAMES = list(CONFFEATURIZER_GENERATORS.keys())
+
+def _create_out_file(out_path: str | Path, overwrite: bool):
+    if isinstance(out_path, str):
+        out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    if not overwrite and out_path.exists():
+        raise FileExistsError(f"Output file {out_path} already exists.")
+    if overwrite and out_path.exists():
+        with tempfile.NamedTemporaryFile(suffix='.h5', delete=False) as f:
+            out_path = Path(f.name)
+    return out_path
+
+def _get_database_len(path: Path, key: str):
+    with h5py.File(path, 'r') as f:
+        dbl = f[key].shape[0]
+    return dbl
+
+def _iterate_moldb_batches(path: str | Path, 
+                           batch_size: int) -> Iterator[MolStorage]:
+    path = Path(path)
+    batchid = 0
+    for i in range(0, _get_database_len(path, 'molecules'), batch_size):
+        db_batch = MolStorage.load(path, indices=slice(i, i+batch_size))
+        click.echo(f"Batch {batchid} with size {len(db_batch)} was loaded.")
+        batchid += 1
+        yield db_batch
+
 
 @click.group(name='molecules', help="Operations related to molecules")
 def molecule_operations():
@@ -36,6 +63,46 @@ def create_db(inputs: Tuple[Path, ...],
         molecules = load_mols_file(filename)
         molecules = MolStorage(molecules)
         molecules.write(output, mode='a')
+
+@molecule_operations.command(name='clean',
+                             help="Clean a molecule database")
+@click.option('-db', '--database', type=click.Path(exists=True), 
+              default='mols.h5',  help='Input database (.h5 file)')
+@click.option('-o', '--output', type=click.Path(), default='mols.h5',
+              help="Output database file (.h5)")
+@click.option('-ow', '--overwrite', is_flag=True, default=False,
+              help="Overwrite existing file")
+@click.option('-rf', '--remove-failed', is_flag=True, default=False,
+              help="Remove molecules with failed preparations")
+@click.option('-rd', '--remove-duplicates', is_flag=True, default=False,
+              help="Remove duplicate molecules using SMILES")
+@click.option('-ns', '--no-sanitize', is_flag=True, default=False,
+              help="Sanitize molecules in the database using RDKit")
+@click.option('-rc', '--remove-conformers', is_flag=True, default=False,
+              help="Remove all conformers of the molecules in the database")
+@click.option('-b', '--batch-size', default=1000, type=int,
+              help="Batch size (For memory purposes)")
+def clean_mols(database: str,
+               output: str,
+               overwrite: bool,
+               remove_failed: bool,
+               remove_duplicates: bool,
+               no_sanitize: bool,
+               remove_conformers: bool,
+               batch_size: int,):
+    out_path = _create_out_file(output, overwrite)
+
+    for molecules in _iterate_moldb_batches(database, batch_size):
+        keep_ids = molecules.clean_molecules(
+            remove_none=remove_failed,
+            remove_duplicates=remove_duplicates,
+            sanitize=not no_sanitize,
+            remove_conformers=remove_conformers
+        )
+        click.echo(f"{len(keep_ids)} molecules were kept.")
+        molecules.write(out_path, mode='a')
+    
+    out_path.replace(output)
 
 @molecule_operations.command(name='prepare',
                              help="Read, prepare, and save molecules from db")
@@ -106,9 +173,6 @@ def prepare_mols(database: str,
                  calign: bool,
                  n_processes: int):
     
-    database: Path = Path(database)
-    output: Path = Path(output)
-    
     prepper = GenericMoleculePrepper(
         remove_salts=not no_salts,
         keep_largest_frag=not no_largest_frag,
@@ -130,19 +194,9 @@ def prepare_mols(database: str,
         n_processes=n_processes,
     )
 
-    out_path = output
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    if not overwrite and out_path.exists():
-        raise FileExistsError(f"Output file {output} already exists.")
-    if overwrite and out_path.exists():
-        with tempfile.NamedTemporaryFile(suffix='.h5', delete=False) as f:
-            out_path = Path(f.name)
+    out_path = _create_out_file(output, overwrite)
     
-    with h5py.File(database, 'r') as db:
-        total_size = db['molecules'].shape[0]
-    
-    for i in range(0, total_size, batch_size):
-        molecules = MolStorage.load(database, indices=slice(i, i+batch_size))
+    for molecules in _iterate_moldb_batches(database, batch_size):
         molecules = prepper.modify(molecules, 
                                    in_place=True, 
                                    remove_fails=remove_failed)
@@ -175,9 +229,6 @@ def featurize_mols(database: str,
                    conf_featurizer: List[str],
                    batch_size: int,
                    n_processes: int):
-    
-    database: Path = Path(database)
-    output: Path = Path(output)
 
     mol_featurizers = [
         BasicMoleculeFeaturizerWrapper(get_featurizer(name), 
@@ -190,19 +241,9 @@ def featurize_mols(database: str,
         for name in conf_featurizer
     ]
     
-    out_path = output
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    if not overwrite and out_path.exists():
-        raise FileExistsError(f"Output file {output} already exists.")
-    if overwrite and out_path.exists():
-        with tempfile.NamedTemporaryFile(suffix='.h5', delete=False) as f:
-            out_path = Path(f.name)
+    out_path = _create_out_file(output, overwrite)
     
-    with h5py.File(database, 'r') as db:
-        total_size = db['molecules'].shape[0]
-    
-    for i in range(0, total_size, batch_size):
-        molecules = MolStorage.load(database, indices=slice(i, i+batch_size))
+    for molecules in _iterate_moldb_batches(database, batch_size):
         for mf in mol_featurizers:
             molecules = mf.featurize(molecules)
         for cf in conf_featurizers:
