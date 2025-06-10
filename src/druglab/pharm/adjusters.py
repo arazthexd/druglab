@@ -1,5 +1,3 @@
-from typing import Dict
-
 import numpy as np
 from scipy.spatial.distance import cdist
 

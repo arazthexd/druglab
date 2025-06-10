@@ -1,10 +1,9 @@
-from typing import List, Callable, Dict, Any, Literal
+from typing import List, Literal
 from dataclasses import dataclass, field
 
 from rdkit import Chem
 
 from .ftypes import PharmFeatureType
-from .features import PharmFeatures
 from .pharmacophore import Pharmacophore, PharmacophoreList
 from .utilities import parse_varname
 from .calculations import PharmCalculation

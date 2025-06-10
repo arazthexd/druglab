@@ -13,13 +13,13 @@ def load_rxns_file(filename: str) -> List[rdChemReactions.ChemicalReaction]:
     else:
         raise NotImplementedError()
 
-def load_mols_file(filename: str) -> List[Chem.Mol]:
+def load_mols_file(filename: str, **kwargs) -> List[Chem.Mol]:
     suffix = filename.split(".")[-1]
     if suffix == "sdf":
-        suppl = Chem.SDMolSupplier(filename)
+        suppl = Chem.SDMolSupplier(filename, **kwargs)
         return [mol for mol in suppl if mol is not None]
     elif suffix in ["smi", "txt"]:
-        suppl = Chem.SmilesMolSupplier(filename)
+        suppl = Chem.SmilesMolSupplier(filename, **kwargs)
         return [mol for mol in suppl if mol is not None]
     else:
         raise NotImplementedError()

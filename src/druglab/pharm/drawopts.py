@@ -1,7 +1,6 @@
 from __future__ import annotations
-from typing import List, Dict, Union, Tuple, Set, Any, Callable
+from typing import Tuple
 from dataclasses import dataclass, field
-import yaml
 
 @dataclass
 class DrawOptions:

@@ -1,3 +1,22 @@
+__all__ = [
+    "get_default_pharm_featurizer",
+    "get_default_pharm_fper",
+    "InternalStericAdjuster",
+    "PharmFeatures", "PharmArrowFeats", "PharmSphereFeats",
+    "PharmFeatureType", "PharmArrowType", "PharmSphereType",
+    "PharmGenerator", "BASE_DEFINITIONS_PATH",
+    "PharmGroup",
+    "PharmDefinitions", "PharmDefaultParser",
+    "Pharmacophore",
+    "PharmProfile",
+    "PharmProfiler", "PharmDefaultProfiler",
+    "PharmFingerprinter", "PharmCompositeFingerprinter",
+    "PharmDistFingerprinter", "PharmCosineFingerprinter", 
+    "PharmTypeIDFingerprinter",
+    "PharmFPFeaturizer",
+    "PharmStorageProfiler"
+]
+
 from .adjusters import InternalStericAdjuster
 from .features import PharmFeatures, PharmArrowFeats, PharmSphereFeats
 from .ftypes import PharmFeatureType, PharmArrowType, PharmSphereType
@@ -9,9 +28,11 @@ from .pprofile import PharmProfile
 from .profiler import PharmProfiler, PharmDefaultProfiler
 from .fingerprint import (
     PharmFingerprinter, PharmCompositeFingerprinter,
-    PharmDistFingerprinter, PharmCosineFingerprinter, PharmTypeIDFingerprinter
+    PharmDistFingerprinter, PharmCosineFingerprinter, 
+    PharmTypeIDFingerprinter
 )
-from .featurizer import PharmFeaturizer
+from .featurizer import PharmFPFeaturizer
+# from .storage import PharmStorageProfiler
 
 def get_default_pharm_fper(fpsize=7000):
     return PharmCompositeFingerprinter(
@@ -41,7 +62,7 @@ def get_default_pharm_featurizer(fpsize=7000, ngroup=4):
     pgen = PharmGenerator()
     pgen.load_file(BASE_DEFINITIONS_PATH)
 
-    return PharmFeaturizer(
+    return PharmFPFeaturizer(
         generator=pgen,
         adjuster=InternalStericAdjuster(),
         profiler=PharmDefaultProfiler(pgen.ftypes, ngroup=ngroup, mindist=0.2),

@@ -1,4 +1,4 @@
-from typing import List, Dict, Any, Tuple, Literal
+from typing import List, Dict, Any, Literal
 import os
 from collections import OrderedDict
 
@@ -48,7 +48,7 @@ class PharmGenerator:
                  mol: Chem.Mol, 
                  confid: int | Literal["all"] = -1) \
                     -> Pharmacophore | PharmacophoreList:
-        if self._loaded == False:
+        if not self._loaded:
             self.load_file(BASE_DEFINITIONS_PATH)
         
         if confid == "all":

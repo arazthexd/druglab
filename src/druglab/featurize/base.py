@@ -1,17 +1,14 @@
 from __future__ import annotations
-from typing import List, Any, Type, Optional
+from typing import List, Type, Optional
 import dill
 from abc import ABC, abstractmethod
 
 import numpy as np
 
-from druglab import featurize as featurize_submodule
-
 class BaseFeaturizer(ABC):
     def __init__(self, dtype: Optional[Type[np.dtype]] = None):
         self._dtype = dtype
         
-    
     def featurize(self, *objects) -> np.ndarray:
         """Featurize objects (not a batch!) into a numpy array.
         
