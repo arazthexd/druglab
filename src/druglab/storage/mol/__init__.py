@@ -1,9 +1,14 @@
 __all__ = [
     'MolStorage', 
-    'GenericMoleculePrepper'
+    'GenericMoleculePrepper',
+    'BasicConformerFeaturizerWrapper', 'BasicMoleculeFeaturizerWrapper'
 ]
 
 from .mol import MolStorage
 from .preps import GenericMoleculePrepper 
+from .featurize import (
+    BasicConformerFeaturizerWrapper, 
+    BasicMoleculeFeaturizerWrapper
+)
 
 

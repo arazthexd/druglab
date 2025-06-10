@@ -106,7 +106,10 @@ class StorageFeatures:
             ]
         
         if metadata:
-            assert not any(key in feat_metadata for key in metadata)
+            if any(key in feat_metadata for key in metadata):
+                logger.warning("When adding features to storage feats, some "
+                               "metadata keys were identical. They will be "
+                               "overwritten.")
             feat_metadata.update(metadata)
         
         self._metadata[key] = feat_metadata
@@ -388,13 +391,13 @@ class BaseStorage(ABC):
         )
     
     # Save/Load methods
-    def _append_to_dataset(self, db: h5py.File, key: str, data: List[Any]):
+    def _append_to_objdb(self, db: h5py.File, key: str, data: List[Any]):
         if key not in db:
             db.create_dataset(
                 name=key,
                 data=data,
                 dtype=self.save_dtypes[key],
-                maxshape=(None,), # TODO: shape as input
+                maxshape=(None,), # TODO: max shape as input
                 compression="gzip",
                 compression_opts=4,
                 chunks=True
@@ -403,10 +406,24 @@ class BaseStorage(ABC):
             db[key].resize(db[key].shape[0] + len(data), axis=0)
             db[key][-len(data):] = data
 
+    def _append_to_featdb(self, db: h5py.File, key: str, data: np.ndarray):
+        if key not in db:
+            db.create_dataset(
+                name=key,
+                data=data,
+                maxshape=(None, *data.shape[1:]), # TODO: max shape as input
+                compression="gzip",
+                compression_opts=4,
+                chunks=True
+            ) # TODO: Have a `set_save_config` method to get these options
+        else:
+            db[key].resize(db[key].shape[0] + data.shape[0], axis=0)
+            db[key][-data.shape[0]:] = data
+
     def save_objects_to_file(self, db: h5py.File) -> None:
         """Get the data that should be saved for a list of objects."""
         for key, data in self.get_save_ready_objects().items():
-            self._append_to_dataset(db, key, data)
+            self._append_to_objdb(db, key, data)
 
             # Save object metadata directly to dataset
             if key in self._metadata:
@@ -430,7 +447,7 @@ class BaseStorage(ABC):
             features = self._features.get_features(feat_key)
             metadata = self._features.get_metadata(feat_key)
 
-            self._append_to_dataset(features_group, feat_key, features)
+            self._append_to_featdb(features_group, feat_key, features)
             if isinstance(metadata, StorageMetadata):
                 for key, val in metadata.items():
                     features_group[feat_key].attrs[key] = val
@@ -440,11 +457,14 @@ class BaseStorage(ABC):
                                indices: Optional[List[int] | np.ndarray | slice] = None,
                                append: bool = False) -> None:
         """Load objects from saved data."""
+        if indices is None:
+            indices = list(range(db[self.required_object_keys[0]].shape[0]))
 
         if isinstance(indices, np.ndarray):
             indices = indices.tolist()
         elif isinstance(indices, slice):
-            start, stop, step = indices.indices(db.attrs['num_objs']) # TODO: save this in metadata
+            start, stop, step = \
+                indices.indices(db[self.required_object_keys[0]].shape[0])
             indices = [i for i in range(start, stop, step)]
         
         for key, objs in self.get_load_ready_objects(db, indices).items():
@@ -452,6 +472,11 @@ class BaseStorage(ABC):
                 self._objects[key].extend(objs)
             else:
                 self._objects[key] = objs
+            
+        for key in db.attrs:
+            if key not in self._objects: # TODO: It should not be in the save keys not loaded ones
+                if key not in self._metadata.keys():
+                    self._metadata[key] = db.attrs[key]
     
     @abstractmethod
     def get_load_ready_objects(self,
@@ -471,21 +496,22 @@ class BaseStorage(ABC):
         
         feat_grp = db['features']
         for key in feat_grp:
+            if indices is None:
+                indices = list(range(feat_grp[key].shape[0]))
+
             features.add_features(key, 
-                                  feat_grp[key][indices], 
-                                  dtype=np.dtype(feat_grp[key].attrs['dtype']),
-                                  featurizer=None,
-                                  metadata=feat_grp[key].attrs[()])
+                                  feat_grp[key][indices],
+                                  metadata=None or dict(feat_grp[key].attrs))
+            print(features.keys())
         
         if append:
             self.features.extend(features)
         else:
-            for key in self.features.keys():
-                if key in features:
+            for key in features.keys():
+                if key not in self.features:
                     self.features.add_features(
                         key,
                         features.get_features(key),
-                        dtype=features.get_metadata(key)['dtype'],
                         metadata=features.get_metadata(key)
                     )
 
@@ -504,19 +530,25 @@ class BaseStorage(ABC):
 
             # Save features
             self.save_features_to_file(f)
+
+            # Save metadata
+            for key in self._metadata:
+                if key not in f.keys():
+                    f.attrs[key] = self._metadata[key]
     
     @classmethod
     def load(cls, 
              path: Union[str, Path], 
              indices: Optional[Union[List[int], np.ndarray]] = None) \
                 -> BaseStorage:
-        """Load storage from file, optionally loading specified indices."""
-                
+        """Load storage from file, optionally loading specified indices."""                
         path = Path(path)
         with h5py.File(path, "r") as f:
             storage = cls()
             storage.load_objects_from_file(f, indices)
             storage.load_features_from_file(f, indices, append=False)
+            for k, v in f.attrs.items():
+                storage._metadata[k] = v # TODO: check?
         return storage
         
     # Magic methods TODO: Needs extensive review
@@ -583,4 +615,3 @@ class BaseStorage(ABC):
         return (f"{self.__class__.__name__}({len(self)} objects, "
                 f"{self.num_features} feature sets, "
                 f"{len(self.objects)} object types)")
-    

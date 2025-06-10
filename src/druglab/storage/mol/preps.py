@@ -32,6 +32,7 @@ class GenericMoleculePrepper(BaseStorageModifier):
     def __init__(self,
                  # Standardization parameters
                  remove_salts: bool = True,
+                 keep_largest_frag: bool = True,
                  neutralize: bool = True,
                  standardize_tautomers: bool = True,
                  # Hydrogen handling
@@ -81,6 +82,7 @@ class GenericMoleculePrepper(BaseStorageModifier):
         
         # Standardization settings
         self.remove_salts = remove_salts
+        self.keep_largest_frag = keep_largest_frag
         self.neutralize = neutralize
         self.standardize_tautomers = standardize_tautomers
         
@@ -105,6 +107,10 @@ class GenericMoleculePrepper(BaseStorageModifier):
         # Initialize standardization tools
         if self.remove_salts:
             self.salt_remover = SaltRemover.SaltRemover()
+        if self.keep_largest_frag:
+            self.fragment_chooser = rdMolStandardize.LargestFragmentChooser(
+                preferOrganic=True
+            )
         if self.neutralize:
             self.uncharger = rdMolStandardize.Uncharger()
         if self.standardize_tautomers:
@@ -124,16 +130,27 @@ class GenericMoleculePrepper(BaseStorageModifier):
             
         # Remove salts
         if self.remove_salts:
+            blocker = rdBase.BlockLogs()
             mol = self.salt_remover.StripMol(mol)
+            del blocker
+
+        # Keep largest fragment
+        if self.keep_largest_frag:
+            blocker = rdBase.BlockLogs()
+            mol = self.fragment_chooser.choose(mol)
+            del blocker
         
         # Neutralize charges
         if self.neutralize:
-            blocker = rdBase.BlockLogs()  # noqa: F841
+            blocker = rdBase.BlockLogs()
             mol = self.uncharger.uncharge(mol)
+            del blocker
         
         # Standardize tautomers
         if self.standardize_tautomers:
+            blocker = rdBase.BlockLogs()
             mol = self.tautomer_enumerator.Canonicalize(mol)
+            del blocker
         
         return mol
     
@@ -256,7 +273,11 @@ class GenericMoleculePrepper(BaseStorageModifier):
         
         # Generate conformers
         if self.cgen:
-            rdDistGeom.EmbedMultipleConfs(mol, self.cgen_n, self.cgen_params)
+            suc = rdDistGeom.EmbedMultipleConfs(mol, 
+                                                self.cgen_n, 
+                                                self.cgen_params)
+            if len(suc) == 0:
+                return None
         
         # Cluster conformers before optimization if requested
         if self.cclust and not self.cclust_afteropt:
@@ -265,8 +286,10 @@ class GenericMoleculePrepper(BaseStorageModifier):
         # Optimize conformers
         if self.copt and mol.GetNumConformers() > 0:
             rdForceFieldHelpers.MMFFOptimizeMoleculeConfs(mol, 
-                                                            self.copt_nthreads, 
-                                                            self.copt_maxits)
+                                                          self.copt_nthreads, 
+                                                          self.copt_maxits)
+        if self.copt and mol.GetNumConformers() == 0:
+            return None
         
         # Cluster conformers after optimization if requested
         if self.cclust and self.cclust_afteropt:

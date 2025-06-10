@@ -364,10 +364,7 @@ class RxnStorage(BaseStorage):
         group = self.get_reactant_group(rxn_id, reactant_id)
         return group.get_molecules(mol_storage)
     
-    def clean_reactions(self, 
-                        sanitize_reactions: bool = True,
-                        remove_duplicates: bool = True,
-                        initiate_reactions: bool = True) -> List[int]:
+    def clean_reactions(self) -> List[int]:
         """
         Clean the reaction storage.
         
@@ -385,6 +382,9 @@ class RxnStorage(BaseStorage):
         blocker = rdBase.BlockLogs()  # noqa: F841
         
         for i, rxn in enumerate(self.reactions):
+            if rxn is None:
+                continue
+
             # Check for duplicates
             rxn_sma = rdRxn.ReactionToSmarts(rxn)
             if rxn_sma in seen_smarts:
@@ -547,7 +547,10 @@ class RxnStorage(BaseStorage):
                 # Create mapping from original reaction IDs to new reaction IDs
                 if target_rxn_ids is not None:
                     sorted_indices = sorted(target_rxn_ids)
-                    old_to_new_rxn_id = {old_id: new_id for new_id, old_id in enumerate(sorted_indices)}
+                    old_to_new_rxn_id = {
+                        old_id: new_id 
+                        for new_id, old_id in enumerate(sorted_indices)
+                    }
                 else:
                     old_to_new_rxn_id = None
                 
@@ -569,7 +572,8 @@ class RxnStorage(BaseStorage):
                             if group_info['template_smarts'] else None
                         
                         # Update reaction ID to match the new index in the subset
-                        new_rxn_id = old_to_new_rxn_id[original_rxn_id] if old_to_new_rxn_id else original_rxn_id
+                        new_rxn_id = old_to_new_rxn_id[original_rxn_id] \
+                            if old_to_new_rxn_id else original_rxn_id
                         
                         group = ReactantGroup(
                             template,
@@ -591,17 +595,13 @@ class RxnStorage(BaseStorage):
     @classmethod
     def load(cls, 
              path: Union[str, Path], 
-             indices: Optional[Union[List[int], np.ndarray]] = None) -> 'RxnStorage':
+             indices: Optional[Union[List[int], np.ndarray]] = None) -> RxnStorage:
         """Load storage from file."""
-        path = Path(path)
-        with h5py.File(path, "r") as f:
-            storage = cls()
-            storage.load_objects_from_file(f, indices)
-            storage.load_features_from_file(f, indices, append=False)
+        storage: RxnStorage = super().load(path, indices)
             
-            # Rebuild reactant groups after loading
-            if not storage._reactant_groups and len(storage.reactions) > 0:
-                storage._build_reactant_groups()
+        # Rebuild reactant groups after loading
+        if not storage._reactant_groups and len(storage.reactions) > 0:
+            storage._build_reactant_groups()
                 
         return storage
     

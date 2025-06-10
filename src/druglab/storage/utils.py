@@ -1,5 +1,10 @@
 from typing import List, Dict, Any
 
+import dill
+import logging
+
+logger = logging.getLogger(__name__)
+
 def _dict_to_list(objects_dict: Dict[str, List[Any]]) \
     -> List[Dict[str, Any]]:
     """Convert dictionary of lists to list of dictionaries.
@@ -33,3 +38,43 @@ def _list_to_dict(objects_list: List[Dict[str, Any]],
                     for key in (required_keys or objects_list[0].keys())}
     
     return objects_dict
+
+def serialize_objects(objects: List[Any]) -> List[bytes]:
+    """Serialize objects using dill.
+    
+    Args:
+        objects: List of objects
+        
+    Returns:
+        List of serialized objects as bytes
+    """
+    serialized = []
+    for obj in objects:
+        try:
+            serialized.append(dill.dumps(obj))
+        except Exception as e:
+            logger.warning(f"Failed to serialize object: {e}")
+            serialized.append(b"")
+    return serialized
+
+def deserialize_objects(serialized_objs: List[bytes]) -> List[Any]:
+    """Deserialize objects from bytes.
+    
+    Args:
+        serialized_objs: List of serialized objects as bytes
+        
+    Returns:
+        List of objects
+    """
+    objs = []
+    for serialized in serialized_objs:
+        if not serialized:
+            objs.append(None)
+            continue
+        try:
+            obj = dill.loads(serialized)
+            objs.append(obj)
+        except Exception as e:
+            logger.warning(f"Failed to deserialize route: {e}")
+            objs.append(None)
+    return objs

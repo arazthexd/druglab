@@ -27,7 +27,8 @@ class BaseStorageModifier(ABC):
             n_processes: Number of processes to use for parallel processing.
                         If 1, uses single-threaded processing.
             chunk_size: Size of chunks for batch processing. If None, processes
-                       all objects at once (or uses reasonable default for multiprocessing).
+                       all objects at once (or uses reasonable default for 
+                       multiprocessing).
         """
         self.n_processes = max(1, n_processes)
         self.chunk_size = chunk_size
@@ -144,10 +145,12 @@ class BaseStorageModifier(ABC):
                             for obj in tqdm(objects_list)]
         else:
             # Multi-threaded processing
-            with mpire.WorkerPool(processes=self.n_processes) as pool:
+            with mpire.WorkerPool(n_jobs=self.n_processes) as pool:
                 process_func = partial(self.modify_objects_wrapper, 
                                        context_data=context_data)
-                modified_list = pool.map(process_func, objects_list)
+                modified_list = pool.map(process_func, 
+                                         [(o, ) for o in objects_list],
+                                         progress_bar=True)
         
         # Validate that we have the same number of objects
         if len(modified_list) != len(objects_list):
@@ -157,7 +160,8 @@ class BaseStorageModifier(ABC):
             )
         
         # Apply modifications to storage
-        self.apply_modifications(storage, modified_list, context_data)
+        self.apply_modifications(storage, modified_list, context_data, 
+                                 remove_fails=remove_fails)
         
         return storage
     

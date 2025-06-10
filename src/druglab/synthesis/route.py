@@ -76,8 +76,13 @@ class SynthesisRoute:
     def get_reactant_indices(self) -> List[int]:
         """Get all reactant molecule indices used in route."""
         return [step.mol_idx for step in self.steps 
-                if step.step_type in [StepType.ADD_REACTANT, 
-                                      StepType.USE_INTERMEDIATE]
+                if step.step_type == StepType.ADD_REACTANT
+                and step.mol_idx is not None]
+    
+    def get_intermediate_indices(self) -> List[int]:
+        """Get all intermediate/product molecule indices used in route."""
+        return [step.mol_idx for step in self.steps 
+                if step.step_type == StepType.APPLY_REACTION
                 and step.mol_idx is not None]
     
     def get_reaction_indices(self) -> List[int]:

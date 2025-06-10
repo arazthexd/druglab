@@ -14,7 +14,6 @@ from .utils import _dict_to_list
 
 logger = logging.getLogger(__name__)
 
-
 class StorageFeaturizer(ABC):
     """Abstract base class for featurizing BaseStorage objects.
     
@@ -126,7 +125,7 @@ class StorageFeaturizer(ABC):
             # Return only successful features
             return np.vstack(successful_features)
         else:
-            # Replace None with zero vectors
+            # Replace None with nan feats
             processed_features = []
             for features in features_list:
                 if features is not None:
@@ -234,7 +233,7 @@ class StorageFeaturizer(ABC):
         if remove_fails and success_indices:
             if len(success_indices) < len(storage):
                 logger.info(f"Removing {len(storage) - len(success_indices)} "
-                           f"objects that failed featurization")
+                            f"objects that failed featurization")
                 storage = storage.subset(success_indices)
         
         # Apply featurization to storage

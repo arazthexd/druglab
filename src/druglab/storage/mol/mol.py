@@ -98,7 +98,7 @@ class MolStorage(BaseStorage):
         conformer_mols = self.get_conformers_as_molecules()
         
         # Create new storage with conformer features as main features
-        conformer_storage = MolStorage(
+        conformer_storage = self.__class__(
             molecules=conformer_mols,
             features=self._conformer_features,
             metadata=self._metadata.copy()
@@ -152,13 +152,18 @@ class MolStorage(BaseStorage):
             if remove_none and mol is None:
                 logger.debug(f"Removing None molecule at index {i}")
                 continue
+
+            if remove_none and mol.GetNumAtoms() == 0:
+                logger.debug(f"Removing empty molecule at index {i}")
+                continue
             
             # Sanitize if requested
             if sanitize and mol is not None:
                 try:
                     Chem.SanitizeMol(mol)
                 except Exception as e:
-                    logger.warning(f"Failed to sanitize molecule at index {i}: {e}")
+                    logger.warning(f"Failed to sanitize molecule at index {i}:" 
+                                   f" {e}")
                     if remove_none:
                         continue
             
@@ -221,7 +226,7 @@ class MolStorage(BaseStorage):
         subset_conformer_features = \
             self._conformer_features.subset(conformer_indices)
         
-        return MolStorage(
+        return self.__class__(
             molecules=base_subset._objects['molecules'],
             features=base_subset._features,
             metadata=base_subset._metadata,
@@ -289,7 +294,7 @@ class MolStorage(BaseStorage):
                 features = self._conformer_features.get_features(feat_key)
                 metadata = self._conformer_features.get_metadata(feat_key)
                 
-                self._append_to_dataset(conf_group, feat_key, features)
+                self._append_to_featdb(conf_group, feat_key, features)
                 if isinstance(metadata, StorageMetadata):
                     for key, val in metadata.items():
                         conf_group[feat_key].attrs[key] = val
@@ -312,7 +317,8 @@ class MolStorage(BaseStorage):
         for key in conf_grp:
             conformer_features.add_features(
                 key=key,
-                features=conf_grp[key][indices] if indices is not None else conf_grp[key][:],
+                features=conf_grp[key][indices] \
+                    if indices is not None else conf_grp[key][:],
                 dtype=np.dtype(conf_grp[key].attrs.get('dtype', 'float64')),
                 featurizer=None,
                 metadata=dict(conf_grp[key].attrs)
