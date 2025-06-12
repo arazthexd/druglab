@@ -3,6 +3,7 @@ from typing import List, Tuple, Optional
 from dataclasses import dataclass
 import random
 import logging
+from copy import deepcopy
 from concurrent.futures import ProcessPoolExecutor
 
 import numpy as np
@@ -100,7 +101,7 @@ class SamplingConfig:
     allow_multi_prods: bool = True
     allow_branching: bool = True # TODO: Implement not branch version
     max_retries: int = 10 # TODO: Implement max retries
-    random_seed: Optional[int] = None
+    random_seed: Optional[int] = None # TODO: This doesn't seem to work
 
 class RouteTemplateSamplingComponent:
     """Component for sampling routes at a specific template step."""
@@ -303,14 +304,15 @@ class EfficientSynthesisRouteSampler:
         self.config = config or SamplingConfig()
         if self.config.random_seed is not None:
             random.seed(self.config.random_seed)
-            np.random.seed(self.config.random_seed)
+            np.random.seed(self.config.random_seed) # TODO: Doesn't seem to work
     
     def sample_routes(self, 
                       rxn_storage: RxnStorage,
                       mol_storage: MolStorage,
                       n_processes: int = 1,
                       show_progress: bool = True,
-                      only_final: bool = True) -> List[SynthesisRoute]:
+                      only_final: bool = True) \
+                        -> Tuple[List[SynthesisRoute], List[Chem.Mol]]:
         """
         Sample synthesis routes using efficient template-based batching.
         
@@ -322,7 +324,8 @@ class EfficientSynthesisRouteSampler:
                 if False, return all intermediate routes
             
         Returns:
-            List of sampled synthesis routes
+            List of sampled synthesis routes and list of 
+                generated intermediates
         """
         if len(rxn_storage) == 0:
             logger.warning("Empty reaction storage provided")
@@ -424,11 +427,11 @@ class EfficientSynthesisRouteSampler:
                 break
             
             # Add new routes to available batches for next step
-            available_route_batches.append(new_routes)
+            available_route_batches.append(deepcopy(new_routes))
             
             # Collect routes if needed
             if not only_final:
-                all_sampled_routes.extend(new_routes)
+                all_sampled_routes.extend(deepcopy(new_routes))
         
         # Return final routes or all routes based on flag
         if only_final and available_route_batches:
