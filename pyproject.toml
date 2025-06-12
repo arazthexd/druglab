@@ -21,6 +21,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest"]
+full = ["pandas"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

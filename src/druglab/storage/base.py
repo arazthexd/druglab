@@ -7,7 +7,11 @@ import random
 
 import h5py
 import numpy as np
-import pandas as pd
+try:
+    import pandas as pd
+    PANDAS_AVAILABLE = True
+except ImportError:
+    PANDAS_AVAILABLE = False
 from sklearn.neighbors import NearestNeighbors
 
 try:
@@ -200,6 +204,9 @@ class StorageFeatures:
         Returns:
             DataFrame with features as columns.
         """
+        if not PANDAS_AVAILABLE:
+            raise ModuleNotFoundError("In order to use `to_dataframe`, pandas "
+                                      "needs to be installed.")
         if feature_keys is None:
             feature_keys = list(self._features.keys())
         elif isinstance(feature_keys, str):
