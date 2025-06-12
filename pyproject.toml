@@ -4,15 +4,19 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "druglab"
-version = "0.0.1"
+version = "0.0.2"
 description = "A personal toolkit for computational drug design."
 dependencies = [
   "numpy >=1.21",
   "rdkit >=2024",
   "mpire",
   "scikit-learn",
-  "pyyaml",
-  "dill"
+  "tqdm",
+  "click",
+  "dill",
+  "h5py",
+  "matplotlib"
+  # "pyyaml",
 ]
 
 [project.optional-dependencies]
