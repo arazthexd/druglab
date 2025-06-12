@@ -150,6 +150,9 @@ class PharmacophoreList:
     def __add__(self, other: PharmacophoreList):
         return PharmacophoreList(self.pharms + other.pharms)
     
+    def __getitem__(self, idx: int):
+        return self.pharms[idx]
+    
     @property
     def conformer(self) -> List[Chem.Conformer]:
         return [pharm.conformer for pharm in self.pharms]
