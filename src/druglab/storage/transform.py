@@ -3,7 +3,11 @@ from typing import List, Any, Optional, Union, Type, Callable
 from abc import ABC, abstractmethod
 import logging
 import numpy as np
-import pandas as pd
+try:
+    import pandas as pd
+    PANDAS_AVAILABLE = True
+except ImportError:
+    PANDAS_AVAILABLE = False
 
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler, MinMaxScaler, RobustScaler
@@ -487,7 +491,7 @@ class FAMDTransform(BaseFeatureTransform):
         """
         if not PRINCE_AVAILABLE:
             raise ImportError("prince library is required for FAMD. "
-                            "Install with: pip install prince")
+                              "Install with: pip install prince")
         
         super().__init__(input_feature_keys, output_feature_key, 
                          remove_input, dtype)
