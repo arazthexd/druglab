@@ -508,10 +508,14 @@ class RxnStorage(BaseStorage):
                 }
                 group_data.append(str(group_info))  # Store as string for HDF5
             
-            rg_group.create_dataset('group_data', 
-                                    data=group_data,
-                                    dtype=h5py.string_dtype())
-    
+            if 'group_data' not in rg_group:
+                rg_group.create_dataset('group_data', 
+                                        data=group_data,
+                                        maxshape=(None,),
+                                        dtype=h5py.string_dtype())
+            else:
+                rg_group['group_data'].resize(len(group_data), axis=0)
+                rg_group['group_data'][-len(group_data):] = group_data
     
     def load_features_from_file(self,
                                 db: h5py.File,

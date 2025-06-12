@@ -1,5 +1,5 @@
 from __future__ import annotations
-from typing import List, Any, Dict, Optional, Union
+from typing import List, Any, Dict, Optional, Union, Tuple
 import logging
 
 import numpy as np
@@ -144,6 +144,7 @@ class MolStorage(BaseStorage):
         Returns:
             List of indices of molecules that were kept
         """
+        # TODO: merge duplicate conformers option
         keep_indices = []
         seen_smiles = set() if remove_duplicates else None
         
@@ -215,9 +216,11 @@ class MolStorage(BaseStorage):
         # Handle conformer features - need to map molecule idx to conf idx
         conformer_indices = []
         conformer_start = 0
+
+        nconfs_per_mol = self.num_conformers_per_molecule
         
         for mol_idx in range(len(self)):
-            n_conf = self.num_conformers_per_molecule[mol_idx]
+            n_conf = nconfs_per_mol[mol_idx]
             if mol_idx in indices:
                 conformer_indices.extend(range(conformer_start, 
                                                conformer_start + n_conf))
@@ -233,6 +236,27 @@ class MolStorage(BaseStorage):
             conformer_features=subset_conformer_features
         )
     
+    def confids_to_molids(self, 
+                          confids: Union[List[int], np.ndarray]) \
+                            -> Tuple[List[int], List[List[int]]]:
+        mol_indices = []
+        conf_indices = []
+        
+        conformer_count = 0
+
+        for mol_idx, nconfs in enumerate(self.num_conformers_per_molecule):
+            mol_confs = []
+            for conf_idx in range(nconfs):
+                if conformer_count in confids:
+                    mol_confs.append(conf_idx)
+                conformer_count += 1
+            
+            if mol_confs:
+                mol_indices.append(mol_idx)
+                conf_indices.append(mol_confs)
+
+        return mol_indices, conf_indices
+
     def get_save_ready_objects(self) -> Dict[str, List[Any]]: 
         """Convert molecules to JSON strings for saving."""
         # TODO: opt to change serialization of mols

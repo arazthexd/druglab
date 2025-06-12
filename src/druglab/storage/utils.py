@@ -51,7 +51,7 @@ def serialize_objects(objects: List[Any]) -> List[bytes]:
     serialized = []
     for obj in objects:
         try:
-            serialized.append(dill.dumps(obj))
+            serialized.append(dill.dumps(obj, 0))
         except Exception as e:
             logger.warning(f"Failed to serialize object: {e}")
             serialized.append(b"")

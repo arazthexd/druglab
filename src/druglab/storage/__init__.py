@@ -11,7 +11,8 @@ __all__ = [
     'PCATransform', 'MCATransform', 'FAMDTransform',
     'TSNETransform',
     'ScalerTransform',
-    'serialize_objects', 'deserialize_objects'
+    'serialize_objects', 'deserialize_objects',
+    'BaseStorageFilter', 'FeatureBasedFilter', 'CustomFuncFilter'
 ]
 
 from .base import BaseStorage, StorageFeatures, StorageMetadata
@@ -33,3 +34,4 @@ from .transform import (
     ScalerTransform,
 )
 from .utils import serialize_objects, deserialize_objects
+from .filter import BaseStorageFilter, FeatureBasedFilter, CustomFuncFilter

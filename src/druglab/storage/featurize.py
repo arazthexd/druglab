@@ -219,10 +219,13 @@ class StorageFeaturizer(ABC):
                              for obj in tqdm(objects_list)]
         else:
             # Multi-threaded processing
-            with mpire.WorkerPool(processes=self.n_processes) as pool:
+            with mpire.WorkerPool(n_jobs=self.n_processes) as pool:
                 process_func = partial(self.compute_features_wrapper, 
                                        context_data=context_data)
-                features_list = pool.map(process_func, objects_list)
+                features_list = pool.map(process_func, 
+                                         [(o, ) for o in objects_list],
+                                         progress_bar=True,
+                                         concatenate_numpy_output=False)
         
         # Validate features
         success_indices = self.get_success_indices(features_list) \

@@ -107,9 +107,9 @@ class StorageFeatures:
         
         if metadata:
             if any(key in feat_metadata for key in metadata):
-                logger.warning("When adding features to storage feats, some "
-                               "metadata keys were identical. They will be "
-                               "overwritten.")
+                logger.debug("When adding features to storage feats, some "
+                             "metadata keys were identical. They will be "
+                             "overwritten.")
             feat_metadata.update(metadata)
         
         self._metadata[key] = feat_metadata
@@ -502,7 +502,6 @@ class BaseStorage(ABC):
             features.add_features(key, 
                                   feat_grp[key][indices],
                                   metadata=None or dict(feat_grp[key].attrs))
-            print(features.keys())
         
         if append:
             self.features.extend(features)
