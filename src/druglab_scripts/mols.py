@@ -1,7 +1,5 @@
 from typing import Tuple, Optional, List, Iterator
 from pathlib import Path
-import tempfile
-import h5py
 import click
 
 from druglab.storage import (
@@ -14,24 +12,10 @@ from druglab.featurize import (
 )
 from druglab.io import load_mols_file
 
+from druglab_scripts.utils import _get_database_len, _create_out_file
+
 MFNAMES = list(MOLFEATURIZER_GENERATORS.keys())
 CFNAMES = list(CONFFEATURIZER_GENERATORS.keys())
-
-def _create_out_file(out_path: str | Path, overwrite: bool):
-    if isinstance(out_path, str):
-        out_path = Path(out_path)
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    if not overwrite and out_path.exists():
-        raise FileExistsError(f"Output file {out_path} already exists.")
-    if overwrite and out_path.exists():
-        with tempfile.NamedTemporaryFile(suffix='.h5', delete=False) as f:
-            out_path = Path(f.name)
-    return out_path
-
-def _get_database_len(path: Path, key: str):
-    with h5py.File(path, 'r') as f:
-        dbl = f[key].shape[0]
-    return dbl
 
 def _iterate_moldb_batches(path: str | Path, 
                            batch_size: int) -> Iterator[MolStorage]:
@@ -42,7 +26,6 @@ def _iterate_moldb_batches(path: str | Path,
         click.echo(f"Batch {batchid} with size {len(db_batch)} was loaded.")
         batchid += 1
         yield db_batch
-
 
 @click.group(name='molecules', help="Operations related to molecules")
 def molecule_operations():
@@ -55,13 +38,28 @@ def molecule_operations():
               help='Input files (sdf and smi are currently supported.)')
 @click.option('-o', '--output', type=click.Path(), default='mols.h5',
               help="Output database file (.h5)")
-def create_db(inputs: Tuple[Path, ...], 
-              output: Path):
-    molecules = MolStorage()
-    molecules.write(output)
+@click.option('-ow', '--overwrite', is_flag=True, default=False,
+              help="Overwrite existing file")
+@click.option('-sd', '--smi-delimiter', type=str, default='')
+def create_mols_db(inputs: Tuple[str, ...], 
+              output: str,
+              overwrite: bool,
+              smi_delimiter: str):
+    if smi_delimiter == "TAB":
+        smi_delimiter = "\t"
+
+    output: Path = Path(output)
+    if overwrite:
+        output.unlink()
+
+    click.echo("Creating a molecule database")
     for filename in inputs:
-        molecules = load_mols_file(filename)
+        click.echo(f"Reading file: {Path(filename).name}")
+
+        molecules = load_mols_file(filename, smi={'delimiter': smi_delimiter})
         molecules = MolStorage(molecules)
+
+        click.echo(f"Writing {len(molecules)} loaded mols to database")
         molecules.write(output, mode='a')
 
 @molecule_operations.command(name='clean',
@@ -92,6 +90,7 @@ def clean_mols(database: str,
                batch_size: int,):
     out_path = _create_out_file(output, overwrite)
 
+    click.echo("Cleaning molecules from the database")
     for molecules in _iterate_moldb_batches(database, batch_size):
         keep_ids = molecules.clean_molecules(
             remove_none=remove_failed,
@@ -251,6 +250,9 @@ def featurize_mols(database: str,
         molecules.write(out_path, mode='a')
     
     out_path.replace(output)
+
+# TODO: Filtering script
+# TODO: Conversion between standard files and database script
 
 if __name__ == "__main__":
     molecule_operations()
