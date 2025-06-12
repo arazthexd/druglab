@@ -1,4 +1,4 @@
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Callable
 import logging
 
 from rdkit import Chem
@@ -16,6 +16,18 @@ from ..modify import BaseStorageModifier
 from ..base import BaseStorage
 
 logger = logging.getLogger(__name__)
+
+class _CGenParamHolder:
+    def __init__(self, base: str = None):
+        if base is None:
+            base = 'ETKDGv3'
+        self.base = base
+        self.maxit = None
+
+    def get_params(self) -> rdDistGeom.EmbedParameters:
+        params: rdDistGeom.EmbedParameters = getattr(rdDistGeom, self.base)()
+        params.maxIterations = self.maxit
+        return params
 
 class GenericMoleculePrepper(BaseStorageModifier):
     """Generic molecule preparation class that standardizes and prepares molecules.
@@ -42,7 +54,7 @@ class GenericMoleculePrepper(BaseStorageModifier):
                  cgen: bool = False, 
                  cgen_n: int = 1, 
                  cgen_maxatts: Optional[int] = None,
-                 cgen_params: Optional[rdDistGeom.EmbedParameters] = None,
+                 cgen_parambase: Optional[str] = None,
                  # Conformer optimization
                  copt: bool = False,
                  copt_nthreads: int = 1,
@@ -91,7 +103,7 @@ class GenericMoleculePrepper(BaseStorageModifier):
         self.removehs = removehs
         self.cgen = cgen
         self.cgen_n = cgen_n
-        self.cgen_params = cgen_params or rdDistGeom.ETKDGv3()
+        self.cgen_paramgen: _CGenParamHolder = _CGenParamHolder(cgen_parambase)
         self.cgen_maxatts = cgen_maxatts or (cgen_n * 4)
         self.copt = copt
         self.copt_nthreads = copt_nthreads
@@ -102,19 +114,19 @@ class GenericMoleculePrepper(BaseStorageModifier):
         self.calign = calign
         
         # Set up conformer generation parameters
-        self.cgen_params.maxIterations = self.cgen_maxatts
+        self.cgen_paramgen.maxit = self.cgen_maxatts
         
-        # Initialize standardization tools
-        if self.remove_salts:
-            self.salt_remover = SaltRemover.SaltRemover()
-        if self.keep_largest_frag:
-            self.fragment_chooser = rdMolStandardize.LargestFragmentChooser(
-                preferOrganic=True
-            )
-        if self.neutralize:
-            self.uncharger = rdMolStandardize.Uncharger()
-        if self.standardize_tautomers:
-            self.tautomer_enumerator = rdMolStandardize.TautomerEnumerator()
+        # # Initialize standardization tools
+        # if self.remove_salts:
+        #     self.salt_remover = SaltRemover.SaltRemover()
+        # if self.keep_largest_frag:
+        #     self.fragment_chooser = rdMolStandardize.LargestFragmentChooser(
+        #         preferOrganic=True
+        #     )
+        # if self.neutralize:
+        #     self.uncharger = rdMolStandardize.Uncharger()
+        # if self.standardize_tautomers:
+        #     self.tautomer_enumerator = rdMolStandardize.TautomerEnumerator()
     
     def _standardize_molecule(self, mol: Chem.Mol) -> Chem.Mol:
         """Standardize a molecule by removing salts and neutralizing charges.
@@ -131,25 +143,31 @@ class GenericMoleculePrepper(BaseStorageModifier):
         # Remove salts
         if self.remove_salts:
             blocker = rdBase.BlockLogs()
-            mol = self.salt_remover.StripMol(mol)
+            salt_remover = SaltRemover.SaltRemover()
+            mol = salt_remover.StripMol(mol)
             del blocker
 
         # Keep largest fragment
         if self.keep_largest_frag:
             blocker = rdBase.BlockLogs()
-            mol = self.fragment_chooser.choose(mol)
+            fragment_chooser = rdMolStandardize.LargestFragmentChooser(
+                preferOrganic=True
+            )
+            mol = fragment_chooser.choose(mol)
             del blocker
         
         # Neutralize charges
         if self.neutralize:
             blocker = rdBase.BlockLogs()
-            mol = self.uncharger.uncharge(mol)
+            uncharger = rdMolStandardize.Uncharger()
+            mol = uncharger.uncharge(mol)
             del blocker
         
         # Standardize tautomers
         if self.standardize_tautomers:
             blocker = rdBase.BlockLogs()
-            mol = self.tautomer_enumerator.Canonicalize(mol)
+            tautomer_enumerator = rdMolStandardize.TautomerEnumerator()
+            mol = tautomer_enumerator.Canonicalize(mol)
             del blocker
         
         return mol
@@ -188,7 +206,7 @@ class GenericMoleculePrepper(BaseStorageModifier):
             
         return mol
 
-    def _prepare_molecule(self, mol: Chem.Mol) -> Chem.Mol:
+    def _prepare_molecule(self, mol: Chem.Mol) -> Chem.Mol: # TODO: Dupl???
         """Prepare a single molecule with all specified operations.
         
         Args:
@@ -215,7 +233,8 @@ class GenericMoleculePrepper(BaseStorageModifier):
         
         # Generate conformers
         if self.cgen:
-            rdDistGeom.EmbedMultipleConfs(mol, self.cgen_n, self.cgen_params)
+            rdDistGeom.EmbedMultipleConfs(mol, self.cgen_n, 
+                                          self.cgen_paramgen.get_params())
         
         # Cluster conformers before optimization if requested
         if self.cclust and not self.cclust_afteropt:
@@ -275,7 +294,7 @@ class GenericMoleculePrepper(BaseStorageModifier):
         if self.cgen:
             suc = rdDistGeom.EmbedMultipleConfs(mol, 
                                                 self.cgen_n, 
-                                                self.cgen_params)
+                                                self.cgen_paramgen.get_params())
             if len(suc) == 0:
                 return None
         

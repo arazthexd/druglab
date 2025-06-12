@@ -4,9 +4,12 @@ import click
 import click_config_file
 from tqdm import tqdm
 import time
+from functools import partial
 
 from rdkit import Chem
 from rdkit.Chem import QED
+from rdkit import rdBase
+rdBase.DisableLog('rdApp.*')
 
 from druglab.storage import (
     MolStorage,
@@ -19,6 +22,9 @@ from druglab.synthesis.sampling.batched import SamplingConfig
 from druglab.synthesis.storage import SynRouteStorage
 
 from druglab_scripts.utils import _create_out_file
+
+def is_mol_in_seen(mol, seen):
+    return Chem.MolToSmiles(mol) not in seen
 
 @click.group(name='reactions',
              help="Operations related to reactions and forward synthesis")
@@ -155,13 +161,17 @@ def sample_products(reaction_database: str,
                     overwrite: bool,
                     filter_qed: float):
     
+    blocker = rdBase.BlockLogs()
+    import logging
+    logging.basicConfig(level=logging.DEBUG, filename="log.txt", filemode="w")
+    
     # WAITING TO GO TO OPTIONS:
     min_steps = 1
     max_steps = 5
-    n_routes_per_template = 1500
+    n_routes_per_template = 1000
     n_template_batches = 50
     allow_multi_prods = False
-    random_seed = 2025
+    random_seed = 2026
     n_processes = 14
     only_final = True
     
@@ -214,41 +224,25 @@ def sample_products(reaction_database: str,
 
         # ==============
 
-        click.echo("Removing previously seen products")
-        storage_filter = CustomFuncFilter(
-            lambda mol: Chem.MolToSmiles(mol) not in seen_prods,
-            input_keys=['molecules'],
-            n_processes=n_processes,
-            name='Seen SMILES Filter'
-        )
-        keep_ids = storage_filter.filter(products)
-        products = products.subset(keep_ids)
-        routes = routes.subset_by_component_ids(intermediate_ids=keep_ids)
-        seen_prods.update(
-            [Chem.MolToSmiles(prod) for prod in products.molecules]
-        )
-        click.echo(f"Remaining sampled routes: {len(routes)}")
-        click.echo(f"Remaining sampled products/intermediates: {len(products)}")
+        # click.echo("Removing previously seen products")
+        # storage_filter = CustomFuncFilter(
+        #     partial(is_mol_in_seen, seen=seen_prods),
+        #     input_keys=['molecules'],
+        #     n_processes=n_processes,
+        #     name='Seen SMILES Filter'
+        # )
+        # keep_ids = storage_filter.filter(products)
+        # products = products.subset(keep_ids)
+        # routes = routes.subset_by_component_ids(intermediate_ids=keep_ids)
+        # seen_prods.update(
+        #     [Chem.MolToSmiles(prod) for prod in products.molecules]
+        # )
+        # click.echo(f"Remaining sampled routes: {len(routes)}")
+        # click.echo(f"Remaining sampled products/intermediates: {len(products)}")
 
         # ==============
 
-        click.echo(f"Filtering products based on given config: "
-                   f"QED>{filter_qed}")
-        storage_filter = CustomFuncFilter(
-            lambda mol: QED.qed(mol) > filter_qed,
-            input_keys=['molecules'],
-            n_processes=n_processes,
-            name='QED Filter'
-        )
-        keep_ids = storage_filter.filter(products)
-        products = products.subset(keep_ids)
-        routes = routes.subset_by_component_ids(intermediate_ids=keep_ids)
-        click.echo(f"Remaining sampled routes: {len(routes)}")
-        click.echo(f"Remaining sampled products/intermediates: {len(products)}")
-
-        # ==============
-
-        click.echo("Removing products that are not in final reactions")
+        click.echo("Removing products not in final reactions")
         keep_ids = set()
         for i, route in enumerate(routes.routes):
             keep_ids.update(route.get_intermediate_indices())
@@ -260,6 +254,29 @@ def sample_products(reaction_database: str,
 
         # ==============
 
+        click.echo(f"Filtering products based on given config: "
+                   f"QED>{filter_qed}")
+        def task(mol: Chem.Mol):
+            blocker = rdBase.BlockLogs()
+            if filter_qed > 0.0:
+                if QED.qed(mol) < filter_qed:
+                    return False
+            del blocker
+            return True
+        
+        storage_filter = CustomFuncFilter(
+            task,
+            input_keys=['molecules'],
+            n_processes=n_processes,
+            name='QED Filter'
+        )
+        keep_ids = storage_filter.filter(products)
+        products = products.subset(keep_ids)
+        routes = routes.subset_by_component_ids(intermediate_ids=keep_ids)
+        click.echo(f"Remaining sampled routes: {len(routes)}")
+        click.echo(f"Remaining sampled products/intermediates: {len(products)}")
+
+        # ==============
 
         click.echo("Reindexing route intermediate indices before saving")
         for i, route in enumerate(routes.routes):

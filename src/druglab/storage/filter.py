@@ -72,6 +72,7 @@ class BaseStorageFilter(ABC):
                             idx: int,
                             context_data: Any) -> bool:
         """Wrapper around should_keep with error handling."""
+
         try:
             return self.should_keep(object_dict, idx, context_data)
         except Exception as e:
@@ -150,11 +151,13 @@ class BaseStorageFilter(ABC):
                           for i, obj in enumerate(tqdm(objects_list))]
         else:
             # Multi-threaded processing
-            with mpire.WorkerPool(n_jobs=self.n_processes) as pool:
+            with mpire.WorkerPool(n_jobs=self.n_processes,
+                                  use_dill=True) as pool:
                 process_func = partial(self.should_keep_wrapper, 
                                        context_data=context_data)
                 objects_list = [(o, i) for i, o in enumerate(objects_list)]
-                keep_flags = pool.map(process_func, objects_list,
+                keep_flags = pool.map(lambda o, i: process_func(o, i), 
+                                      objects_list,
                                       progress_bar=True)
         
         # Apply filter results and return filtered storage

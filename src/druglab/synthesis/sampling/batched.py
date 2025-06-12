@@ -383,6 +383,8 @@ class EfficientSynthesisRouteSampler:
                                only_final: bool) \
                                 -> Tuple[List[SynthesisRoute], List[Chem.Mol]]:
         """Sample a batch of routes using a random template sequence."""
+
+        blocker = rdBase.BlockLogs()
         
         # Sample a template sequence 
         # (number of intermediates to use at each step)
@@ -432,6 +434,8 @@ class EfficientSynthesisRouteSampler:
             # Collect routes if needed
             if not only_final:
                 all_sampled_routes.extend(deepcopy(new_routes))
+
+        del blocker
         
         # Return final routes or all routes based on flag
         if only_final and available_route_batches:

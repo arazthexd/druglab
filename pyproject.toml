@@ -12,7 +12,7 @@ dependencies = [
   "mpire",
   "scikit-learn",
   "tqdm",
-  "click",
+  "click", "click_config_file",
   "dill",
   "h5py",
   "matplotlib"

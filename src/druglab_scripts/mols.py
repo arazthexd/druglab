@@ -1,6 +1,7 @@
 from typing import Tuple, Optional, List, Iterator
 from pathlib import Path
 import click
+import shutil
 
 from druglab.storage import (
     MolStorage, GenericMoleculePrepper,
@@ -48,9 +49,10 @@ def create_mols_db(inputs: Tuple[str, ...],
     if smi_delimiter == "TAB":
         smi_delimiter = "\t"
 
-    output: Path = Path(output)
-    if overwrite:
+    output: Path = Path(output).absolute()
+    if overwrite and output.exists():
         output.unlink()
+    output.parent.mkdir(parents=True, exist_ok=True)
 
     click.echo("Creating a molecule database")
     for filename in inputs:
@@ -182,7 +184,7 @@ def prepare_mols(database: str,
         cgen=cgen,
         cgen_n=cgen_n,
         cgen_maxatts=cgen_maxatts,
-        cgen_params=None,
+        cgen_parambase=None,
         copt=copt,
         copt_nthreads=copt_nthreads,
         copt_maxits=copt_maxits,
