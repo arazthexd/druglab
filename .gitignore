@@ -1,0 +1,4 @@
+__pycache__
+trash/
+*.egg-info
+.pytest_cache/
