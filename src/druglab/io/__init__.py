@@ -19,10 +19,12 @@ Writers
 - :class:`RXNWriter`
 - :class:`MOLWriter`
 
-Format handlers
-~~~~~~~~~~~~~~~
+Format handlers & Utilities
+~~~~~~~~~~~~~~~~~~~~~~~~~~~
 - :func:`read_file`   - single-file convenience wrapper (returns a list)
 - :func:`write_file`  - single-file convenience wrapper
+- :func:`get_mols`    - quickly extract raw mols from records
+- :func:`get_rxns`    - quickly extract raw rxns from records
 - :data:`SUPPORTED_FORMATS` - frozenset of recognised extensions
 
 Exceptions
@@ -47,6 +49,7 @@ from druglab.io.writers import (
     MOLWriter,
     write_file,
 )
+from druglab.io.utils import get_mols, get_rxns
 
 __all__ = [
     # exceptions
@@ -68,4 +71,7 @@ __all__ = [
     "RXNWriter",
     "MOLWriter",
     "write_file",
+    # utilities
+    "get_mols",
+    "get_rxns"
 ]
