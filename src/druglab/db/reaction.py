@@ -6,7 +6,7 @@ ReactionTable: a BaseTable specialised for RDKit ChemicalReaction objects.
 
 from __future__ import annotations
 
-from typing import Dict, Iterable, List, Optional
+from typing import Dict, Iterable, List, Optional, TYPE_CHECKING
 
 import numpy as np
 import pandas as pd
@@ -18,6 +18,9 @@ try:
     _RDKIT = True
 except ImportError:
     _RDKIT = False
+
+if TYPE_CHECKING:
+    from druglab.io._record import ReactionRecord
 
 
 def _require_rdkit() -> None:
@@ -82,6 +85,40 @@ class ReactionTable(BaseTable["rdChemReactions.ChemicalReaction"]):
         _require_rdkit()
         rxn_list = list(reactions)
         return cls(objects=rxn_list, metadata=metadata)
+    
+    @classmethod
+    def from_records(
+        cls,
+        records: Iterable["ReactionRecord"] 
+    ) -> "ReactionTable":
+        """
+        Bridge method: Convert druglab.io ReactionRecords into a ReactionTable.
+        """
+        rxns = []
+        meta_rows = []
+        for r in records:
+            rxns.append(r.rxn)
+            row = {"name": r.name, "source": r.source, "index": r.index}
+            row.update(r.properties)
+            meta_rows.append(row)
+        
+        metadata = pd.DataFrame(meta_rows)
+        return cls(objects=rxns, metadata=metadata)
+
+    @classmethod
+    def from_file(
+        cls,
+        path: str,
+        **reader_kwargs
+    ) -> "ReactionTable":
+        """
+        Load a table from any supported reaction file format.
+        Uses druglab.io under the hood.
+        """
+        _require_rdkit()
+        from druglab.io import read_file
+        records = read_file(path, **reader_kwargs)
+        return cls.from_records(records)
 
     @classmethod
     def from_smarts(
@@ -137,6 +174,36 @@ class ReactionTable(BaseTable["rdChemReactions.ChemicalReaction"]):
         if metadata is None:
             metadata = pd.DataFrame({"rxn_file": paths})
         return cls(objects=rxns, metadata=metadata)
+    
+    # ------------------------------------------------------------------
+    # Export & Output Bridging
+    # ------------------------------------------------------------------
+    
+    def to_records(self) -> List["ReactionRecord"]: # type: ignore
+        """
+        Bridge method: Convert this table back into druglab.io ReactionRecords.
+        """
+        from druglab.io._record import ReactionRecord
+        records = []
+        for i, rxn in enumerate(self._objects):
+            row_dict = self._metadata.iloc[i].to_dict()
+            name = row_dict.pop("name", "")
+            source = row_dict.pop("source", "")
+            index = row_dict.pop("index", i)
+            
+            records.append(ReactionRecord(
+                rxn=rxn,
+                name=str(name) if not pd.isna(name) else "",
+                properties={k: v for k, v in row_dict.items() if not pd.isna(v)},
+                source=str(source),
+                index=int(index)
+            ))
+        return records
+
+    def to_file(self, path: str, **writer_kwargs) -> None:
+        """Write the table to a supported reaction format via druglab.io."""
+        from druglab.io import write_file
+        write_file(self.to_records(), path, **writer_kwargs)
 
     # ------------------------------------------------------------------
     # Convenience properties
@@ -150,6 +217,13 @@ class ReactionTable(BaseTable["rdChemReactions.ChemicalReaction"]):
             AllChem.ReactionToSmarts(rxn) if rxn is not None else None
             for rxn in self._objects
         ]
+    
+    @property
+    def rxns(self) -> List["rdChemReactions.ChemicalReaction"]:
+        """
+        Flat list of all valid RDKit ChemicalReaction objects in the table.
+        """
+        return [rxn for rxn in self._objects if rxn is not None]
 
     @property
     def n_reactants(self) -> List[int]:

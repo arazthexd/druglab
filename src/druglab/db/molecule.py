@@ -10,7 +10,7 @@ require RDKit raise ``ImportError`` at call time.
 from __future__ import annotations
 
 import pickle
-from typing import Dict, Iterable, List, Optional, Sequence, Union
+from typing import Dict, Iterable, List, Optional, Sequence, Union, TYPE_CHECKING
 
 import numpy as np
 import pandas as pd
@@ -23,6 +23,9 @@ try:
     _RDKIT = True
 except ImportError:
     _RDKIT = False
+
+if TYPE_CHECKING:
+    from druglab.io._record import MoleculeRecord
 
 
 def _require_rdkit() -> None:
@@ -92,6 +95,40 @@ class MoleculeTable(BaseTable["Chem.Mol"]):
         return cls(objects=mol_list, metadata=metadata)
 
     @classmethod
+    def from_records(
+        cls,
+        records: Iterable["MoleculeRecord"]  # type: ignore
+    ) -> "MoleculeTable":
+        """
+        Bridge method: Convert druglab.io MoleculeRecords into a MoleculeTable.
+        """
+        mols = []
+        meta_rows = []
+        for r in records:
+            mols.append(r.mol)
+            row = {"name": r.name, "source": r.source, "index": r.index}
+            row.update(r.properties)
+            meta_rows.append(row)
+        
+        metadata = pd.DataFrame(meta_rows)
+        return cls(objects=mols, metadata=metadata)
+    
+    @classmethod
+    def from_file(
+        cls,
+        path: str,
+        **reader_kwargs
+    ) -> "MoleculeTable":
+        """
+        Load a table from any supported chemical file format (SDF, SMILES, CSV).
+        Uses druglab.io under the hood.
+        """
+        _require_rdkit()
+        from druglab.io import read_file
+        records = read_file(path, **reader_kwargs)
+        return cls.from_records(records)
+
+    @classmethod
     def from_smiles(
         cls,
         smiles: Iterable[str],
@@ -138,6 +175,8 @@ class MoleculeTable(BaseTable["Chem.Mol"]):
         Load molecules from an SDF file.
 
         All SD properties are collected into the metadata DataFrame.
+        Legacy/Explicit SDF loader. 
+        It is recommended to use MoleculeTable.from_file() instead.
         """
         _require_rdkit()
         from rdkit.Chem import PandasTools
@@ -155,6 +194,43 @@ class MoleculeTable(BaseTable["Chem.Mol"]):
         mols = list(df.pop("_mol"))
         metadata = df.reset_index(drop=True)
         return cls(objects=mols, metadata=metadata)
+    
+    # ------------------------------------------------------------------
+    # Export & Output Bridging
+    # ------------------------------------------------------------------
+
+    def to_records(self) -> List["MoleculeRecord"]: # type: ignore
+        """
+        Bridge method: Convert this table back into druglab.io MoleculeRecords.
+        """
+        from druglab.io._record import MoleculeRecord
+        records = []
+        for i, mol in enumerate(self._objects):
+            row_dict = self._metadata.iloc[i].to_dict()
+            name = row_dict.pop("name", "")
+            source = row_dict.pop("source", "")
+            index = row_dict.pop("index", i)
+            
+            records.append(MoleculeRecord(
+                mol=mol,
+                name=str(name) if not pd.isna(name) else "",
+                properties={k: v for k, v in row_dict.items() if not pd.isna(v)},
+                source=str(source),
+                index=int(index)
+            ))
+        return records
+
+    def to_file(self, path: str, **writer_kwargs) -> None:
+        """
+        Write the table to any supported chemical file format.
+        Uses druglab.io under the hood.
+        """
+        from druglab.io import write_file
+        write_file(self.to_records(), path, **writer_kwargs)
+
+    def to_sdf(self, path: str, overwrite: bool = False) -> None:
+        """Alias for to_file for writing to SDF specifically."""
+        self.to_file(path, overwrite=overwrite)
 
     # ------------------------------------------------------------------
     # Convenience properties
@@ -170,6 +246,14 @@ class MoleculeTable(BaseTable["Chem.Mol"]):
         ]
 
     @property
+    def mols(self) -> List["Chem.Mol"]:
+        """
+        Flat list of all valid RDKit Mol objects in the table. 
+        Useful for passing directly to external libraries.
+        """
+        return [mol for mol in self._objects if mol is not None]
+
+    @property
     def valid_mask(self) -> np.ndarray:
         """Boolean array: True where the molecule is not None."""
         return np.array([
@@ -182,7 +266,7 @@ class MoleculeTable(BaseTable["Chem.Mol"]):
     # ------------------------------------------------------------------
     # Molecule-specific operations
     # ------------------------------------------------------------------
-
+    
     def to_smiles(self) -> List[Optional[str]]:
         """Alias for ``self.smiles``."""
         return self.smiles
