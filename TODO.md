@@ -26,8 +26,34 @@ This file uses a priority-based Kanban-style structure to track upcoming feature
 🟢 **Memory-Mapped Optimization:** Automatically switch to `mmap` for `BaseTable.features` on table creation/modification if feature arrays exceed a specific RAM threshold.
 
 ### `druglab.pipe`
-🔴 **List Out-of-the-Box Blocks:** Create a list of important common pipeline blocks that need implementation and add them as TODO records.
 🟢 **Pipeline Serialization:** Add `pipeline.save("pipe.json")` to save a pipeline's configuration, and `Pipeline.load("pipe.json")` to rebuild it. Combine this with the `HistoryEntry` to strictly reproduce a dataset.
+
+### `druglab.pipe.blocks`
+#### Preparation
+🟡 **Desalt Prep**
+🟡 **Neutralize Prep**
+🟡 **Taut Enum**
+🟡 **Hydrogen Adder/Remover**
+🟡 **Coord Gen:** This one needs to happen after implementing `ConformerTable`.
+
+#### Filter
+🟡 **Property**
+🟡 **SMARTS Pattern**
+🟡 **Element**
+🟡 **Validity:** Checking if it's not None!
+
+#### Featurization
+🟡 **MACCS**
+🟡 **RDKit Desc:** I might need to implement a way to transfer descs from metadata to features in `BaseTable`.
+🟡 **Pharm2D**
+🟡 **AtomPair**
+
+#### Utilities
+🟡 **File Reader:** Wrapper for `druglab.io.BatchReader`.
+
+#### Reactions
+🟡 **Sanitization**
+🟡 **Role Number Filter:** Filter reactions based on the number of reactants or products.
 
 ### Project Infrastructure & Docs
 🟢 **Unify Documentation:** Fix some differences in documentation due to differing project origins of various submodules.
@@ -35,4 +61,4 @@ This file uses a priority-based Kanban-style structure to track upcoming feature
 ---
 
 ## ✅ Completed
-...
+🔴 **List Out-of-the-Box Blocks:** Create a list of important common pipeline blocks that need implementation and add them as TODO records.
