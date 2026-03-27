@@ -7,7 +7,7 @@ DrugLab is a Python package providing common utilities for drug discovery and ch
 Install directly from the source repository:
 
 ```bash
-git clone [https://github.com/arazthexd/druglab.git](https://github.com/arazthexd/druglab.git)
+git clone https://github.com/arazthexd/druglab.git
 cd druglab
 pip install .
 ```
