@@ -10,6 +10,11 @@ This file uses a priority-based Kanban-style structure to track upcoming feature
 
 ---
 
+## 🏃 In Progress
+...
+
+---
+
 ## 🚀 Backlog
 
 ### `druglab.io`
@@ -26,7 +31,7 @@ This file uses a priority-based Kanban-style structure to track upcoming feature
 - [ ] **🟢 Pipeline Serialization:** Add `pipeline.save("pipe.json")` to save a pipeline's configuration, and `Pipeline.load("pipe.json")` to rebuild it. Combine this with the `HistoryEntry` to strictly reproduce a dataset.
 
 ### Project Infrastructure & Docs
-...
+- [ ] **🟢 Unify Documentation:** Fix some differences in documentation due to differing project origins of various submodules.
 
 ---
 
