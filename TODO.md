@@ -30,20 +30,11 @@ This file uses a priority-based Kanban-style structure to track upcoming feature
 
 ### `druglab.pipe.blocks`
 #### Preparation
-🟡 **Desalt Prep**
-🟡 **Neutralize Prep**
-🟡 **Taut Enum**
-🟡 **Hydrogen Adder/Remover**
 🟡 **Coord Gen:** This one needs to happen after implementing `ConformerTable`.
 
 #### Filter
-🟡 **Property**
-🟡 **SMARTS Pattern**
-🟡 **Element**
-🟡 **Validity:** Checking if it's not None!
 
 #### Featurization
-🟡 **MACCS**
 🟡 **RDKit Desc:** I might need to implement a way to transfer descs from metadata to features in `BaseTable`.
 🟡 **Pharm2D**
 🟡 **AtomPair**
@@ -62,3 +53,12 @@ This file uses a priority-based Kanban-style structure to track upcoming feature
 
 ## ✅ Completed
 🔴 **List Out-of-the-Box Blocks:** Create a list of important common pipeline blocks that need implementation and add them as TODO records.
+🟡 **Desalt Prep**
+🟡 **Neutralize Prep**
+🟡 **Taut Enum**
+🟡 **Hydrogen Adder/Remover**
+🟡 **Property**
+🟡 **SMARTS Pattern**
+🟡 **Element**
+🟡 **Validity:** Checking if it's not None!
+🟡 **MACCS**
