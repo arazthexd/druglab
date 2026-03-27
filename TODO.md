@@ -1,0 +1,38 @@
+# DrugLab - Project Tasks & Roadmap
+
+This file uses a priority-based Kanban-style structure to track upcoming features, bug fixes, and technical debt for DrugLab.
+
+## 📌 Template Usage Guide
+* **[🔴 High Priority]**: Critical bugs or essential features blocking active projects.
+* **[🟡 Medium Priority]**: Enhancements that improve quality of life, performance, or add valuable tools.
+* **[🟢 Low Priority]**: Nice-to-haves, refactoring, or exploratory ideas.
+* **Status Flags**: Use `[ ]` for To-Do, `[~]` for In Progress, and `[x]` for Done.
+
+---
+
+## 🚀 To-Do (Backlog)
+
+### `druglab.io` (File Operations)
+- [ ] **[🟡 Medium] Support Compressed Files:** Native support for `.sdf.gz`, `.csv.gz`, and `.smi.gz` directly in `BatchReader` and `EagerReader`.
+
+### `druglab.db` (Data Structures)
+- [ ] **[🟡 Medium] External Database Bridging:** Add capabilities to dump/load `metadata` and `features` directly to/from SQL databases (SQLite/PostgreSQL) instead of just local directories.
+- [ ] **[🟡 Medium] 3D Conformer Table:** Create a `ConformerTable` (subclass of `MoleculeTable` or new) specifically optimized for handling multi-conformer ensembles and 3D coordinates.
+- [ ] **[🟢 Low] Memory-Mapped Optimization:** Automatically switch to `mmap` for `BaseTable.features` on table creation/modification if feature arrays exceed a specific RAM threshold.
+
+### `druglab.pipe` (Pipelines & Processing)
+- [ ] **[🔴 High] Advanced Out-of-the-Box Blocks:** Create a list of important common pipeline blocks that need implementation and add them as TODO records.
+- [ ] **[🟢 Low] Pipeline Serialization:** Add `pipeline.save("pipe.json")` to save a pipeline's configuration, and `Pipeline.load("pipe.json")` to rebuild it. Combine this with the `HistoryEntry` to strictly reproduce a dataset.
+
+### Project Infrastructure & Docs
+...
+
+---
+
+## 🏃 In Progress
+...
+
+---
+
+## ✅ Completed
+...
