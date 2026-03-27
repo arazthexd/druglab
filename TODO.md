@@ -10,19 +10,20 @@ This file uses a priority-based Kanban-style structure to track upcoming feature
 
 ---
 
-## 🚀 To-Do (Backlog)
+## 🚀 Backlog
 
-### `druglab.io` (File Operations)
-- [ ] **[🟡 Medium] Support Compressed Files:** Native support for `.sdf.gz`, `.csv.gz`, and `.smi.gz` directly in `BatchReader` and `EagerReader`.
+### `druglab.io`
+- [ ] **🟡 Support Compressed Files:** Support for `.sdf.gz`, `.csv.gz`, and `.smi.gz` directly in `BatchReader` and `EagerReader`.
 
-### `druglab.db` (Data Structures)
-- [ ] **[🟡 Medium] External Database Bridging:** Add capabilities to dump/load `metadata` and `features` directly to/from SQL databases (SQLite/PostgreSQL) instead of just local directories.
-- [ ] **[🟡 Medium] 3D Conformer Table:** Create a `ConformerTable` (subclass of `MoleculeTable` or new) specifically optimized for handling multi-conformer ensembles and 3D coordinates.
-- [ ] **[🟢 Low] Memory-Mapped Optimization:** Automatically switch to `mmap` for `BaseTable.features` on table creation/modification if feature arrays exceed a specific RAM threshold.
+### `druglab.db`
+- [ ] **🔴 Improved Table Saving/Loading Schemes:** Create QoL improvements to the table storage schemes such as saving all objects in one file (currently each is saved separately in a directory).
+- [ ] **🟡 External Database Bridging:** Add capabilities to dump/load `metadata` and `features` directly to/from SQL databases (SQLite/PostgreSQL) instead of just local directories.
+- [ ] **🟡 3D Conformer Table:** Create a `ConformerTable` (subclass of `MoleculeTable` or new) specifically optimized for handling multi-conformer ensembles and 3D coordinates.
+- [ ] **🟢 Memory-Mapped Optimization:** Automatically switch to `mmap` for `BaseTable.features` on table creation/modification if feature arrays exceed a specific RAM threshold.
 
-### `druglab.pipe` (Pipelines & Processing)
-- [ ] **[🔴 High] Advanced Out-of-the-Box Blocks:** Create a list of important common pipeline blocks that need implementation and add them as TODO records.
-- [ ] **[🟢 Low] Pipeline Serialization:** Add `pipeline.save("pipe.json")` to save a pipeline's configuration, and `Pipeline.load("pipe.json")` to rebuild it. Combine this with the `HistoryEntry` to strictly reproduce a dataset.
+### `druglab.pipe`
+- [ ] **🔴 List Out-of-the-Box Blocks:** Create a list of important common pipeline blocks that need implementation and add them as TODO records.
+- [ ] **🟢 Pipeline Serialization:** Add `pipeline.save("pipe.json")` to save a pipeline's configuration, and `Pipeline.load("pipe.json")` to rebuild it. Combine this with the `HistoryEntry` to strictly reproduce a dataset.
 
 ### Project Infrastructure & Docs
 ...
