@@ -1,0 +1,5 @@
+*
+!.gitignore
+!simple_pipeline.ipynb
+!data/
+!data/ca2_inhibitors.csv
