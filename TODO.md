@@ -35,6 +35,7 @@ This file uses a priority-based Kanban-style structure to track upcoming feature
 #### Filter
 
 #### Featurization
+🟡 **Update FP Featurizers To New RDKit API:** Currently the featurizers do not use the recommended new RDKit API.
 🟡 **RDKit Desc:** I might need to implement a way to transfer descs from metadata to features in `BaseTable`.
 🟡 **Pharm2D**
 🟡 **AtomPair**
