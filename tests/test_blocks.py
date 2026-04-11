@@ -27,6 +27,18 @@ def sample_table():
     # from_smiles handles the "" string by making it None
     return MoleculeTable.from_smiles(smiles_list)
 
+@pytest.fixture()
+def clean_table() -> MoleculeTable:
+    """A table with only valid, non-duplicate molecules – good for 3D tests."""
+    smiles = [
+        "CCO",
+        "c1ccccc1",
+        "CC(=O)O",
+        "CCC",
+        "c1ccc(cc1)C",
+    ]
+    return MoleculeTable.from_smiles(smiles)
+
 class TestPreparations:
     def test_molecule_desalter(self, sample_table):
         block = MoleculeDesalter()
@@ -69,6 +81,14 @@ class TestPreparations:
         
         # Should catch the error and return None
         assert out.objects[0] is None
+
+    def test_conformer_generator(self, clean_table):
+        block = ConformerGenerator(n_confs=3, ff="MMFF94s")
+        out = block.run(clean_table)
+        assert isinstance(out, MoleculeTable)
+        for mol in out.objects:
+            assert mol is not None
+            assert mol.GetNumConformers() == 1
 
 class TestFilters:
     def test_property_filter(self, sample_table):

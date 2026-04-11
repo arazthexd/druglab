@@ -25,6 +25,7 @@ from .prepare import (
     MoleculeDesalter, 
     MoleculeKekulizer, 
     MoleculeSanitizer,
-    TautomerCanonicalizer
+    TautomerCanonicalizer,
+    ConformerGenerator
 )
 from .utilities import MemoryIOBlock
