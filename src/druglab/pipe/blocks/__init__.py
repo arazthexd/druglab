@@ -11,7 +11,8 @@ from .filter import (
     PropertyFilter, 
     ValidityFilter,
     RuleOfFiveFilter,
-    CatalogFilter
+    CatalogFilter,
+    UniqueFilter
 )
 from .featurize import (
     MorganFeaturizer, 

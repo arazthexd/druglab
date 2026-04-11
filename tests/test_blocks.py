@@ -147,6 +147,27 @@ class TestFilters:
         out_mp = CatalogFilter(catalogs=["PAINS"], n_workers=2).run(mols)
         assert out_sp.n == out_mp.n
 
+    def test_unique_filter(self):
+        mols = MoleculeTable.from_smiles(["c1ccccc1", "CCO", "c1ccccc1"])
+        block = UniqueFilter(key="smiles")
+        out = block.run(mols)
+        assert out.n == 2
+
+        mols = MoleculeTable.from_smiles(["c1ccccc1", "CCO", "c1ccccc1"])
+        block = UniqueFilter(key="inchikey")
+        out = block.run(mols)
+        assert out.n == 2
+
+    def test_unique_filter_eq_smiles(self):
+        """Two different SMILES strings that represent the same molecule."""
+        mols = MoleculeTable.from_smiles([
+            "c1ccccc1",    # benzene
+            "C1=CC=CC=C1", # same molecule, different notation
+        ])
+        block = UniqueFilter(key="smiles")
+        out = block.run(mols)
+        assert out.n == 1
+
 class TestFeaturizers:
     def test_maccs_featurizer(self, sample_table):
         block = MACCSFeaturizer()

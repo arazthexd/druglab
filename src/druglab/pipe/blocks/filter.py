@@ -1,5 +1,5 @@
 import numpy as np
-from typing import Optional, List, Tuple
+from typing import Optional, List, Tuple, Set
 
 from druglab.db.base import BaseTable
 from druglab.pipe.archetypes import BaseFilter
@@ -101,6 +101,66 @@ class ValidityFilter(BaseFilter):
             return item.GetNumAtoms() > 0
         except Exception:
             return False
+        
+class UniqueFilter(BaseFilter):
+    """
+    Stateful filter that drops duplicate molecules across the pipeline run.
+ 
+    Uniqueness is determined by canonical SMILES (default) or InChIKey.
+    The internal seen-set is shared across all calls to ``run()`` on the
+    **same block instance**, so duplicates are detected even when a pipeline
+    runs in batch mode.  Call :meth:`reset` between independent runs if you
+    want a clean slate.
+ 
+    Parameters
+    ----------
+    key : {"smiles", "inchikey"}
+        Hashing strategy.  ``"smiles"`` (default) uses RDKit canonical SMILES
+        which is fast.  ``"inchikey"`` is more robust to different input
+        representations at the cost of extra computation.
+    """
+ 
+    def __init__(self, key: str = "smiles", **kwargs):
+        super().__init__(**kwargs)
+        if key not in ("smiles", "inchikey"):
+            raise ValueError("key must be 'smiles' or 'inchikey'")
+        self.key = key
+        self._seen: Set[str] = set()
+ 
+    def get_config(self):
+        config = super().get_config()
+        config["key"] = self.key
+        return config
+ 
+    def reset(self) -> None:
+        """Clear the internal seen-set so the filter starts fresh."""
+        self._seen.clear()
+ 
+    def _get_key(self, item) -> Optional[str]:
+        try:
+            from rdkit.Chem import MolToSmiles, MolToInchi
+            from rdkit.Chem.inchi import MolToInchiKey
+ 
+            if self.key == "smiles":
+                return MolToSmiles(item)
+            else:
+                return MolToInchiKey(item)
+        except Exception:
+            return None
+ 
+    def _process_item(self, item):
+        if item is None:
+            return False
+ 
+        k = self._get_key(item)
+        if k is None:
+            return False  # can't fingerprint → treat as invalid
+ 
+        if k in self._seen:
+            return False
+ 
+        self._seen.add(k)
+        return True
         
 # ---------------------------------------------------------------------------
 # Drug Likeliness Filters
