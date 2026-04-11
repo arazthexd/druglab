@@ -28,4 +28,7 @@ from .prepare import (
     TautomerCanonicalizer,
     ConformerGenerator
 )
-from .utilities import MemoryIOBlock
+from .utilities import (
+    MemoryIOBlock,
+    SamplerBlock
+)

@@ -240,5 +240,21 @@ class TestFeaturizers:
         assert arr.shape[0] == sample_table.n
         assert arr.shape[1] > 150  # conservative lower bound
 
+class TestUtilities:
+    def test_sampler_block(self, sample_table):
+        block = SamplerBlock(max_size=2, random_seed=0)
+        out = block.run(sample_table)
+        assert out.n == 2
+
+        block = SamplerBlock(max_size=1000, random_seed=0)
+        out = block.run(sample_table)
+        assert out.n == sample_table.n
+
+        b1 = SamplerBlock(max_size=3, random_seed=7)
+        b2 = SamplerBlock(max_size=3, random_seed=7)
+        out1 = b1.run(sample_table)
+        out2 = b2.run(sample_table)
+        assert out1.smiles == out2.smiles
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

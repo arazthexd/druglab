@@ -1,5 +1,13 @@
+from typing import Optional
+import random
+
 from druglab.db import BaseTable
+from druglab.pipe.base import BaseBlock
 from druglab.pipe.archetypes import IOBlock
+
+# ---------------------------------------------------------------------------
+# IO
+# ---------------------------------------------------------------------------
 
 class MemoryIOBlock(IOBlock):
     """
@@ -18,3 +26,56 @@ class MemoryIOBlock(IOBlock):
             
     def _load_table(self):
         return self.table
+    
+# ---------------------------------------------------------------------------
+# Conformers
+# ---------------------------------------------------------------------------
+    
+class SamplerBlock(BaseBlock):
+    """
+    Randomly subsamples the table to at most ``max_size`` rows.
+ 
+    Useful for debugging pipelines on large datasets or creating
+    reproducible mini-batches for quick experiments.
+ 
+    The block is a no-op when the table already has <= ``max_size`` rows.
+ 
+    Parameters
+    ----------
+    max_size : int
+        Maximum number of rows to keep.
+    random_seed : int or None
+        Seed for the random number generator.  Pass *None* for a
+        non-deterministic sample.  Default None.
+    """
+ 
+    def __init__(
+        self,
+        max_size: int,
+        random_seed: Optional[int] = None,
+        **kwargs,
+    ):
+        super().__init__(**kwargs)
+        if max_size < 1:
+            raise ValueError("max_size must be >= 1")
+        self.max_size = max_size
+        self.random_seed = random_seed
+ 
+    def get_config(self):
+        cfg = super().get_config()
+        cfg.update({"max_size": self.max_size, "random_seed": self.random_seed})
+        return cfg
+ 
+    def _process(self, table: Optional[BaseTable]) -> BaseTable:
+        if table is None:
+            raise ValueError("SamplerBlock requires an input table.")
+ 
+        n = len(table)
+        if n <= self.max_size:
+            return table  # nothing to do
+ 
+        rng = random.Random(self.random_seed)
+        indices = sorted(rng.sample(range(n), self.max_size))
+ 
+        sampled = table.subset(indices, copy_objects=False)
+        return sampled
