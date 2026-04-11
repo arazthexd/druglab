@@ -112,6 +112,41 @@ class TestFilters:
         assert out.n == 5
         assert all(mol is not None for mol in out.objects)
 
+    def test_rule_of_five_filter(self):
+        """Palmitic acid (high LogP) should be dropped under strict Ro5."""
+        mols = MoleculeTable.from_smiles([
+            "CC(=O)Oc1ccccc1C(=O)O",   # Aspirin – passes
+            "CCCCCCCCCCCCCCCC(=O)O",    # Palmitic acid – LogP violation
+        ])
+        block = RuleOfFiveFilter(max_violations=0)
+        out = block.run(mols)
+        assert out.n == 1
+
+    def test_catalog_filter(self):
+        """
+        Rhodanine scaffold is a well-known PAINS alerting structure.
+        SMILES: C1CSC(=S)N1  (rhodanine)
+        """
+        from rdkit import Chem
+        smiles = [
+            "CCO",                           # clean
+            "CC(=O)Oc1ccccc1C(=O)O",         # Aspirin – clean
+            "O=C1CSC(=S)N1",                 # rhodanine – PAINS hit
+        ]
+        mols = MoleculeTable.from_smiles(smiles)
+        block = CatalogFilter(catalogs=["PAINS"], exclude=True)
+        out = block.run(mols)
+        survivors = [s for s in out.smiles if s]
+        rhodanine_canonical = Chem.MolToSmiles(Chem.MolFromSmiles("O=C1CSC(=S)N1"))
+        assert rhodanine_canonical not in survivors
+
+    def test_catalog_filter_multiprocess(self):
+        smiles = ["CCO", "CCC", "CCCC", "O=C1CSC(=S)N1"]
+        mols = MoleculeTable.from_smiles(smiles)
+        out_sp = CatalogFilter(catalogs=["PAINS"], n_workers=1).run(mols)
+        out_mp = CatalogFilter(catalogs=["PAINS"], n_workers=2).run(mols)
+        assert out_sp.n == out_mp.n
+
 class TestFeaturizers:
     def test_maccs_featurizer(self, sample_table):
         block = MACCSFeaturizer()

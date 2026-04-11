@@ -5,7 +5,7 @@ from druglab.db.base import BaseTable
 from druglab.pipe.archetypes import BaseFilter
 
 # ---------------------------------------------------------------------------
-# Filters
+# Simple Filters
 # ---------------------------------------------------------------------------
 
 class MWFilter(BaseFilter):
@@ -101,3 +101,154 @@ class ValidityFilter(BaseFilter):
             return item.GetNumAtoms() > 0
         except Exception:
             return False
+        
+# ---------------------------------------------------------------------------
+# Drug Likeliness Filters
+# ---------------------------------------------------------------------------
+
+class RuleOfFiveFilter(BaseFilter):
+    """
+    Convenience filter enforcing Lipinski's Rule of Five (Ro5).
+ 
+    A molecule passes if it violates **at most** ``max_violations`` of the
+    four classic Lipinski criteria:
+ 
+    1. Molecular weight ≤ 500 Da
+    2. LogP ≤ 5
+    3. Hydrogen-bond donors ≤ 5
+    4. Hydrogen-bond acceptors ≤ 10
+ 
+    Parameters
+    ----------
+    max_violations : int
+        Maximum number of rule violations allowed (default 0 → strict Ro5).
+        Set to 1 to allow the common "one-violation" relaxation used in
+        fragment-based and natural-product drug discovery.
+    """
+ 
+    def __init__(self, max_violations: int = 0, **kwargs):
+        super().__init__(**kwargs)
+        self.max_violations = max_violations
+ 
+    def get_config(self):
+        config = super().get_config()
+        config["max_violations"] = self.max_violations
+        return config
+ 
+    def _process_item(self, item):
+        if item is None or item.GetNumAtoms() == 0:
+            return False
+ 
+        from rdkit.Chem import rdMolDescriptors, Descriptors
+ 
+        violations = 0
+        if rdMolDescriptors.CalcExactMolWt(item) > 500:
+            violations += 1
+        if Descriptors.MolLogP(item) > 5: # Correct?
+            violations += 1
+        if rdMolDescriptors.CalcNumHBD(item) > 5:
+            violations += 1
+        if rdMolDescriptors.CalcNumHBA(item) > 10:
+            violations += 1
+ 
+        return violations <= self.max_violations
+    
+class CatalogFilter(BaseFilter):
+    """
+    Filters molecules against RDKit's built-in structural alert catalogs.
+ 
+    A molecule is **dropped** (returns False) when it matches one or more
+    entries in any of the requested catalogs.  Use ``exclude=False`` to
+    *keep* only the flagged molecules (e.g. for auditing).
+ 
+    Supported catalog names (case-insensitive):
+ 
+    * ``"PAINS"`` – Pan-assay interference compounds (Baell & Holloway 2010)
+    * ``"PAINS_A"`` / ``"PAINS_B"`` / ``"PAINS_C"`` – individual PAINS subsets
+    * ``"BRENK"`` – Brenk et al. (2008) unwanted fragments
+    * ``"NIH"`` – NIH structural alert catalog
+    * ``"ZINC"`` – ZINC drug-like filter
+    * ``"CHEMBL23_DUNDEE"`` / ``"CHEMBL23_BMS"`` / ``"CHEMBL23_GLAXO"``
+      / ``"CHEMBL23_INPHARMATICA"`` / ``"CHEMBL23_LINT"``
+      / ``"CHEMBL23_MLSMR"`` / ``"CHEMBL23_SureChEMBL"``
+    * ``"CHEMBL_Ro3"`` – ChEMBL Rule of Three
+    * ``"CHEMBL_Ro5"`` – ChEMBL Rule of Five
+ 
+    Parameters
+    ----------
+    catalogs : list[str]
+        One or more catalog names.  Defaults to ``["PAINS"]``.
+    exclude : bool
+        When *True* (default), molecules that **match** the catalog are
+        dropped.  When *False*, only matched molecules are kept.
+    """
+ 
+    # Map human-friendly names to RDKit's FilterCatalogParams enum values.
+    _CATALOG_MAP = {
+        "PAINS":                   "PAINS",
+        "PAINS_A":                 "PAINS_A",
+        "PAINS_B":                 "PAINS_B",
+        "PAINS_C":                 "PAINS_C",
+        "BRENK":                   "BRENK",
+        "NIH":                     "NIH",
+        "ZINC":                    "ZINC",
+        "CHEMBL23_DUNDEE":         "CHEMBL23_Dundee",
+        "CHEMBL23_BMS":            "CHEMBL23_BMS",
+        "CHEMBL23_GLAXO":          "CHEMBL23_Glaxo",
+        "CHEMBL23_INPHARMATICA":   "CHEMBL23_Inpharmatica",
+        "CHEMBL23_LINT":           "CHEMBL23_LINT",
+        "CHEMBL23_MLSMR":          "CHEMBL23_MLSMR",
+        "CHEMBL23_SURECHEMBL":     "CHEMBL23_SureChEMBL",
+        "CHEMBL_RO3":              "CHEMBL_Ro3",
+        "CHEMBL_RO5":              "CHEMBL_Ro5",
+    }
+ 
+    def __init__(
+        self,
+        catalogs: Optional[List[str]] = None,
+        exclude: bool = True,
+        **kwargs,
+    ):
+        super().__init__(**kwargs)
+        self.catalogs = [c.upper() for c in (catalogs or ["PAINS"])]
+        self.exclude = exclude
+        self._catalog_obj = None  # built lazily
+ 
+    def get_config(self):
+        config = super().get_config()
+        config.update({"catalogs": self.catalogs, "exclude": self.exclude})
+        return config
+ 
+    def _build_catalog(self):
+        """Lazily construct and cache the RDKit FilterCatalog object."""
+        if self._catalog_obj is not None:
+            return self._catalog_obj
+ 
+        from rdkit.Chem.FilterCatalog import FilterCatalog, FilterCatalogParams
+ 
+        params = FilterCatalogParams()
+        for name in self.catalogs:
+            rdkit_name = self._CATALOG_MAP.get(name)
+            if rdkit_name is None:
+                raise ValueError(
+                    f"Unknown catalog: '{name}'. "
+                    f"Supported catalogs: {list(self._CATALOG_MAP.keys())}"
+                )
+            catalog_enum = getattr(FilterCatalogParams.FilterCatalogs, rdkit_name, None)
+            if catalog_enum is None:
+                raise ValueError(
+                    f"RDKit does not expose catalog '{rdkit_name}' via "
+                    "FilterCatalogParams.FilterCatalogs in this version."
+                )
+            params.AddCatalog(catalog_enum)
+ 
+        self._catalog_obj = FilterCatalog(params)
+        return self._catalog_obj
+ 
+    def _process_item(self, item):
+        if item is None:
+            return False
+ 
+        catalog = self._build_catalog()
+        has_match = catalog.HasMatch(item)
+        return not has_match if self.exclude else has_match

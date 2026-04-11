@@ -9,7 +9,9 @@ from .filter import (
     MWFilter, 
     SMARTSFilter, 
     PropertyFilter, 
-    ValidityFilter
+    ValidityFilter,
+    RuleOfFiveFilter,
+    CatalogFilter
 )
 from .featurize import (
     MorganFeaturizer, 
