@@ -163,16 +163,16 @@ class CatalogFilter(BaseFilter):
  
     Supported catalog names (case-insensitive):
  
-    * ``"PAINS"`` – Pan-assay interference compounds (Baell & Holloway 2010)
-    * ``"PAINS_A"`` / ``"PAINS_B"`` / ``"PAINS_C"`` – individual PAINS subsets
-    * ``"BRENK"`` – Brenk et al. (2008) unwanted fragments
-    * ``"NIH"`` – NIH structural alert catalog
-    * ``"ZINC"`` – ZINC drug-like filter
+    * ``"PAINS"`` - Pan-assay interference compounds (Baell & Holloway 2010)
+    * ``"PAINS_A"`` / ``"PAINS_B"`` / ``"PAINS_C"`` - individual PAINS subsets
+    * ``"BRENK"`` - Brenk et al. (2008) unwanted fragments
+    * ``"NIH"`` - NIH structural alert catalog
+    * ``"ZINC"`` - ZINC drug-like filter
     * ``"CHEMBL23_DUNDEE"`` / ``"CHEMBL23_BMS"`` / ``"CHEMBL23_GLAXO"``
       / ``"CHEMBL23_INPHARMATICA"`` / ``"CHEMBL23_LINT"``
       / ``"CHEMBL23_MLSMR"`` / ``"CHEMBL23_SureChEMBL"``
-    * ``"CHEMBL_Ro3"`` – ChEMBL Rule of Three
-    * ``"CHEMBL_Ro5"`` – ChEMBL Rule of Five
+    * ``"CHEMBL_Ro3"`` - ChEMBL Rule of Three
+    * ``"CHEMBL_Ro5"`` - ChEMBL Rule of Five
  
     Parameters
     ----------
