@@ -11,7 +11,12 @@ from .filter import (
     PropertyFilter, 
     ValidityFilter
 )
-from .featurize import MorganFeaturizer, MACCSFeaturizer
+from .featurize import (
+    MorganFeaturizer, 
+    MACCSFeaturizer,
+    RDKit2DFeaturizer,
+    GobbiFeaturizer
+)
 from .prepare import (
     HydrogenModifier, 
     MoleculeDesalter, 
