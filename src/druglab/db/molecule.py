@@ -9,6 +9,7 @@ require RDKit raise ``ImportError`` at call time.
 
 from __future__ import annotations
 
+import copy
 import pickle
 from typing import Dict, Iterable, List, Optional, Sequence, Union, TYPE_CHECKING
 
@@ -26,6 +27,7 @@ except ImportError:
 
 if TYPE_CHECKING:
     from druglab.io._record import MoleculeRecord
+    from druglab.db.conformer import ConformerTable
 
 
 def _require_rdkit() -> None:
@@ -320,7 +322,256 @@ class MoleculeTable(BaseTable["Chem.Mol"]):
         return self.subset(idx)
 
     # ------------------------------------------------------------------
-    # SDF output
+    # 3D Conformer handling
+    # ------------------------------------------------------------------
+
+    def unroll_conformers(
+        self,
+        id_col: str = "parent_index",
+    ) -> "ConformerTable":
+        """
+        Explode a multi-conformer MoleculeTable into a ConformerTable where
+        every row holds exactly one conformer.
+
+        Molecules with no conformers or ``None`` entries are silently skipped.
+
+        Parameters
+        ----------
+        id_col
+            Name of the metadata column that will store the integer index of
+            the parent molecule.  Defaults to ``"parent_index"``.
+
+        Returns
+        -------
+        ConformerTable
+            A new table with one row per conformer.  Features are initialised
+            to an empty dict to avoid Out-of-Memory errors on large datasets.
+
+        Notes
+        -----
+        * Each new ``Chem.Mol`` is a fresh copy of the parent graph with
+          exactly one conformer injected, so serialisation via
+          ``mol.ToBinary()`` stays lightweight.
+        * The original ``MoleculeTable`` is **not** modified.
+        """
+        _require_rdkit()
+        from druglab.db.conformer import ConformerTable
+
+        new_objects: List[Chem.Mol] = []
+        meta_rows: List[dict] = []
+
+        for parent_idx, mol in enumerate(self._objects):
+            if mol is None or mol.GetNumConformers() == 0:
+                continue
+
+            parent_row = self._metadata.iloc[parent_idx].to_dict()
+
+            for conf in mol.GetConformers():
+                conf_id = conf.GetId()
+
+                # Build a lightweight single-conformer copy
+                single = Chem.RWMol(Chem.Mol(mol))
+                single.RemoveAllConformers()
+                # Copy must use a new Conformer object (not the same reference)
+                new_conf = Chem.Conformer(conf)
+                single.AddConformer(new_conf, assignId=True)
+
+                new_objects.append(single.GetMol())
+
+                row = dict(parent_row)
+                row[id_col] = parent_idx
+                row["conf_id"] = conf_id
+                meta_rows.append(row)
+
+        new_meta = pd.DataFrame(meta_rows).reset_index(drop=True)
+
+        history = list(self._history) + [
+            HistoryEntry.now(
+                block_name="MoleculeTable.unroll_conformers",
+                config={"id_col": id_col},
+                rows_in=self.n,
+                rows_out=len(new_objects),
+            )
+        ]
+
+        return ConformerTable(
+            objects=new_objects,
+            metadata=new_meta,
+            features={},   # intentionally empty — no OOM risk
+            history=history,
+        )
+
+    def update_from_conformers(
+        self,
+        conf_table: "ConformerTable",
+        id_col: str = "parent_index",
+        metadata_agg: Optional[Dict] = None,
+        features_agg: Optional[Dict] = None,
+        drop_empty: bool = True,
+    ) -> "MoleculeTable":
+        """
+        Merge a processed ConformerTable back into this MoleculeTable.
+
+        This allows a filtered / featurised ConformerTable to overwrite the
+        conformers and selectively update scalar properties of the parent table.
+
+        Parameters
+        ----------
+        conf_table
+            The ConformerTable produced by (and derived from) this table.
+        id_col
+            The metadata column in ``conf_table`` that maps rows back to
+            parent indices.  Must match the ``id_col`` used in
+            ``unroll_conformers()``.
+        metadata_agg
+            Aggregation rules for collapsing ConformerTable metadata into
+            parent-level scalars, e.g. ``{"Energy": "min"}``.
+            Only columns listed here are written back to the parent metadata.
+        features_agg
+            Aggregation rules for feature arrays, e.g. ``{"shape_fp": "mean"}``.
+            Supported: ``"mean"``, ``"min"``, ``"max"``, ``"sum"``,
+            ``"first"``, ``"last"``.
+            Only keys listed here are written back to the parent features.
+        drop_empty
+            If ``True`` (default), parent molecules whose conformers were all
+            filtered out of ``conf_table`` are removed from the result.
+            If ``False``, those molecules are kept but their conformer list is
+            cleared.
+
+        Returns
+        -------
+        MoleculeTable
+            A new MoleculeTable respecting functional immutability.
+        """
+        _require_rdkit()
+
+        if id_col not in conf_table.metadata.columns:
+            raise ValueError(
+                f"Column '{id_col}' not found in ConformerTable metadata. "
+                f"Available: {list(conf_table.metadata.columns)}"
+            )
+
+        meta_agg = metadata_agg or {}
+        feat_agg = features_agg or {}
+
+        # Build a mapping: parent_index -> list of conf_table row indices
+        parent_to_rows: Dict[int, List[int]] = {}
+        for row_idx, parent_idx in enumerate(conf_table.metadata[id_col]):
+            parent_to_rows.setdefault(int(parent_idx), []).append(row_idx)
+
+        # Deep-copy objects so the original table is untouched
+        new_objects = copy.deepcopy(self._objects)
+        new_meta = self._metadata.copy(deep=True)
+        new_features = {k: v.copy() for k, v in self._features.items()}
+
+        keep_mask = np.ones(self.n, dtype=bool)
+
+        for parent_idx in range(self.n):
+            mol = new_objects[parent_idx]
+            if mol is None:
+                keep_mask[parent_idx] = False
+                continue
+
+            row_indices = parent_to_rows.get(parent_idx)
+
+            if not row_indices:
+                # All conformers were filtered out for this molecule
+                if drop_empty:
+                    keep_mask[parent_idx] = False
+                else:
+                    mol.RemoveAllConformers()
+                continue
+
+            # Inject surviving conformers back into the parent mol
+            mol.RemoveAllConformers()
+            for ri in row_indices:
+                conf_mol = conf_table.objects[ri]
+                if conf_mol is None or conf_mol.GetNumConformers() == 0:
+                    continue
+                conf = conf_mol.GetConformer(0)
+                mol.AddConformer(Chem.Conformer(conf), assignId=True)
+
+            # Aggregate metadata columns back
+            group_df = conf_table.metadata.iloc[row_indices]
+            for col, agg_fn in meta_agg.items():
+                if col not in group_df.columns:
+                    continue
+                col_vals = group_df[col]
+                if agg_fn == "first":
+                    val = col_vals.iloc[0]
+                elif agg_fn == "last":
+                    val = col_vals.iloc[-1]
+                elif agg_fn == "min":
+                    val = col_vals.min()
+                elif agg_fn == "max":
+                    val = col_vals.max()
+                elif agg_fn == "mean":
+                    val = col_vals.mean()
+                elif agg_fn == "sum":
+                    val = col_vals.sum()
+                elif callable(agg_fn):
+                    val = agg_fn(col_vals)
+                else:
+                    val = col_vals.iloc[0]
+                new_meta.at[parent_idx, col] = val
+
+            # Aggregate feature arrays back
+            for feat_name, agg_fn in feat_agg.items():
+                if feat_name not in conf_table.features:
+                    continue
+                feat_arr = conf_table.features[feat_name]
+                group_feats = feat_arr[row_indices]
+                if agg_fn == "mean":
+                    agg_val = group_feats.mean(axis=0)
+                elif agg_fn == "min":
+                    agg_val = group_feats.min(axis=0)
+                elif agg_fn == "max":
+                    agg_val = group_feats.max(axis=0)
+                elif agg_fn == "sum":
+                    agg_val = group_feats.sum(axis=0)
+                elif agg_fn == "first":
+                    agg_val = group_feats[0]
+                elif agg_fn == "last":
+                    agg_val = group_feats[-1]
+                else:
+                    agg_val = group_feats.mean(axis=0)
+
+                if feat_name not in new_features:
+                    # Initialise feature array with zeros (correct shape from conf_table)
+                    new_features[feat_name] = np.zeros(
+                        (self.n,) + agg_val.shape, dtype=agg_val.dtype
+                    )
+                new_features[feat_name][parent_idx] = agg_val
+
+        # Apply the keep mask
+        keep_indices = np.where(keep_mask)[0]
+        filtered_objects = [new_objects[i] for i in keep_indices]
+        filtered_meta = new_meta.iloc[keep_indices].reset_index(drop=True)
+        filtered_features = {k: v[keep_indices] for k, v in new_features.items()}
+
+        history = list(self._history) + [
+            HistoryEntry.now(
+                block_name="MoleculeTable.update_from_conformers",
+                config={
+                    "id_col": id_col,
+                    "drop_empty": drop_empty,
+                    "metadata_agg": str(meta_agg),
+                    "features_agg": str(feat_agg),
+                },
+                rows_in=self.n,
+                rows_out=len(filtered_objects),
+            )
+        ]
+
+        return MoleculeTable(
+            objects=filtered_objects,
+            metadata=filtered_meta,
+            features=filtered_features,
+            history=history,
+        )
+
+    # ------------------------------------------------------------------
+    # SDF output (kept for backward compat — to_file is the preferred API)
     # ------------------------------------------------------------------
 
     def to_sdf(self, path: str) -> None:

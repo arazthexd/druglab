@@ -4,10 +4,11 @@ druglab.pipe.pipeline
 Pipeline orchestrator that manages block execution and batch boundaries.
 """
 
-from typing import List, Optional, Iterator
+from typing import List, Optional, Iterator, TypeVar
 from druglab.db.base import BaseTable
 from druglab.pipe.base import BaseBlock
 
+TableT = TypeVar("T", bound="BaseTable")
 
 class Pipeline:
     """
@@ -18,11 +19,11 @@ class Pipeline:
     def __init__(self, steps: List[BaseBlock]):
         self.steps = steps
 
-    def run(self, table: Optional[BaseTable] = None) -> BaseTable:
+    def run(self, table: Optional[TableT] = None) -> TableT:
         """Run the pipeline on an initial table (or None if starting with an IO block)."""
         return self._run_steps(self.steps, table)
 
-    def _run_steps(self, steps: List[BaseBlock], table: Optional[BaseTable]) -> BaseTable:
+    def _run_steps(self, steps: List[BaseBlock], table: Optional[TableT]) -> TableT:
         if not steps:
             return table
 
@@ -60,7 +61,7 @@ class Pipeline:
             out_table = current_step.run(table)
             return self._run_steps(remaining_steps, out_table)
 
-    def _chunk_table(self, table: BaseTable, batch_size: int) -> Iterator[BaseTable]:
+    def _chunk_table(self, table: TableT, batch_size: int) -> Iterator[TableT]:
         """Helper to yield slices of a BaseTable."""
         n = len(table)
         for i in range(0, n, batch_size):
