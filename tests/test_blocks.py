@@ -90,6 +90,13 @@ class TestPreparations:
             assert mol is not None
             assert mol.GetNumConformers() == 1
 
+        block = ConformerGenerator(n_confs=3, ff="MMFF94s", keep_all=True)
+        out = block.run(clean_table)
+        assert isinstance(out, MoleculeTable)
+        for mol in out.objects:
+            assert mol is not None
+            assert mol.GetNumConformers() == 3
+
 class TestFilters:
     def test_property_filter(self, sample_table):
         block = PropertyFilter(max_mw=150.0)
