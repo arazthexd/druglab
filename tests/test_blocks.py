@@ -123,5 +123,15 @@ class TestFeaturizers:
         # Check invalid molecule handled gracefully (zeros)
         assert np.all(out.features[feat_key][5] == 0)
 
+    def test_morgan_featurizer(self, sample_table):
+        block = MorganFeaturizer(radius=2, n_bits=2048)
+        out = block.run(sample_table)
+        
+        feat_key = block.get_feature_name()
+        assert feat_key in out.features
+        assert out.features[feat_key].shape == (6, 2048)
+        # Check invalid molecule handled gracefully (zeros)
+        assert np.all(out.features[feat_key][5] == 0)
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

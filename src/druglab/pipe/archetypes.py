@@ -16,18 +16,22 @@ class BaseFeaturizer(ItemBlock):
         # Convert list of vectors into a numpy array
         feature_array = np.array(results)
         
+        # Get feature name to save into the table
+        feat_name = self.get_feature_name()
+        table.add_feature(feat_name, feature_array)
+        
+        return table
+
+    def get_feature_name(self) -> str:
+
         # Name the feature cleanly based on the config to track variations,
         # but ignore execution-level parameters that don't change the math.
         ignore_keys = {"name", "n_workers", "use_cache", "batch_size", "copy_table"}
         safe_config = "_".join(
             [f"{k}={v}" for k, v in self.get_config().items() if k not in ignore_keys]
         )
-        
         feat_name = f"{self.name}_{safe_config}" if safe_config else self.name
-        table.add_feature(feat_name, feature_array)
-        
-        return table
-
+        return feat_name
 
 class BaseFilter(ItemBlock):
     """Evaluates items and drops rows where _process_item returns False."""
