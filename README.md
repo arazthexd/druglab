@@ -35,7 +35,7 @@ Implements database-like table structures for managing groups of chemical entiti
 * `features`: A dictionary mapping string identifiers to numerical arrays (e.g., molecular fingerprints).
 * `history`: An internal audit log that records pipeline transformations applied to the table.
 
-Concrete implementations include `MoleculeTable` and `ReactionTable`.
+Concrete implementations include `MoleculeTable`, `ConformerTable`, and `ReactionTable`.
 
 ### 3. `druglab.pipe`
 A framework for constructing sequential processing pipelines to update, filter, and featurize tables.
