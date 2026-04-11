@@ -22,7 +22,6 @@ This file uses a priority-based Kanban-style structure to track upcoming feature
 ### `druglab.db`
 🔴 **Improved Table Saving/Loading Schemes:** Create QoL improvements to the table storage schemes such as saving all objects in one file (currently each is saved separately in a directory).
 🟡 **External Database Bridging:** Add capabilities to dump/load `metadata` and `features` directly to/from SQL databases (SQLite/PostgreSQL) instead of just local directories.
-🟡 **3D Conformer Table:** Create a `ConformerTable` (subclass of `MoleculeTable` or new) specifically optimized for handling multi-conformer ensembles and 3D coordinates.
 🟢 **Memory-Mapped Optimization:** Automatically switch to `mmap` for `BaseTable.features` on table creation/modification if feature arrays exceed a specific RAM threshold.
 
 ### `druglab.pipe`
@@ -35,4 +34,4 @@ This file uses a priority-based Kanban-style structure to track upcoming feature
 ---
 
 ## ✅ Completed
-...
+🟡 **3D Conformer Table:** Create a `ConformerTable` (subclass of `MoleculeTable` or new) specifically optimized for handling multi-conformer ensembles and 3D coordinates.
