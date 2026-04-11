@@ -255,6 +255,12 @@ class TestUtilities:
         out1 = b1.run(sample_table)
         out2 = b2.run(sample_table)
         assert out1.smiles == out2.smiles
+    
+    def test_molecule_file_reader_block(self):
+        block = MoleculeFileReaderBlock(["tests/data/simple_4_mols.smi"])
+        out = block.run()
+        assert out.n == 4
+        # TODO: Add tests for batch mode
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

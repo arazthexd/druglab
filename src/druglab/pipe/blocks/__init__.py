@@ -30,5 +30,6 @@ from .prepare import (
 )
 from .utilities import (
     MemoryIOBlock,
-    SamplerBlock
+    MoleculeFileReaderBlock,
+    SamplerBlock,
 )

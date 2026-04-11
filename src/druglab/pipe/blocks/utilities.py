@@ -1,7 +1,8 @@
-from typing import Optional
+from typing import Optional, List
 import random
 
-from druglab.db import BaseTable
+from druglab.db import BaseTable, MoleculeTable
+from druglab.io import BatchReader, EagerReader
 from druglab.pipe.base import BaseBlock
 from druglab.pipe.archetypes import IOBlock
 
@@ -27,6 +28,26 @@ class MemoryIOBlock(IOBlock):
     def _load_table(self):
         return self.table
     
+class MoleculeFileReaderBlock(IOBlock):
+    """
+    Reads molecule files given as a list of paths
+    """
+
+    def __init__(self, paths: List[str], batch_size: Optional[int] = None, **kwargs):
+        super().__init__(batch_size=batch_size, **kwargs)
+        self.paths = paths
+
+    def yield_batches(self):
+        reader = BatchReader(self.paths, batch_size=self.batch_size)
+        for records in reader:
+            table = MoleculeTable.from_records(records)
+            yield table
+    
+    def _load_table(self):
+        reader = EagerReader(self.paths)
+        records = reader.read()
+        return MoleculeTable.from_records(records)
+            
 # ---------------------------------------------------------------------------
 # Conformers
 # ---------------------------------------------------------------------------
