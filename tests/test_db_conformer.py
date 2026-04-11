@@ -1,5 +1,5 @@
 """
-tests/test_conformer.py
+tests/test_db_conformer.py
 ~~~~~~~~~~~~~~~~~~~~~~~
 Tests for ConformerTable and the conformer bridging methods on MoleculeTable.
 
