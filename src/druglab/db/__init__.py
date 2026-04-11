@@ -17,15 +17,22 @@ MoleculeTable
 
 ReactionTable
     Concrete subclass for RDKit ChemicalReaction objects.
+
+ConformerTable
+    Subclass of MoleculeTable where every row holds exactly one conformer.
+    Created via ``MoleculeTable.unroll_conformers()`` and collapsed back
+    via ``ConformerTable.collapse()`` or ``MoleculeTable.update_from_conformers()``.
 """
 
 from druglab.db.base import BaseTable, HistoryEntry
 from druglab.db.molecule import MoleculeTable
 from druglab.db.reaction import ReactionTable
+from druglab.db.conformer import ConformerTable
 
 __all__ = [
     "BaseTable",
     "HistoryEntry",
     "MoleculeTable",
     "ReactionTable",
+    "ConformerTable",
 ]
