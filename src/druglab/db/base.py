@@ -342,6 +342,10 @@ class BaseTable(ABC, Generic[T]):
         """
         idx = np.asarray(indices)
         if idx.dtype == bool:
+            if len(idx) != self.n:
+                raise ValueError(
+                    f"Boolean mask length {len(idx)} must match table length {self.n}."
+                )
             idx = np.where(idx)[0]
 
         objs = [
