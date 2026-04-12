@@ -1,0 +1,4 @@
+*
+!.gitignore
+!data/
+!data/ca2_inhibitors.csv

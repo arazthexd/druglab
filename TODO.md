@@ -25,8 +25,26 @@ This file uses a priority-based Kanban-style structure to track upcoming feature
 🟢 **Memory-Mapped Optimization:** Automatically switch to `mmap` for `BaseTable.features` on table creation/modification if feature arrays exceed a specific RAM threshold.
 
 ### `druglab.pipe`
-🔴 **List Out-of-the-Box Blocks:** Create a list of important common pipeline blocks that need implementation and add them as TODO records.
 🟢 **Pipeline Serialization:** Add `pipeline.save("pipe.json")` to save a pipeline's configuration, and `Pipeline.load("pipe.json")` to rebuild it. Combine this with the `HistoryEntry` to strictly reproduce a dataset.
+🟢 **New Archetype - Enumerator:** For enumerating molecules or conformers (tautomer, etc.).
+🟢 **New Archetype - Transformer:** For directly working with features (transform features).
+🟢 **New Archetype - Predictor:** A block that takes a pre-trained ML model (scikit-learn, PyTorch), consumes specific features from the table, and outputs predictions as new metadata or features.
+🟢 **New Archetype - Splitter:** A block that takes one BaseTable and returns a dictionary or tuple of BaseTables.
+
+### `druglab.pipe.blocks`
+#### Preparation
+
+#### Filter
+
+#### Featurization
+🟡 **Update FP Featurizers To New RDKit API:** Currently the featurizers do not use the recommended new RDKit API.
+🟡 **AtomPair**
+
+#### Utilities
+
+#### Reactions
+🟡 **Sanitization**
+🟡 **Role Number Filter:** Filter reactions based on the number of reactants or products.
 
 ### Project Infrastructure & Docs
 🟢 **Unify Documentation:** Fix some differences in documentation due to differing project origins of various submodules.
@@ -35,3 +53,17 @@ This file uses a priority-based Kanban-style structure to track upcoming feature
 
 ## ✅ Completed
 🟡 **3D Conformer Table:** Create a `ConformerTable` (subclass of `MoleculeTable` or new) specifically optimized for handling multi-conformer ensembles and 3D coordinates.
+🔴 **List Out-of-the-Box Blocks:** Create a list of important common pipeline blocks that need implementation and add them as TODO records.
+🟡 **Desalt Prep**
+🟡 **Neutralize Prep**
+🟡 **Taut Enum**
+🟡 **Hydrogen Adder/Remover**
+🟡 **Property**
+🟡 **SMARTS Pattern**
+🟡 **Element**
+🟡 **Validity:** Checking if it's not None!
+🟡 **MACCS**
+🟡 **RDKit Desc:** I might need to implement a way to transfer descs from metadata to features in `BaseTable`.
+🟡 **Pharm2D**
+🟡 **File Reader:** Wrapper for `druglab.io.BatchReader`.
+🟡 **Coord Gen:** This one needs to happen after implementing `ConformerTable`.
