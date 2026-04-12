@@ -4,8 +4,8 @@ import numpy as np
 
 from druglab.db.molecule import MoleculeTable
 
-def test_auto_convert_numeric():
-    """Verify that BaseTable converts string numerals to proper numerics on instantiation."""
+def test_convert_numeric():
+    """Verify that BaseTable converts string numerals to proper numerics."""
     # Data often formatted as strings from CSV reading
     smiles = ["CCO", "c1ccccc1"]
     meta = pd.DataFrame({
@@ -15,6 +15,7 @@ def test_auto_convert_numeric():
     })
     
     table = MoleculeTable.from_smiles(smiles, metadata=meta)
+    table.try_numerize_metadata()
     
     # ID should remain object/string
     assert pd.api.types.is_object_dtype(table.metadata["ID"]) or pd.api.types.is_string_dtype(table.metadata["ID"])

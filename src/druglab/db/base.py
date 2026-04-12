@@ -109,27 +109,35 @@ class BaseTable(ABC, Generic[T]):
         features: Optional[Dict[str, np.ndarray]] = None,
         history: Optional[List[HistoryEntry]] = None,
         *,
-        auto_convert_numeric: bool = True,
+        auto_convert_numeric: bool = False,
     ) -> None:
         self._objects: List[T] = objects if objects is not None else []
         
         if metadata is not None:
-            meta_df = metadata.reset_index(drop=True)
-            if auto_convert_numeric and not meta_df.empty:
-                # Convert object/string columns to numeric where possible
-                # (Crucial for CSV/SDF loads where floats are imported as strings)
-                for col in meta_df.select_dtypes(include=["object", "string"]).columns:
-                    try:
-                        meta_df[col] = pd.to_numeric(meta_df[col])
-                    except (ValueError, TypeError):
-                        pass # If it can't be safely converted, leave as strings
-            self._metadata = meta_df
+            self._metadata: pd.DataFrame = metadata.reset_index(drop=True)
+            if auto_convert_numeric and not self._metadata.empty:
+                self.try_numerize_metadata()
         else:
             self._metadata = pd.DataFrame()
 
         self._features: Dict[str, np.ndarray] = features if features is not None else {}
         self._history: List[HistoryEntry] = history if history is not None else []
         self._validate()
+
+    def try_numerize_metadata(
+        self,
+        columns: Optional[List[str]] = None,
+    ) -> None:
+        if columns is None:
+            columns = self._metadata.columns
+
+        # Convert object/string columns to numeric where possible
+        # (Crucial for CSV/SDF loads where floats are imported as strings)
+        for col in self._metadata.select_dtypes(include=["object", "string"]).columns:
+            try:
+                self._metadata[col] = pd.to_numeric(self._metadata[col])
+            except (ValueError, TypeError):
+                pass # If it can't be safely converted, leave as strings
 
     # ------------------------------------------------------------------
     # Properties (read access; mutation goes through explicit methods)
@@ -276,7 +284,10 @@ class BaseTable(ABC, Generic[T]):
             while temp_col in self._metadata.columns or temp_col in df.columns:
                 temp_col = f"_{temp_col}"
 
-            left: pd.DataFrame = self._metadata.assign(**{temp_col: np.arange(self.n)})
+            overlap = [c for c in df.columns if c != on and c in self._metadata.columns]
+            left: pd.DataFrame = (
+                self._metadata.drop(columns=overlap).assign(**{temp_col: np.arange(self.n)})
+            )
             merged: pd.DataFrame = left.merge(df, on=on, how="left")
             merged: pd.DataFrame = merged.sort_values(temp_col)
             merged: pd.DataFrame = merged.reset_index(drop=True)
