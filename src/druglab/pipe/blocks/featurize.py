@@ -89,9 +89,15 @@ class RDKit2DFeaturizer(BaseFeaturizer):
                 self._desc_fns = [(name, fn) for name, fn in Descriptors.descList]
             else:
                 desc_map = dict(Descriptors.descList)
+                missing = [
+                    name for name in self.descriptor_names if name not in desc_map
+                ]
+                if missing:
+                    raise ValueError(
+                        f"Unknown RDKit descriptor(s): {missing}"
+                    )
                 self._desc_fns = [
                     (name, desc_map[name]) for name in self.descriptor_names
-                    if name in desc_map
                 ]
         return self._desc_fns
  
