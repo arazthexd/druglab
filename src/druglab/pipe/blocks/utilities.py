@@ -17,6 +17,9 @@ class MemoryIOBlock(IOBlock):
     """
     
     def __init__(self, table: BaseTable, batch_size: int = 1000, **kwargs):
+        if not isinstance(batch_size, int) or isinstance(batch_size, bool) or batch_size < 1:
+            raise ValueError("MemoryIOBlock requires batch_size to be a positive integer.")
+        
         super().__init__(batch_size=batch_size, **kwargs)
         self.table = table
         

@@ -14,7 +14,12 @@ class MoleculeKekulizer(BasePreparation):
         from rdkit import Chem
         if item is not None:
             item = Chem.Mol(item)
-            Chem.Kekulize(item, clearAromaticFlags=True)
+            try:
+                mol_copy = Chem.Mol(item)
+                Chem.Kekulize(mol_copy, clearAromaticFlags=True)
+                return mol_copy
+            except Exception:
+                return None
         return item
 
 class MoleculeDesalter(BasePreparation):
@@ -211,7 +216,11 @@ class ConformerGenerator(BasePreparation):
 
         except Exception as e:
             # Log a brief warning and return the original item unchanged on any error
-            print(f"WARNING: Embedding failed for molecule {item.GetSmiles()}: {str(e)}")
+            try:
+                smi = Chem.MolToSmiles(item)
+            except Exception:
+                smi = "unknown SMILES"
+            print(f"WARNING: Embedding failed for molecule {smi}: {str(e)}")
             return item
 
         # --- Sort and retain conformers ---

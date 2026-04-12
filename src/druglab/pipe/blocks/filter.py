@@ -157,6 +157,8 @@ class UniqueFilter(BaseFilter):
     NOTE: this block is stateful and the state is shared across all calls to
     ``run()`` on the **same block instance**. As a result, multiprocessing
     is not supported.
+
+    NOTE: Cache is not supported for this block for the same reasosn above.
  
     Parameters
     ----------
@@ -176,6 +178,10 @@ class UniqueFilter(BaseFilter):
         if self.n_workers > 1:
             print("WARNING: UniqueFilter does not support multiprocessing. Setting n_workers=1.")
             self.n_workers = 1
+
+        if self.use_cache:
+            print("WARNING: UniqueFilter does not support cache. Setting use_cache=False.")
+            self.use_cache = False
  
     def get_config(self):
         config = super().get_config()
@@ -239,6 +245,9 @@ class RuleOfFiveFilter(BaseFilter):
     def __init__(self, max_violations: int = 0, **kwargs):
         super().__init__(**kwargs)
         self.max_violations = max_violations
+
+        if max_violations < 0:
+            raise ValueError("max_violations must be >= 0")
  
     def get_config(self):
         config = super().get_config()
