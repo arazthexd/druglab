@@ -26,21 +26,21 @@ This file uses a priority-based Kanban-style structure to track upcoming feature
 
 ### `druglab.pipe`
 🟢 **Pipeline Serialization:** Add `pipeline.save("pipe.json")` to save a pipeline's configuration, and `Pipeline.load("pipe.json")` to rebuild it. Combine this with the `HistoryEntry` to strictly reproduce a dataset.
+🟢 **New Archetype - Enumerator:** For enumerating molecules or conformers (tautomer, etc.).
+🟢 **New Archetype - Transformer:** For directly working with features (transform features).
+🟢 **New Archetype - Predictor:** A block that takes a pre-trained ML model (scikit-learn, PyTorch), consumes specific features from the table, and outputs predictions as new metadata or features.
+🟢 **New Archetype - Splitter:** A block that takes one BaseTable and returns a dictionary or tuple of BaseTables.
 
 ### `druglab.pipe.blocks`
 #### Preparation
-🟡 **Coord Gen:** This one needs to happen after implementing `ConformerTable`.
 
 #### Filter
 
 #### Featurization
 🟡 **Update FP Featurizers To New RDKit API:** Currently the featurizers do not use the recommended new RDKit API.
-🟡 **RDKit Desc:** I might need to implement a way to transfer descs from metadata to features in `BaseTable`.
-🟡 **Pharm2D**
 🟡 **AtomPair**
 
 #### Utilities
-🟡 **File Reader:** Wrapper for `druglab.io.BatchReader`.
 
 #### Reactions
 🟡 **Sanitization**
@@ -63,3 +63,7 @@ This file uses a priority-based Kanban-style structure to track upcoming feature
 🟡 **Element**
 🟡 **Validity:** Checking if it's not None!
 🟡 **MACCS**
+🟡 **RDKit Desc:** I might need to implement a way to transfer descs from metadata to features in `BaseTable`.
+🟡 **Pharm2D**
+🟡 **File Reader:** Wrapper for `druglab.io.BatchReader`.
+🟡 **Coord Gen:** This one needs to happen after implementing `ConformerTable`.
