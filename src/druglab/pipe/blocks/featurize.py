@@ -124,12 +124,12 @@ class RDKit2DFeaturizer(BaseFeaturizer):
 # ---------------------------------------------------------------------------
 # Pharmacophore
 # ---------------------------------------------------------------------------
-    
+
 class GobbiFeaturizer(BaseFeaturizer):
     """
     Computes Gobbi 2D pharmacophore fingerprints via RDKit's
     ``rdkit.Chem.Pharm2D`` module.
- 
+
     The Gobbi fingerprint encodes spatial relationships between pairs of
     pharmacophoric features (hydrogen-bond donors/acceptors, aromatic rings,
     positively/negatively charged groups, and hydrophobic atoms) in a
@@ -138,44 +138,80 @@ class GobbiFeaturizer(BaseFeaturizer):
  
     Parameters
     ----------
-    n_bits : int
-        Length of the output bit vector.  The Gobbi factory generates a
-        sparse bit vector; we convert it to a dense numpy array of this
-        length.  Defaults to 2048.
+    n_bits : int or None
+        Length of the output bit vector. If an integer is provided, the 
+        vector is folded down to this length. If None, the full native 
+        vector is returned unfolded. Defaults to 2048.
+    fold_method : str
+        The method used to fold the fingerprint. Options are "xor" or "or".
+        Defaults to "xor".
     """
  
-    def __init__(self, n_bits: int = 2048, **kwargs):
+    def __init__(self, n_bits: Optional[int] = 2048, fold_method: str = "xor", **kwargs):
         super().__init__(**kwargs)
         self.n_bits = n_bits
+        
+        if fold_method.lower() not in ["xor", "or"]:
+            raise ValueError("fold_method must be either 'xor' or 'or'.")
+        self.fold_method = fold_method.lower()
+
+        # Dynamically determine the native fingerprint length using a simple dummy molecule
+        from rdkit import Chem
+        dummy_mol = Chem.MolFromSmiles('CCCOCCCN')
+        dummy_arr = self._generate_raw_fp(dummy_mol)
+        self._native_len = len(dummy_arr)
+        
+        # Determine the final output length to use for zero-padding invalid items
+        self._output_len = self.n_bits if self.n_bits is not None else self._native_len
  
     def get_config(self):
         config = super().get_config()
         config["n_bits"] = self.n_bits
+        config["fold_method"] = self.fold_method
         return config
+
+    def _generate_raw_fp(self, item) -> np.ndarray:
+        """Helper method to generate the dense, unfolded native fingerprint."""
+        from rdkit.Chem.Pharm2D import Generate, Gobbi_Pharm2D
+        
+        factory = Gobbi_Pharm2D.factory
+        fp = Generate.Gen2DFingerprint(item, factory)
+        
+        fp_len = fp.GetNumBits()
+        arr_full = np.zeros(fp_len, dtype=np.int8)
+        
+        # RDKit's ConvertToNumpyArray does not support SparseBitVect.
+        # We extract the indices of the active bits and use NumPy 
+        # indexing to set them to 1.
+        on_bits = list(fp.GetOnBits())
+        if on_bits:
+            arr_full[on_bits] = 1
+        
+        return arr_full
  
     def _process_item(self, item):
         if item is None:
-            return np.zeros(self.n_bits, dtype=np.int8)
+            return np.zeros(self._output_len, dtype=np.int8)
  
         try:
-            from rdkit.Chem import Pharm2D
-            from rdkit.Chem.Pharm2D import Generate, Gobbi_Pharm2D
-            from rdkit import DataStructs
+            arr_full = self._generate_raw_fp(item)
+            
+            # If n_bits is None, return the raw unfolded fingerprint
+            if self.n_bits is None:
+                return arr_full
  
-            factory = Gobbi_Pharm2D.factory
-            fp = Generate.Gen2DFingerprint(item, factory)
- 
-            # Convert sparse ExplicitBitVect → dense numpy array.
-            # The Gobbi fingerprint length varies; we fold/truncate to n_bits.
-            fp_len = fp.GetNumBits()
-            arr_full = np.zeros(fp_len, dtype=np.int8)
-            DataStructs.ConvertToNumpyArray(fp, arr_full)
- 
-            if fp_len >= self.n_bits:
-                return arr_full[: self.n_bits]
-            else:
-                out = np.zeros(self.n_bits, dtype=np.int8)
-                out[:fp_len] = arr_full
-                return out
+            # Compress (Fold)
+            out = np.zeros(self.n_bits, dtype=np.int8)
+            fp_len = len(arr_full)
+            for i in range(0, fp_len, self.n_bits):
+                chunk = arr_full[i : i + self.n_bits]
+                
+                # Apply the chosen folding method
+                if self.fold_method == "or":
+                    out[:len(chunk)] |= chunk
+                else:
+                    out[:len(chunk)] ^= chunk
+                
+            return out
         except Exception:
-            return np.zeros(self.n_bits, dtype=np.int8)
+            return np.zeros(self._output_len, dtype=np.int8)
