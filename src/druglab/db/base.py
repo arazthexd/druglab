@@ -272,10 +272,15 @@ class BaseTable(ABC, Generic[T]):
             
             # To maintain exact row order (aligning with self._objects), we track
             # original indices, merge, and then sort back to original order.
-            self._metadata['_orig_idx'] = self._metadata.index
-            merged = self._metadata.merge(df, on=on, how="left")
-            merged = merged.sort_values('_orig_idx').reset_index(drop=True)
-            merged.drop(columns=['_orig_idx'], inplace=True)
+            temp_col = "__orig_idx__"
+            while temp_col in self._metadata.columns or temp_col in df.columns:
+                temp_col = f"_{temp_col}"
+
+            left: pd.DataFrame = self._metadata.assign(**{temp_col: np.arange(self.n)})
+            merged: pd.DataFrame = left.merge(df, on=on, how="left")
+            merged: pd.DataFrame = merged.sort_values(temp_col)
+            merged: pd.DataFrame = merged.reset_index(drop=True)
+            merged.drop(columns=[temp_col], inplace=True)
             
             if len(merged) != self.n:
                 raise ValueError(
