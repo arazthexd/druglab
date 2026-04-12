@@ -310,17 +310,6 @@ class MoleculeTable(BaseTable["Chem.Mol"]):
                 for mol in self._objects
             ]
 
-    def filter_by_metadata(self, query: str) -> "MoleculeTable":
-        """
-        Return a subset table where ``metadata.query(query)`` is True.
-
-        Example::
-
-            light = table.filter_by_metadata("MolWt < 500")
-        """
-        idx = self._metadata.query(query).index.tolist()
-        return self.subset(idx)
-
     # ------------------------------------------------------------------
     # 3D Conformer handling
     # ------------------------------------------------------------------
