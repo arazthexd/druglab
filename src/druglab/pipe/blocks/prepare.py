@@ -1,5 +1,4 @@
-import numpy as np
-from typing import Optional, List, Tuple
+from typing import Optional
 
 from druglab.db.base import BaseTable
 from druglab.pipe.archetypes import BasePreparation
@@ -84,7 +83,6 @@ class MoleculeSanitizer(BasePreparation):
 # Conformers
 # ---------------------------------------------------------------------------
 
-from typing import Optional
 
 class ConformerGenerator(BasePreparation):
     """

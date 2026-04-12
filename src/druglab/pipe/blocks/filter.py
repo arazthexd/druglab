@@ -9,7 +9,7 @@ from druglab.pipe.archetypes import BaseFilter
 # ---------------------------------------------------------------------------
 
 class MWFilter(BaseFilter):
-    """Filters molecules keeping only those strictly under a specified Molecular Weight."""
+    """Filters molecules keeping only those at or below a specified Molecular Weight."""
     
     def __init__(self, max_mw: float = 500.0, **kwargs):
         super().__init__(**kwargs)
@@ -138,7 +138,7 @@ class UniqueFilter(BaseFilter):
  
     def _get_key(self, item) -> Optional[str]:
         try:
-            from rdkit.Chem import MolToSmiles, MolToInchi
+            from rdkit.Chem import MolToSmiles
             from rdkit.Chem.inchi import MolToInchiKey
  
             if self.key == "smiles":
@@ -204,7 +204,7 @@ class RuleOfFiveFilter(BaseFilter):
         violations = 0
         if rdMolDescriptors.CalcExactMolWt(item) > 500:
             violations += 1
-        if Descriptors.MolLogP(item) > 5: # Correct?
+        if Descriptors.MolLogP(item) > 5:
             violations += 1
         if rdMolDescriptors.CalcNumHBD(item) > 5:
             violations += 1

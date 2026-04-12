@@ -49,7 +49,7 @@ class MoleculeFileReaderBlock(IOBlock):
         return MoleculeTable.from_records(records)
             
 # ---------------------------------------------------------------------------
-# Conformers
+# Sampling / Utilities
 # ---------------------------------------------------------------------------
     
 class SamplerBlock(BaseBlock):
