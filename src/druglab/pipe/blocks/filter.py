@@ -1,5 +1,5 @@
 import numpy as np
-from typing import Optional, List, Tuple, Set
+from typing import Optional, List, Tuple, Set, Union
 
 from druglab.db.base import BaseTable
 from druglab.pipe.archetypes import BaseFilter
@@ -57,28 +57,66 @@ class PropertyFilter(BaseFilter):
         return True
 
 class SMARTSFilter(BaseFilter):
-    """Filters molecules based on the presence (or absence) of a SMARTS pattern."""
+    """Filters molecules based on the presence (or absence) of SMARTS patterns."""
     
-    def __init__(self, smarts: str, exclude: bool = True, **kwargs):
+    def __init__(
+        self, 
+        smarts: Union[str, List[str]], 
+        exclude: bool = True, 
+        min_matches: Optional[int] = None,
+        **kwargs
+    ):
         super().__init__(**kwargs)
-        self.smarts = smarts
+        
+        # 1. Normalize input to a list
+        self.smarts = [smarts] if isinstance(smarts, str) else smarts
         self.exclude = exclude
+        
+        if not self.smarts:
+            raise ValueError("At least one SMARTS pattern must be provided.")
+            
+        # 2. Handle the condition: "all" or "at least a number"
+        # If min_matches isn't specified, require ALL patterns to match.
+        self.min_matches = len(self.smarts) if min_matches is None else min_matches
+        
+        if self.min_matches > len(self.smarts):
+            raise ValueError(f"min_matches ({self.min_matches}) cannot be greater than "
+                             f"the number of SMARTS patterns ({len(self.smarts)}).")
+        if self.min_matches < 1:
+            raise ValueError("min_matches must be at least 1.")
 
-    def get_config(self):
+        # 3. Validate and pre-compile SMARTS patterns in __init__
+        from rdkit import Chem
+        self._patterns = []
+        for sm in self.smarts:
+            patt = Chem.MolFromSmarts(sm)
+            if patt is None:
+                raise ValueError(f"Invalid SMARTS pattern provided: '{sm}'")
+            self._patterns.append(patt)
+
+    def get_config(self) -> dict:
         config = super().get_config()
-        config.update({"smarts": self.smarts, "exclude": self.exclude})
+        config.update({
+            "smarts": self.smarts, 
+            "exclude": self.exclude,
+            "min_matches": self.min_matches
+        })
         return config
 
-    def _process_item(self, item):
+    def _process_item(self, item) -> bool:
         if item is None:
             return False
-        from rdkit import Chem
-        patt = Chem.MolFromSmarts(self.smarts)
-        if patt is None:
-            return False
             
-        has_match = item.HasSubstructMatch(patt)
-        return not has_match if self.exclude else has_match
+        # Count how many of the compiled patterns match the molecule
+        matches_found = sum(
+            1 for patt in self._patterns if item.HasSubstructMatch(patt)
+        )
+        
+        # Determine if the molecule meets our minimum match threshold
+        condition_met = matches_found >= self.min_matches
+        
+        # If exclude is True, we drop molecules that meet the condition
+        return not condition_met if self.exclude else condition_met
 
 class ElementFilter(BaseFilter):
     """Filters out molecules containing elements outside of the allowed list."""
