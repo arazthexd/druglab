@@ -25,7 +25,7 @@ class MoleculeDesalter(BasePreparation):
             return None
         from rdkit.Chem.MolStandardize import rdMolStandardize
         try:
-            chooser = rdMolStandardize.LargestFragmentChooser()
+            chooser = rdMolStandardize.LargestFragmentChooser(preferOrganic=True)
             return chooser.choose(item)
         except Exception:
             return item
@@ -174,39 +174,45 @@ class ConformerGenerator(BasePreparation):
         # --- add Hs for better embedding geometry ---
         mol = Chem.AddHs(item) if self.add_hs else Chem.Mol(item)
 
-        # --- ETKDG embedding ---
-        params = AllChem.ETKDGv3()
-        params.randomSeed = self.random_seed
-        params.numThreads = 1  # keep deterministic in multiprocessing context
+        try:
+            # --- ETKDG embedding ---
+            params = AllChem.ETKDGv3()
+            params.randomSeed = self.random_seed
+            params.numThreads = 1  # keep deterministic in multiprocessing context
 
-        conf_ids = AllChem.EmbedMultipleConfs(mol, numConfs=self.n_confs, params=params)
+            conf_ids = AllChem.EmbedMultipleConfs(mol, numConfs=self.n_confs, params=params)
 
-        if len(conf_ids) == 0:
-            # Fallback: return the original molecule without 3D coords.
-            return item
+            if len(conf_ids) == 0:
+                # Fallback: return the original molecule without 3D coords.
+                return item
 
-        energies = {}
+            energies = {}
 
-        # --- force-field optimisation & energy ranking ---
-        if self.ff in ("MMFF94s", "MMFF94"):
-            mp = AllChem.MMFFGetMoleculeProperties(mol, mmffVariant=self.ff)
-            if mp is not None:
+            # --- force-field optimisation & energy ranking ---
+            if self.ff in ("MMFF94s", "MMFF94"):
+                mp = AllChem.MMFFGetMoleculeProperties(mol, mmffVariant=self.ff)
+                if mp is not None:
+                    for cid in conf_ids:
+                        ff_obj = AllChem.MMFFGetMoleculeForceField(
+                            mol, mp, confId=cid
+                        )
+                        if ff_obj is None:
+                            continue
+                        ff_obj.Minimize(maxIts=self.max_iters)
+                        energies[cid] = ff_obj.CalcEnergy()
+
+            elif self.ff == "UFF":
                 for cid in conf_ids:
-                    ff_obj = AllChem.MMFFGetMoleculeForceField(
-                        mol, mp, confId=cid
-                    )
+                    ff_obj = AllChem.UFFGetMoleculeForceField(mol, confId=cid)
                     if ff_obj is None:
                         continue
                     ff_obj.Minimize(maxIts=self.max_iters)
                     energies[cid] = ff_obj.CalcEnergy()
 
-        elif self.ff == "UFF":
-            for cid in conf_ids:
-                ff_obj = AllChem.UFFGetMoleculeForceField(mol, confId=cid)
-                if ff_obj is None:
-                    continue
-                ff_obj.Minimize(maxIts=self.max_iters)
-                energies[cid] = ff_obj.CalcEnergy()
+        except Exception as e:
+            # Log a brief warning and return the original item unchanged on any error
+            print(f"WARNING: Embedding failed for molecule {item.GetSmiles()}: {str(e)}")
+            return item
 
         # --- Sort and retain conformers ---
         # Sort conformer IDs by energy (if energy calculation failed/skipped, float('inf') pushes it to the back)

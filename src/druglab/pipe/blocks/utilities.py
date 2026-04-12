@@ -38,6 +38,9 @@ class MoleculeFileReaderBlock(IOBlock):
         self.paths = paths
 
     def yield_batches(self):
+        if self.batch_size is None or self.batch_size < 1:
+            raise ValueError("MoleculeFileReaderBlock.yield_batches requires a positive batch_size.")
+    
         reader = BatchReader(self.paths, batch_size=self.batch_size)
         for records in reader:
             table = MoleculeTable.from_records(records)

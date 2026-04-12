@@ -45,10 +45,14 @@ class PropertyFilter(BaseFilter):
             return False
         from rdkit.Chem import Descriptors
         
-        if self.min_mw is not None and Descriptors.MolWt(item) < self.min_mw: return False
-        if self.max_mw is not None and Descriptors.MolWt(item) > self.max_mw: return False
-        if self.min_logp is not None and Descriptors.MolLogP(item) < self.min_logp: return False
-        if self.max_logp is not None and Descriptors.MolLogP(item) > self.max_logp: return False
+        if self.min_mw is not None and Descriptors.MolWt(item) < self.min_mw:
+            return False
+        if self.max_mw is not None and Descriptors.MolWt(item) > self.max_mw:
+            return False
+        if self.min_logp is not None and Descriptors.MolLogP(item) < self.min_logp:
+            return False
+        if self.max_logp is not None and Descriptors.MolLogP(item) > self.max_logp:
+            return False
         
         return True
 
@@ -111,6 +115,10 @@ class UniqueFilter(BaseFilter):
     **same block instance**, so duplicates are detected even when a pipeline
     runs in batch mode.  Call :meth:`reset` between independent runs if you
     want a clean slate.
+
+    NOTE: this block is stateful and the state is shared across all calls to
+    ``run()`` on the **same block instance**. As a result, multiprocessing
+    is not supported.
  
     Parameters
     ----------
@@ -126,6 +134,10 @@ class UniqueFilter(BaseFilter):
             raise ValueError("key must be 'smiles' or 'inchikey'")
         self.key = key
         self._seen: Set[str] = set()
+
+        if self.n_workers > 1:
+            print("WARNING: UniqueFilter does not support multiprocessing. Setting n_workers=1.")
+            self.n_workers = 1
  
     def get_config(self):
         config = super().get_config()
