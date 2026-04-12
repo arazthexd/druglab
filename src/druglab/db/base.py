@@ -108,13 +108,25 @@ class BaseTable(ABC, Generic[T]):
         metadata: Optional[pd.DataFrame] = None,
         features: Optional[Dict[str, np.ndarray]] = None,
         history: Optional[List[HistoryEntry]] = None,
+        *,
+        auto_convert_numeric: bool = True,
     ) -> None:
         self._objects: List[T] = objects if objects is not None else []
-        self._metadata: pd.DataFrame = (
-            metadata.reset_index(drop=True)
-            if metadata is not None
-            else pd.DataFrame()
-        )
+        
+        if metadata is not None:
+            meta_df = metadata.reset_index(drop=True)
+            if auto_convert_numeric and not meta_df.empty:
+                # Convert object/string columns to numeric where possible
+                # (Crucial for CSV/SDF loads where floats are imported as strings)
+                for col in meta_df.select_dtypes(include=["object", "string"]).columns:
+                    try:
+                        meta_df[col] = pd.to_numeric(meta_df[col])
+                    except (ValueError, TypeError):
+                        pass # If it can't be safely converted, leave as strings
+            self._metadata = meta_df
+        else:
+            self._metadata = pd.DataFrame()
+
         self._features: Dict[str, np.ndarray] = features if features is not None else {}
         self._history: List[HistoryEntry] = history if history is not None else []
         self._validate()
@@ -130,6 +142,11 @@ class BaseTable(ABC, Generic[T]):
     @property
     def metadata(self) -> pd.DataFrame:
         return self._metadata
+
+    @property
+    def metadata_columns(self) -> List[str]:
+        """List of all metadata column names."""
+        return self._metadata.columns.tolist()
 
     @property
     def features(self) -> Dict[str, np.ndarray]:
@@ -212,8 +229,60 @@ class BaseTable(ABC, Generic[T]):
             )
         self._metadata[name] = list(values)
 
-    def drop_metadata_column(self, name: str) -> None:
-        self._metadata.drop(columns=[name], inplace=True)
+    def drop_metadata_columns(self, names: Union[str, List[str]]) -> None:
+        """
+        Drop one or more metadata columns in-place.
+        """
+        if isinstance(names, str):
+            names = [names]
+        self._metadata.drop(columns=names, inplace=True)
+
+    def rename_metadata_columns(self, columns: Dict[str, str]) -> None:
+        """
+        Rename metadata columns in-place using a dictionary mapping.
+        """
+        self._metadata.rename(columns=columns, inplace=True)
+
+    def update_metadata(self, df: pd.DataFrame, on: Optional[str] = None) -> None:
+        """
+        Merge external metadata into the table in-place.
+        
+        Parameters
+        ----------
+        df : pd.DataFrame
+            The external metadata dataframe to merge.
+        on : str, optional
+            Column name to join on. If None, performs a strict row-index alignment,
+            which requires `len(df) == self.n`.
+        """
+        if on is None:
+            if len(df) != self.n:
+                raise ValueError(
+                    f"Length of update DataFrame ({len(df)}) must match "
+                    f"table length ({self.n}) when joining by index."
+                )
+            # Assign values directly to avoid index mismatch issues
+            for col in df.columns:
+                self._metadata[col] = df[col].values
+        else:
+            if on not in self._metadata.columns:
+                raise ValueError(f"Join column '{on}' not found in table metadata.")
+            if on not in df.columns:
+                raise ValueError(f"Join column '{on}' not found in provided DataFrame.")
+            
+            # To maintain exact row order (aligning with self._objects), we track
+            # original indices, merge, and then sort back to original order.
+            self._metadata['_orig_idx'] = self._metadata.index
+            merged = self._metadata.merge(df, on=on, how="left")
+            merged = merged.sort_values('_orig_idx').reset_index(drop=True)
+            merged.drop(columns=['_orig_idx'], inplace=True)
+            
+            if len(merged) != self.n:
+                raise ValueError(
+                    f"Merge resulted in {len(merged)} rows, but table has {self.n}. "
+                    "Ensure the join key does not create duplicates."
+                )
+            self._metadata = merged
 
     # ------------------------------------------------------------------
     # Feature helpers
@@ -286,8 +355,12 @@ class BaseTable(ABC, Generic[T]):
         ]
         return self._new_instance(objs, meta, feats, hist)
 
-    def __getitem__(self, key: Union[int, slice, List[int], np.ndarray]) -> "BaseTable[T]":
-        """Support table[0], table[0:10], table[[1,3,5]], table[bool_array]."""
+    def __getitem__(self, key: Union[int, slice, List[int], np.ndarray, pd.Series]) -> "BaseTable[T]":
+        """
+        Support table[0], table[0:10], table[[1,3,5]], table[bool_array].
+        This is the preferred Pythonic way to filter by metadata, e.g.:
+            table[table.metadata["MolWt"] < 500]
+        """
         if isinstance(key, int):
             key = [key]
         elif isinstance(key, slice):
@@ -529,6 +602,8 @@ class BaseTable(ABC, Generic[T]):
             metadata=metadata,
             features=features,
             history=history,
+            # Data loaded from disk has already been converted on the initial save if necessary
+            auto_convert_numeric=False, 
         )
 
     # ------------------------------------------------------------------
@@ -547,7 +622,15 @@ class BaseTable(ABC, Generic[T]):
         Subclasses with custom __init__ signatures should override this.
         """
         instance = object.__new__(self.__class__)
-        BaseTable.__init__(instance, objects, metadata, features, history)
+        # Ensure we don't redundantly process string->numeric checks when subsetting/copying internally
+        BaseTable.__init__(
+            instance, 
+            objects=objects, 
+            metadata=metadata, 
+            features=features, 
+            history=history, 
+            auto_convert_numeric=False
+        )
         return instance
 
     @staticmethod
