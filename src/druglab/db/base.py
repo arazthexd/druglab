@@ -130,10 +130,13 @@ class BaseTable(ABC, Generic[T]):
     ) -> None:
         if columns is None:
             columns = self._metadata.columns
+        columns_set = set(columns)
 
         # Convert object/string columns to numeric where possible
         # (Crucial for CSV/SDF loads where floats are imported as strings)
         for col in self._metadata.select_dtypes(include=["object", "string"]).columns:
+            if col not in columns_set:
+                continue
             try:
                 self._metadata[col] = pd.to_numeric(self._metadata[col])
             except (ValueError, TypeError):
