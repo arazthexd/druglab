@@ -123,7 +123,7 @@ class TestMutators:
 
     def test_drop_metadata_column(self):
         t = make_table(3)
-        t.drop_metadata_column("name")
+        t.drop_metadata_columns("name")
         assert "name" not in t.metadata.columns
 
     def test_add_feature(self):
