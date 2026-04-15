@@ -207,11 +207,17 @@ class MoleculeTable(BaseTable["Chem.Mol"]):
         """Write the table to an SDF file."""
         _require_rdkit()
         from rdkit.Chem import SDWriter
+        from pathlib import Path as _Path
+        if _Path(path).exists() and not overwrite:
+            raise FileExistsError(
+                f"File '{path}' already exists. Set overwrite=True to replace."
+            )
         writer = SDWriter(path)
         meta = self.get_metadata()
         for i, mol in enumerate(self.get_objects()):
             if mol is None:
                 continue
+            mol = Chem.Mol(mol)
             row = meta.iloc[i]
             for col in meta.columns:
                 mol.SetProp(str(col), str(row[col]))
