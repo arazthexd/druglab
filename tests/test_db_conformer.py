@@ -440,7 +440,9 @@ class TestConformerTableInheritance:
         table = _simple_3d_table(n_mols=2, n_confs_each=2)
         conf_table = table.unroll_conformers()
         # Mutate parent metadata
-        table._metadata.loc[0, "name"] = "MUTATED"
+        metadata = table.metadata
+        metadata.loc[0, "name"] = "MUTATED"
+        table.metadata = metadata
         # ConformerTable should still have original values
         assert "MUTATED" not in conf_table.metadata["name"].values
 

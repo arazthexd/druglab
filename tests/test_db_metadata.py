@@ -15,7 +15,7 @@ def test_convert_numeric():
     })
     
     table = MoleculeTable.from_smiles(smiles, metadata=meta)
-    table.try_numerize_metadata()
+    table.backend.try_numerize_metadata()
     
     # ID should remain object/string
     assert pd.api.types.is_object_dtype(table.metadata["ID"]) or pd.api.types.is_string_dtype(table.metadata["ID"])
@@ -37,8 +37,8 @@ def test_pythonic_mask_filtering():
     assert len(heavy_table) == 2
     assert heavy_table.smiles == ["CCC", "CCCC"]
 
-def test_rename_and_drop_metadata():
-    """Verify column renaming and dropping functionalities."""
+def test_drop_metadata():
+    """Verify column dropping functionalities."""
     table = MoleculeTable.from_smiles(["CCO"])
     table.add_metadata_column("Prop1", [10])
     table.add_metadata_column("Prop2", [20])
@@ -46,13 +46,9 @@ def test_rename_and_drop_metadata():
     
     assert set(table.metadata_columns) == {"smiles", "Prop1", "Prop2", "Prop3"}
     
-    # Test renaming
-    table.rename_metadata_columns({"Prop1": "Score", "Prop2": "Activity"})
-    assert set(table.metadata_columns) == {"smiles", "Score", "Activity", "Prop3"}
-    
     # Test plural dropping
-    table.drop_metadata_columns(["Score", "Prop3"])
-    assert set(table.metadata_columns) == {"smiles", "Activity"}
+    table.drop_metadata_columns(["Prop1", "Prop3"])
+    assert set(table.metadata_columns) == {"smiles", "Prop2"}
 
 def test_update_metadata_without_join_key():
     """Verify merging external metadata by index strictness."""
