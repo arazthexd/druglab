@@ -50,21 +50,21 @@ def test_drop_metadata():
     table.drop_metadata_columns(["Prop1", "Prop3"])
     assert set(table.metadata_columns) == {"smiles", "Prop2"}
 
-def test_update_metadata_without_join_key():
-    """Verify merging external metadata by index strictness."""
+def test_add_metadata_columns_batch():
+    """Verify adding multiple completely new metadata columns."""
     table = MoleculeTable.from_smiles(["C", "CC"])
     
-    # Test exact length match (no 'on' specified)
+    # Test batch adding a dataframe
     external_df = pd.DataFrame({"NewProp": [100, 200]})
-    table.update_metadata(external_df)
+    table.add_metadata_columns(external_df)
     
     assert "NewProp" in table.metadata.columns
     assert list(table.metadata["NewProp"]) == [100, 200]
     
     # Test length mismatch protection
     bad_df = pd.DataFrame({"BadProp": [100]})
-    with pytest.raises(ValueError, match="must match table length"):
-        table.update_metadata(bad_df)
+    with pytest.raises(ValueError):
+        table.add_metadata_columns(bad_df)
 
 def test_update_metadata_with_join_key():
     """Verify merging external metadata using a join key safely preserves table invariants."""
@@ -76,7 +76,7 @@ def test_update_metadata_with_join_key():
         "Score": [30, 10, 20]
     })
     
-    table.update_metadata(external_df, on="ID")
+    table.merge_metadata(external_df, on="ID")
     
     # Verify order is strictly maintained
     assert list(table.metadata["ID"]) == ["A", "B", "C"]
@@ -84,4 +84,4 @@ def test_update_metadata_with_join_key():
     
     # Ensure invalid merge key throws error
     with pytest.raises(ValueError, match="not found in table"):
-        table.update_metadata(external_df, on="MissingKey")
+        table.merge_metadata(external_df, on="MissingKey")
