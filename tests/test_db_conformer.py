@@ -117,8 +117,8 @@ class TestUnrollConformers:
     def test_features_empty(self):
         """Features must not be copied to prevent OOM on large datasets."""
         table = _simple_3d_table(n_mols=2, n_confs_each=2)
-        # Add a heavy feature to the parent
-        table.add_feature("fp", np.ones((2, 1024)))
+        # Add a heavy feature to the parent using updated feature API
+        table.update_feature("fp", np.ones((2, 1024)))
         conf_table = table.unroll_conformers()
         assert conf_table.features == {}
 
@@ -238,9 +238,9 @@ class TestCollapse:
             metadata=pd.DataFrame({"name": ["ethanol"]}),
         )
         conf_table = table.unroll_conformers()
-        # Add fake 3D features manually
+        # Add fake 3D features manually using updated feature API
         fake_feats = np.array([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]])
-        conf_table.add_feature("desc3d", fake_feats)
+        conf_table.update_feature("desc3d", fake_feats)
 
         collapsed = conf_table.collapse(features_agg={"desc3d": "mean"})
         expected = fake_feats.mean(axis=0)
@@ -354,7 +354,7 @@ class TestUpdateFromConformers:
         )
         conf_table = table.unroll_conformers()
         fake_feats = np.array([[1.0, 0.0], [3.0, 0.0], [5.0, 0.0]])
-        conf_table.add_feature("shape", fake_feats)
+        conf_table.update_feature("shape", fake_feats)
 
         result = table.update_from_conformers(
             conf_table, features_agg={"shape": "mean"}

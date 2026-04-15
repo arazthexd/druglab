@@ -14,7 +14,7 @@ Workflow
 Design constraints
 ------------------
 * ConformerTable stores NO reference to its parent MoleculeTable — fully decoupled.
-* Each ``Chem.Mol`` in ``_objects`` carries exactly one conformer.
+* Each ``Chem.Mol`` in ``objects`` carries exactly one conformer.
 * Features are initialised empty on creation to avoid OOM from copying large arrays.
 """
 
@@ -85,7 +85,7 @@ class ConformerTable(MoleculeTable):
         """
         _require_rdkit()
 
-        meta = self._backend.get_metadata()
+        meta = self.get_metadata()
 
         if groupby not in meta.columns:
             raise ValueError(
@@ -104,20 +104,20 @@ class ConformerTable(MoleculeTable):
         new_objects: List[Optional[Chem.Mol]] = []
         new_meta_rows: List[dict] = []
         new_features: Dict[str, List[np.ndarray]] = {
-            k: [] for k in self._backend.get_feature_names()
+            k: [] for k in self.feature_names
         }
 
         for key in sorted(groups.keys(), key=lambda x: (isinstance(x, float), x)):
             row_indices = groups[key]
 
-            base_mol = self._backend._objects[row_indices[0]]
+            base_mol = self.get_objects(row_indices[0])
             if base_mol is None:
                 new_objects.append(None)
             else:
                 merged = Chem.RWMol(Chem.Mol(base_mol))
                 # Already has the first conformer from base_mol
                 for idx in row_indices[1:]:
-                    other = self._backend._objects[idx]
+                    other = self.get_objects(idx)
                     if other is None or other.GetNumConformers() == 0:
                         continue
                     conf = other.GetConformer(0)
@@ -142,8 +142,8 @@ class ConformerTable(MoleculeTable):
                 else:                   row_dict[col] = col_vals.iloc[0]
             new_meta_rows.append(row_dict)
 
-            for feat_name in self._backend.get_feature_names():
-                feat_array = self._backend.get_feature(feat_name)
+            for feat_name in self.feature_names:
+                feat_array = self.get_feature(feat_name)
                 agg_fn = feat_agg.get(feat_name, "mean")
                 group_feats = feat_array[row_indices]
                 if agg_fn == "mean":    new_features[feat_name].append(group_feats.mean(axis=0))

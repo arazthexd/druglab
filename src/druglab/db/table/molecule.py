@@ -189,8 +189,8 @@ class MoleculeTable(BaseTable["Chem.Mol"]):
         """Bridge method: Convert this table back into druglab.io MoleculeRecords."""
         from druglab.io._record import MoleculeRecord
         records = []
-        meta = self._backend.get_metadata()
-        for i, mol in enumerate(self._backend._objects):
+        meta = self.get_metadata()
+        for i, mol in enumerate(self.get_objects()):
             row_dict = meta.iloc[i].to_dict()
             name = row_dict.pop("name", "")
             source = row_dict.pop("source", "")
@@ -215,8 +215,8 @@ class MoleculeTable(BaseTable["Chem.Mol"]):
         _require_rdkit()
         from rdkit.Chem import SDWriter
         writer = SDWriter(path)
-        meta = self._backend.get_metadata()
-        for i, mol in enumerate(self._backend._objects):
+        meta = self.get_metadata()
+        for i, mol in enumerate(self.get_objects()):
             if mol is None:
                 continue
             row = meta.iloc[i]
@@ -235,13 +235,13 @@ class MoleculeTable(BaseTable["Chem.Mol"]):
         _require_rdkit()
         return [
             Chem.MolToSmiles(mol) if mol is not None else None
-            for mol in self._backend._objects
+            for mol in self.get_objects()
         ]
 
     @property
     def mols(self) -> List["Chem.Mol"]:
         """Flat list of all valid RDKit Mol objects in the table."""
-        return [mol for mol in self._backend._objects if mol is not None]
+        return [mol for mol in self.get_objects() if mol is not None]
 
     @property
     def valid_mask(self) -> np.ndarray:
@@ -250,7 +250,7 @@ class MoleculeTable(BaseTable["Chem.Mol"]):
             not any([
                 mol is None,
                 mol.GetNumAtoms() == 0
-            ]) for mol in self._backend._objects
+            ]) for mol in self.get_objects()
         ])
 
     # ------------------------------------------------------------------
@@ -279,14 +279,18 @@ class MoleculeTable(BaseTable["Chem.Mol"]):
                            "NumHDonors", "TPSA", "NumRotatableBonds"]
 
         desc_fns = {name: getattr(Descriptors, name) for name in descriptors}
-        meta = self._backend.get_metadata()
+        
+        # Build a dictionary of ONLY the new columns
+        new_cols = {}
         for name, fn in desc_fns.items():
             col = prefix + name
-            meta[col] = [
+            new_cols[col] = [
                 fn(mol) if mol is not None else float("nan")
-                for mol in self._backend._objects
+                for mol in self.get_objects()
             ]
-        self._backend.update_metadata(meta)
+            
+        # Use the correct Schema Evolution method!
+        self.add_metadata_columns(new_cols)
 
     # ------------------------------------------------------------------
     # 3D Conformer handling
@@ -305,9 +309,9 @@ class MoleculeTable(BaseTable["Chem.Mol"]):
 
         new_objects: List[Chem.Mol] = []
         meta_rows: List[dict] = []
-        meta = self._backend.get_metadata()
+        meta = self.get_metadata()
 
-        for parent_idx, mol in enumerate(self._backend._objects):
+        for parent_idx, mol in enumerate(self.get_objects()):
             if mol is None or mol.GetNumConformers() == 0:
                 continue
 
@@ -357,7 +361,7 @@ class MoleculeTable(BaseTable["Chem.Mol"]):
         """Merge a processed ConformerTable back into this MoleculeTable."""
         _require_rdkit()
 
-        conf_meta = conf_table._backend.get_metadata()
+        conf_meta = conf_table.get_metadata()
 
         if id_col not in conf_meta.columns:
             raise ValueError(
@@ -372,11 +376,11 @@ class MoleculeTable(BaseTable["Chem.Mol"]):
         for row_idx, parent_idx in enumerate(conf_meta[id_col]):
             parent_to_rows.setdefault(int(parent_idx), []).append(row_idx)
 
-        new_objects = copy.deepcopy(self._backend._objects)
-        new_meta = self._backend.get_metadata().copy(deep=True)
+        new_objects = copy.deepcopy(self.get_objects())
+        new_meta = self.get_metadata().copy(deep=True)
         new_features = {
-            k: self._backend.get_feature(k).copy()
-            for k in self._backend.get_feature_names()
+            k: self.get_feature(k).copy()
+            for k in self.feature_names
         }
 
         keep_mask = np.ones(self.n, dtype=bool)
@@ -398,7 +402,7 @@ class MoleculeTable(BaseTable["Chem.Mol"]):
 
             mol.RemoveAllConformers()
             for ri in row_indices:
-                conf_mol = conf_table._backend._objects[ri]
+                conf_mol = conf_table.get_objects(ri)
                 if conf_mol is None or conf_mol.GetNumConformers() == 0:
                     continue
                 conf = conf_mol.GetConformer(0)
@@ -420,9 +424,9 @@ class MoleculeTable(BaseTable["Chem.Mol"]):
                 new_meta.at[parent_idx, col] = val
 
             for feat_name, agg_fn in feat_agg.items():
-                if feat_name not in conf_table._backend.get_feature_names():
+                if feat_name not in conf_table.feature_names:
                     continue
-                feat_arr = conf_table._backend.get_feature(feat_name)
+                feat_arr = conf_table.get_feature(feat_name)
                 group_feats = feat_arr[row_indices]
                 if agg_fn == "mean":    agg_val = group_feats.mean(axis=0)
                 elif agg_fn == "min":   agg_val = group_feats.min(axis=0)

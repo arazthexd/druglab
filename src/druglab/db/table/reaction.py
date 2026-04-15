@@ -141,8 +141,8 @@ class ReactionTable(BaseTable["rdChemReactions.ChemicalReaction"]):
     def to_records(self) -> List["ReactionRecord"]:  # type: ignore
         from druglab.io._record import ReactionRecord
         records = []
-        meta = self._backend.get_metadata()
-        for i, rxn in enumerate(self._backend._objects):
+        meta = self.get_metadata()
+        for i, rxn in enumerate(self.get_objects()):
             row_dict = meta.iloc[i].to_dict()
             name = row_dict.pop("name", "")
             source = row_dict.pop("source", "")
@@ -166,36 +166,36 @@ class ReactionTable(BaseTable["rdChemReactions.ChemicalReaction"]):
         _require_rdkit()
         return [
             AllChem.ReactionToSmarts(rxn) if rxn is not None else None
-            for rxn in self._backend._objects
+            for rxn in self.get_objects()
         ]
 
     @property
     def rxns(self) -> List["rdChemReactions.ChemicalReaction"]:
-        return [rxn for rxn in self._backend._objects if rxn is not None]
+        return [rxn for rxn in self.get_objects() if rxn is not None]
 
     @property
     def n_reactants(self) -> List[int]:
         return [
             rxn.GetNumReactantTemplates() if rxn is not None else 0
-            for rxn in self._backend._objects
+            for rxn in self.get_objects()
         ]
 
     @property
     def n_products(self) -> List[int]:
         return [
             rxn.GetNumProductTemplates() if rxn is not None else 0
-            for rxn in self._backend._objects
+            for rxn in self.get_objects()
         ]
 
     @property
     def valid_mask(self) -> np.ndarray:
-        return np.array([rxn is not None for rxn in self._backend._objects])
+        return np.array([rxn is not None for rxn in self.get_objects()])
 
     def reactant_tables(self) -> List["MoleculeTable"]:  # type: ignore
         _require_rdkit()
         from .molecule import MoleculeTable
         tables = []
-        for rxn in self._backend._objects:
+        for rxn in self.get_objects():
             if rxn is None:
                 tables.append(MoleculeTable())
             else:
@@ -207,7 +207,7 @@ class ReactionTable(BaseTable["rdChemReactions.ChemicalReaction"]):
         _require_rdkit()
         from .molecule import MoleculeTable
         tables = []
-        for rxn in self._backend._objects:
+        for rxn in self.get_objects():
             if rxn is None:
                 tables.append(MoleculeTable())
             else:
@@ -222,7 +222,7 @@ class ReactionTable(BaseTable["rdChemReactions.ChemicalReaction"]):
     def validate_reactions(self) -> List[bool]:
         _require_rdkit()
         results = []
-        for rxn in self._backend._objects:
+        for rxn in self.get_objects():
             if rxn is None:
                 results.append(False)
             else:
