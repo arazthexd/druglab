@@ -18,7 +18,9 @@ class BaseFeaturizer(ItemBlock):
         
         # Get feature name to save into the table
         feat_name = self.get_feature_name()
-        table.add_feature(feat_name, feature_array)
+        
+        # USE NEW STRICT API: update_feature
+        table.update_feature(feat_name, feature_array)
         
         return table
 
