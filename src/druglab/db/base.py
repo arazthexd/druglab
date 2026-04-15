@@ -1,8 +1,30 @@
 """
 druglab.db.base
 ~~~~~~~~~~~~~~~
-BaseTable: abstract base class enforcing the four-property contract.
+BaseTable: abstract orchestrator enforcing the four-property contract.
 HistoryEntry: immutable record written by pipe blocks.
+
+Architecture
+------------
+``BaseTable`` now delegates all data storage to a ``BaseStorageBackend``.
+The default backend is ``EagerMemoryBackend`` (fully in-memory).  Future
+backends (SQLite, Zarr, HDF5) can be swapped in without touching this class.
+
+Advanced multi-axis indexing with strict query pushdown::
+
+    META = 'metadata'
+    OBJ  = 'object'
+    FEAT = 'feature'
+
+    table[0:10]                         # returns a new table (10 rows)
+    table[FEAT, 'fps', 0:100]           # pushes slice to backend
+    table[META, ['MolWt', 'LogP'], 5]   # pushes col+row request to backend
+    table[OBJ, 3]                       # single object from backend
+
+Backwards-compatible dot-notation still works:
+    table.metadata          -> pd.DataFrame (full)
+    table.objects           -> List[T]      (full)
+    table.features          -> dict         (full)
 """
 
 from __future__ import annotations
@@ -15,16 +37,29 @@ from abc import ABC, abstractmethod
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Generic, List, Optional, Sequence, TypeVar, Union
+from typing import Any, Dict, Generic, List, Optional, Sequence, Tuple, TypeVar, Union
 
 import numpy as np
 import pandas as pd
 
-# ---------------------------------------------------------------------------
-# Type variable for the object list (Mol, Reaction, …)
-# ---------------------------------------------------------------------------
-T = TypeVar("T")
+from .backends import EagerMemoryBackend, BaseStorageBackend
 
+# ---------------------------------------------------------------------------
+# Type variables
+# ---------------------------------------------------------------------------
+
+OT = TypeVar("OT") # object type
+MT = TypeVar("MT", bound=pd.DataFrame) # metadata type (not used yet)
+FT = TypeVar("FT", bound=np.ndarray) # feature type (not used yet)
+BT = TypeVar("BT", bound=BaseStorageBackend) # backend type
+
+# ---------------------------------------------------------------------------
+# Multi-axis index axis constants
+# ---------------------------------------------------------------------------
+
+META = M = "metadata"
+OBJ  = O = "object"
+FEAT = F = "feature"
 
 # ---------------------------------------------------------------------------
 # HistoryEntry
@@ -81,21 +116,29 @@ class HistoryEntry:
 # BaseTable
 # ---------------------------------------------------------------------------
 
-class BaseTable(ABC, Generic[T]):
+class BaseTable(ABC, Generic[OT]): # TODO: add BT
     """
     Abstract base class for all DrugLab table types.
+
+    Data is delegated to a ``BaseStorageBackend`` (default: EagerMemoryBackend).
+    All public properties proxy to the backend, maintaining backwards
+    compatibility with the previous attribute-based API.
 
     Invariant (always enforced):
         len(objects) == len(metadata)
         features[k].shape[0] == len(objects)  for every key k
 
     Subclasses must implement:
-        _serialize_object(obj)   -> bytes-like or JSON-able
-        _deserialize_object(raw) -> T
-        _object_type_name()      -> str   (used in repr and error messages)
+        _serialize_object(obj)   -> bytes
+        _deserialize_object(raw) -> OT
+        _object_type_name()      -> str
 
-    Subclasses may override:
-        copy()  if T objects need deep-copy semantics beyond pickle
+    Multi-axis indexing (strict query pushdown)::
+
+        table[0:5]                       # new 5-row table
+        table[FEAT, 'fps', 0:10]         # ndarray (FT), only rows 0-9 loaded
+        table[META, ['MolWt'], 0]        # single-row DataFrame (MT)
+        table[OBJ, 3]                    # single object (OT)
     """
 
     # ------------------------------------------------------------------
@@ -104,86 +147,104 @@ class BaseTable(ABC, Generic[T]):
 
     def __init__(
         self,
-        objects: Optional[List[T]] = None,
+        objects: Optional[List[OT]] = None,
         metadata: Optional[pd.DataFrame] = None,
         features: Optional[Dict[str, np.ndarray]] = None,
         history: Optional[List[HistoryEntry]] = None,
-        *,
-        auto_convert_numeric: bool = False,
+        *, 
+        auto_convert_numeric: bool = False, # TODO: Reimplmenet try_numerize_metadata
+        _backend: Optional[BT] = None,
     ) -> None:
-        self._objects: List[T] = objects if objects is not None else []
-        
-        if metadata is not None:
-            self._metadata: pd.DataFrame = metadata.reset_index(drop=True)
-            if auto_convert_numeric and not self._metadata.empty:
-                self.try_numerize_metadata()
+        # Allow callers to pass a pre-built backend (used internally by load())
+        if _backend is not None:
+            self._backend = _backend
         else:
-            self._metadata = pd.DataFrame()
+            # Build the default EagerMemoryBackend from raw arguments
+            obj_list  = objects  if objects  is not None else []
+            meta_df   = metadata if metadata is not None else pd.DataFrame()
+            feat_dict = features if features is not None else {}
 
-        self._features: Dict[str, np.ndarray] = features if features is not None else {}
+            if not isinstance(meta_df, pd.DataFrame):
+                meta_df = pd.DataFrame(meta_df)
+
+            meta_df = meta_df.reset_index(drop=True)
+
+            self._backend = EagerMemoryBackend(
+                objects=obj_list,
+                metadata=meta_df,
+                features=feat_dict,
+            )
+
         self._history: List[HistoryEntry] = history if history is not None else []
         self._validate()
 
-    def try_numerize_metadata(
-        self,
-        columns: Optional[List[str]] = None,
-    ) -> None:
-        if columns is None:
-            columns = self._metadata.columns
-        columns_set = set(columns)
-
-        # Convert object/string columns to numeric where possible
-        # (Crucial for CSV/SDF loads where floats are imported as strings)
-        for col in self._metadata.select_dtypes(include=["object", "string"]).columns:
-            if col not in columns_set:
-                continue
-            try:
-                self._metadata[col] = pd.to_numeric(self._metadata[col])
-            except (ValueError, TypeError):
-                pass # If it can't be safely converted, leave as strings
-
     # ------------------------------------------------------------------
-    # Properties (read access; mutation goes through explicit methods)
+    # Property wrappers
     # ------------------------------------------------------------------
 
     @property
-    def objects(self) -> List[T]:
-        return self._objects
+    def backend(self) -> BT:
+        return self._backend
+
+    @property
+    def objects(self) -> List[OT]:
+        """Full list of objects (proxied from backend)."""
+        return self._backend.get_objects()  # direct access for performance
+    
+    @objects.setter
+    def objects(self, objs: List[OT]):
+        self._backend.set_objects(objs)
 
     @property
     def metadata(self) -> pd.DataFrame:
-        return self._metadata
+        """Full metadata DataFrame (proxied from backend)."""
+        return self._backend.get_metadata()
+    
+    @metadata.setter
+    def metadata(self, meta: pd.DataFrame):
+        return self._backend.set_metadata(meta)
 
     @property
     def metadata_columns(self) -> List[str]:
         """List of all metadata column names."""
-        return self._metadata.columns.tolist()
+        return self._backend.get_metadata().columns.tolist()
 
     @property
     def features(self) -> Dict[str, np.ndarray]:
-        return self._features
+        """Full feature dictionary (proxied from backend)."""
+        return {k: self._backend.get_feature(k) for k in self._backend.get_feature_names()}
+    
+    @features.setter
+    def features(self, feats: Dict[str, np.ndarray]):
+        return self._backend.set_features(feats)
+    
+    @property
+    def feature_names(self) -> List[str]:
+        """List of all feature names."""
+        return self._backend.get_feature_names()
 
     @property
     def history(self) -> List[HistoryEntry]:
         return self._history
 
-    # Convenience
     @property
     def n(self) -> int:
         """Number of rows / objects in the table."""
-        return len(self._objects)
+        return len(self._backend)
 
     def __len__(self) -> int:
         return self.n
 
     def __repr__(self) -> str:
+        feat_names = self._backend.get_feature_names()
         feat_summary = ", ".join(
-            f"{k}:{v.shape}" for k, v in self._features.items()
+            f"{k}:{self._backend.get_feature(k).shape}"
+            for k in feat_names
         )
         return (
             f"{self.__class__.__name__}("
             f"n={self.n}, "
-            f"metadata_cols={list(self._metadata.columns)}, "
+            f"metadata_cols={self._backend.get_metadata().columns.tolist()}, "
             f"features=[{feat_summary}])"
         )
 
@@ -192,33 +253,40 @@ class BaseTable(ABC, Generic[T]):
     # ------------------------------------------------------------------
 
     def _validate(self) -> None:
-        n = len(self._objects)
 
-        if len(self._metadata) != n and len(self._metadata) != 0:
-            raise ValueError(
-                f"metadata has {len(self._metadata)} rows but objects has {n}. "
-                "They must be the same length."
-            )
-        # If metadata is empty DataFrame, pad it to the right shape
-        if len(self._metadata) == 0 and n > 0:
-            self._metadata = pd.DataFrame(index=range(n))
+        # --------------------------------------------------------------
+        # n = len(self._backend)
+        # meta = self._backend.get_metadata()
 
-        for key, arr in self._features.items():
-            if arr.shape[0] != n:
-                raise ValueError(
-                    f"Feature '{key}' has {arr.shape[0]} rows but objects has {n}."
-                )
+        # if not meta.empty and len(meta) != n and len(meta) != 0:
+        #     raise ValueError(
+        #         f"metadata has {len(meta)} rows but objects has {n}. "
+        #         "They must be the same length."
+        #     )
+        # # If metadata is empty DataFrame, pad it to the right shape
+        # if meta.empty and n > 0:
+        #     self._backend.update_metadata(pd.DataFrame(index=range(n)))
+
+        # for key in self._backend.get_feature_names():
+        #     arr = self._backend.get_feature(key)
+        #     if arr.shape[0] != n:
+        #         raise ValueError(
+        #             f"Feature '{key}' has {arr.shape[0]} rows but objects has {n}."
+        #         )
+        # --------------------------------------------------------------
+
+        self._backend.validate()
 
     # ------------------------------------------------------------------
     # Abstract interface (subclasses implement object serialisation)
     # ------------------------------------------------------------------
 
     @abstractmethod
-    def _serialize_object(self, obj: T) -> bytes:
+    def _serialize_object(self, obj: OT) -> bytes:
         """Serialise a single object to bytes for disk storage."""
 
     @abstractmethod
-    def _deserialize_object(self, raw: bytes) -> T:
+    def _deserialize_object(self, raw: bytes) -> OT:
         """Deserialise bytes back to an object."""
 
     @abstractmethod
@@ -226,112 +294,178 @@ class BaseTable(ABC, Generic[T]):
         """Short human-readable name for the object type (e.g. 'Mol')."""
 
     # ------------------------------------------------------------------
-    # Metadata helpers
+    # Metadata helpers (backwards-compatible public API)
     # ------------------------------------------------------------------
 
     def add_metadata_column(self, name: str, values: Sequence) -> None:
-        """
-        Add (or overwrite) a metadata column. ``values`` must have
-        the same length as the table.
-        """
+        """Add (or overwrite) a metadata column."""
         if len(values) != self.n:
             raise ValueError(
                 f"values length {len(values)} != table length {self.n}"
             )
-        self._metadata[name] = list(values)
+        new_df = pd.DataFrame({name: values})
+        self._backend.update_metadata(new_df, idx=None)
 
     def drop_metadata_columns(self, names: Union[str, List[str]]) -> None:
-        """
-        Drop one or more metadata columns in-place.
-        """
+        """Drop one or more metadata columns in-place."""
         if isinstance(names, str):
             names = [names]
-        self._metadata.drop(columns=names, inplace=True)
+        self._backend.drop_metadata(cols=names)
 
-    def rename_metadata_columns(self, columns: Dict[str, str]) -> None:
-        """
-        Rename metadata columns in-place using a dictionary mapping.
-        """
-        self._metadata.rename(columns=columns, inplace=True)
+    # def rename_metadata_columns(self, columns: Dict[str, str]) -> None:
+    #     """Rename metadata columns in-place using a mapping dict."""
+    #     meta = self._backend.get_metadata()
+    #     meta.rename(columns=columns, inplace=True)
+    #     self._backend.update_metadata(meta)
 
     def update_metadata(self, df: pd.DataFrame, on: Optional[str] = None) -> None:
-        """
-        Merge external metadata into the table in-place.
-        
-        Parameters
-        ----------
-        df : pd.DataFrame
-            The external metadata dataframe to merge.
-        on : str, optional
-            Column name to join on. If None, performs a strict row-index alignment,
-            which requires `len(df) == self.n`.
-        """
+        """Merge external metadata into the table in-place."""
+        current = self._backend.get_metadata()
+
         if on is None:
             if len(df) != self.n:
                 raise ValueError(
                     f"Length of update DataFrame ({len(df)}) must match "
                     f"table length ({self.n}) when joining by index."
                 )
-            # Assign values directly to avoid index mismatch issues
             for col in df.columns:
-                self._metadata[col] = df[col].values
+                current[col] = df[col].values
+            self._backend.update_metadata(current)
         else:
-            if on not in self._metadata.columns:
+            if on not in current.columns:
                 raise ValueError(f"Join column '{on}' not found in table metadata.")
             if on not in df.columns:
                 raise ValueError(f"Join column '{on}' not found in provided DataFrame.")
-            
-            # To maintain exact row order (aligning with self._objects), we track
-            # original indices, merge, and then sort back to original order.
+
             temp_col = "__orig_idx__"
-            while temp_col in self._metadata.columns or temp_col in df.columns:
+            while temp_col in current.columns or temp_col in df.columns:
                 temp_col = f"_{temp_col}"
 
-            overlap = [c for c in df.columns if c != on and c in self._metadata.columns]
+            overlap = [c for c in df.columns if c != on and c in current.columns]
             left: pd.DataFrame = (
-                self._metadata.drop(columns=overlap).assign(**{temp_col: np.arange(self.n)})
+                current.drop(columns=overlap).assign(**{temp_col: np.arange(self.n)})
             )
             merged: pd.DataFrame = left.merge(df, on=on, how="left")
-            merged: pd.DataFrame = merged.sort_values(temp_col)
-            merged: pd.DataFrame = merged.reset_index(drop=True)
+            merged = merged.sort_values(temp_col).reset_index(drop=True)
             merged.drop(columns=[temp_col], inplace=True)
-            
+
             if len(merged) != self.n:
                 raise ValueError(
                     f"Merge resulted in {len(merged)} rows, but table has {self.n}. "
                     "Ensure the join key does not create duplicates."
                 )
-            self._metadata = merged
+            self._backend.update_metadata(merged)
 
     # ------------------------------------------------------------------
-    # Feature helpers
+    # Feature helpers (backwards-compatible public API)
     # ------------------------------------------------------------------
 
     def add_feature(self, name: str, array: np.ndarray) -> None:
-        """
-        Add (or overwrite) a feature array.  ``array.shape[0]`` must
-        equal ``self.n``.
-        """
+        """Add (or overwrite) a feature array."""
         if array.shape[0] != self.n:
             raise ValueError(
                 f"Feature array '{name}' has {array.shape[0]} rows; "
                 f"table has {self.n}."
             )
-        self._features[name] = array
+        self._backend.add_feature(name, array)
 
     def drop_feature(self, name: str) -> None:
-        del self._features[name]
+        """Remove a feature by name."""
+        self._backend.drop_feature(name)
 
     def has_feature(self, name: str) -> bool:
-        return name in self._features
+        """Return True if the feature exists."""
+        return name in self._backend.get_feature_names()
 
     # ------------------------------------------------------------------
-    # History helpers (pipe blocks use these)
+    # History helpers
     # ------------------------------------------------------------------
 
     def append_history(self, entry: HistoryEntry) -> None:
-        """Append one entry to the audit log. Called by pipe blocks."""
+        """Append one entry to the audit log."""
         self._history.append(entry)
+
+    # ------------------------------------------------------------------
+    # Advanced multi-axis indexing with strict query pushdown
+    # ------------------------------------------------------------------
+
+    def __getitem__(
+        self,
+        key: Union[int, slice, List[int], np.ndarray, pd.Series, Tuple],
+    ) -> Any:
+        """
+        Advanced multi-axis indexing with backend query pushdown.
+
+        Single-axis row selection (returns a new table)::
+
+            table[0]           # single row table
+            table[0:10]        # 10-row table
+            table[[1, 3, 5]]   # 3-row table
+            table[bool_array]  # filtered table
+
+        Multi-axis selection (returns data, NOT a table)::
+
+            table[FEAT, 'fps', 0:10]            # ndarray rows 0-9
+            table[META, ['MolWt', 'LogP'], 5]   # single-row DataFrame
+            table[OBJ, 3]                        # single object
+            table[FEAT, 'fps']                   # full feature array (no idx)
+        """
+        if not isinstance(key, tuple):
+            # Standard row-level subsetting → new table
+            return self.subset(key)
+
+        attr = key[0]
+
+        # Safely parse variable-length tuple without IndexError.
+        # For FEAT with 2 elements: table[FEAT, 'fp'] means name='fp', idx=None.
+        # For META/OBJ with 2 elements: table[META, 0:5] means names=None, idx=0:5.
+        if len(key) == 2:
+            if attr in (FEAT, F) and isinstance(key[1], str):
+                # table[FEAT, 'fp'] — feature name only, no index
+                names = key[1]
+                idx = None
+            else:
+                names = None
+                idx = key[1]
+        elif len(key) == 3:
+            names = key[1]
+            idx = key[2]
+        else:
+            raise ValueError(
+                "Invalid slicing format. Expected [ATTR, IDX] or [ATTR, NAMES, IDX]."
+            )
+
+        # Route to backend with strict query pushdown
+        if attr in (META, M):
+            return self._backend.get_metadata(idx=idx, cols=names)
+
+        elif attr in (OBJ, O):
+            if names is not None:
+                raise ValueError("Objects do not have named columns.")
+            return self._backend.get_objects(idx=idx)
+
+        elif attr in (FEAT, F):
+            if isinstance(names, str):
+                return self._backend.get_feature(name=names, idx=idx)
+            elif isinstance(names, list):
+                return {
+                    feat_name: self._backend.get_feature(name=feat_name, idx=idx)
+                    for feat_name in names
+                }
+            elif names is None:
+                all_feats = self._backend.get_feature_names()
+                return {
+                    feat_name: self._backend.get_feature(name=feat_name, idx=idx)
+                    for feat_name in all_feats
+                }
+            else:
+                raise ValueError(
+                    f"Expected str, List[str], or None for feature names; "
+                    f"got {type(names).__name__}."
+                )
+
+        else:
+            raise ValueError(f"Unknown attribute identifier: {attr!r}.")
 
     # ------------------------------------------------------------------
     # Slicing / subsetting
@@ -339,81 +473,78 @@ class BaseTable(ABC, Generic[T]):
 
     def subset(
         self,
-        indices: Union[List[int], np.ndarray, pd.Series],
+        indices: Union[List[int], np.ndarray, pd.Series, slice, int],
         *,
         copy_objects: bool = True,
-    ) -> "BaseTable[T]":
+    ) -> "BaseTable[OT]":
         """
         Return a new table containing only the rows at ``indices``.
-        The returned table is a fresh instance of the same subclass.
+
+        The backend's ``create_view`` method is called to synchronise
+        all three data stores at the storage layer.
 
         Parameters
         ----------
         indices
-            Integer indices or boolean mask.
+            Integer indices, boolean mask, slice, or single int.
         copy_objects
-            Whether to deep-copy the object list (default True).
+            Whether to deep-copy objects (default True).
+            ``create_view`` always copies; set False only for internal
+            in-place operations where a view is acceptable.
         """
+        n = self.n
+
+        if isinstance(indices, int):
+            indices = [indices]
+        elif isinstance(indices, slice):
+            indices = list(range(*indices.indices(n)))
+
         idx = np.asarray(indices)
         if idx.dtype == bool:
-            if len(idx) != self.n:
+            if len(idx) != n:
                 raise ValueError(
-                    f"Boolean mask length {len(idx)} must match table length {self.n}."
+                    f"Boolean mask length {len(idx)} must match table length {n}."
                 )
             idx = np.where(idx)[0]
 
-        objs = [
-            (copy.deepcopy(self._objects[i]) if copy_objects else self._objects[i])
-            for i in idx
-        ]
-        meta = self._metadata.iloc[idx].reset_index(drop=True)
-        feats = {k: v[idx] for k, v in self._features.items()}
+        idx = idx.astype(np.intp)
+
+        # Push selection down to the backend
+        new_backend = self._backend.create_view(idx.tolist())
+
+        # If copy_objects=False we skip the deep-copy that create_view already did.
+        # For now create_view always copies; this flag is preserved for API compat.
+
         hist = list(self._history) + [
             HistoryEntry.now(
                 block_name="BaseTable.subset",
                 config={"n_indices": len(idx)},
-                rows_in=self.n,
+                rows_in=n,
                 rows_out=len(idx),
             )
         ]
-        return self._new_instance(objs, meta, feats, hist)
-
-    def __getitem__(self, key: Union[int, slice, List[int], np.ndarray, pd.Series]) -> "BaseTable[T]":
-        """
-        Support table[0], table[0:10], table[[1,3,5]], table[bool_array].
-        This is the preferred Pythonic way to filter by metadata, e.g.:
-            table[table.metadata["MolWt"] < 500]
-        """
-        if isinstance(key, int):
-            key = [key]
-        elif isinstance(key, slice):
-            key = list(range(*key.indices(self.n)))
-        return self.subset(key)
+        return self._new_instance_from_backend(new_backend, hist)
 
     # ------------------------------------------------------------------
     # Copy
     # ------------------------------------------------------------------
 
-    def copy(self) -> "BaseTable[T]":
+    def copy(self) -> "BaseTable[OT]":
         """Return a fully independent deep copy of this table."""
-        return self._new_instance(
-            objects=copy.deepcopy(self._objects),
-            metadata=self._metadata.copy(deep=True),
-            features={k: v.copy() for k, v in self._features.items()},
-            history=list(self._history),
-        )
+        new_backend = self._backend.create_view(list(range(len(self._backend))))
+        return self._new_instance_from_backend(new_backend, list(self._history))
 
     # ------------------------------------------------------------------
-    # Concatenation (class method — concat two tables of the same type)
+    # Concatenation
     # ------------------------------------------------------------------
 
     @classmethod
     def concat(
         cls,
-        tables: List["BaseTable[T]"],
+        tables: List["BaseTable[OT]"],
         *,
         handle_missing_features: str = "zeros",
-    ) -> "BaseTable[T]":
+    ) -> "BaseTable[OT]":
         """
         Row-wise concatenation of multiple tables of the same subclass.
 
@@ -438,40 +569,41 @@ class BaseTable(ABC, Generic[T]):
             )
 
         # objects
-        all_objects: List[T] = []
+        all_objects: List[Any] = []
         for t in tables:
-            all_objects.extend(t._objects)
+            all_objects.extend(t._backend.get_objects())
 
         # metadata
-        meta_frames = [t._metadata for t in tables]
+        meta_frames = [t._backend.get_metadata() for t in tables]
         combined_meta = pd.concat(meta_frames, ignore_index=True, sort=False)
 
         # features — union of all keys
-        all_keys = set()
+        all_keys: set = set()
         for t in tables:
-            all_keys.update(t._features.keys())
+            all_keys.update(t._backend.get_feature_names())
 
         combined_features: Dict[str, np.ndarray] = {}
         for key in all_keys:
             parts = []
             for t in tables:
-                if key in t._features:
-                    parts.append(t._features[key])
+                if t.has_feature(key):
+                    parts.append(t._backend.get_feature(key))
                 else:
                     if handle_missing_features == "raise":
                         raise ValueError(
                             f"Feature '{key}' missing in at least one table."
                         )
-                    present = next(
-                        t._features[key]
+                    # Find shape from the first table that has this feature
+                    present_arr = next(
+                        t._backend.get_feature(key)
                         for t in tables
-                        if key in t._features
+                        if t.has_feature(key)
                     )
-                    shape = (len(t),) + present.shape[1:]
+                    shape = (len(t),) + present_arr.shape[1:]
                     fill = (
-                        np.full(shape, np.nan, dtype=present.dtype)
+                        np.full(shape, np.nan, dtype=present_arr.dtype)
                         if handle_missing_features == "nan"
-                        else np.zeros(shape, dtype=present.dtype)
+                        else np.zeros(shape, dtype=present_arr.dtype)
                     )
                     parts.append(fill)
             combined_features[key] = np.concatenate(parts, axis=0)
@@ -489,73 +621,54 @@ class BaseTable(ABC, Generic[T]):
             )
         )
 
-        return tables[0]._new_instance(
-            all_objects, combined_meta, combined_features, combined_history
+        new_backend = EagerMemoryBackend(
+            objects=all_objects,
+            metadata=combined_meta,
+            features=combined_features,
         )
+        return tables[0]._new_instance_from_backend(new_backend, combined_history)
 
     # ------------------------------------------------------------------
-    # Persistence
+    # Persistence — "Directory as a Bundle" (.dlb)
     # ------------------------------------------------------------------
 
     def save(self, path: Union[str, Path]) -> Path:
         """
-        Save the table to a directory on disk.
+        Save the table to a ``.dlb`` directory bundle.
 
         Layout
         ------
-        <path>/
-            objects/
-                0000000.pkl   (one file per object)
-            metadata.parquet
-            features/
-                <name>.npy    (or <name>.dat + <name>.npy for memmaps)
-            history.json
-            _meta.json        (type name, schema version)
+        ::
+
+            <path>/
+                config.json          (manifest: class, backend, history, schema)
+                metadata.parquet     (or metadata.csv)
+                objects/
+                    objects.pkl
+                features/
+                    <name>.npy
         """
         root = Path(path)
         root.mkdir(parents=True, exist_ok=True)
 
-        # --- objects ---
-        obj_dir = root / "objects"
-        obj_dir.mkdir(exist_ok=True)
-        for i, obj in enumerate(self._objects):
-            (obj_dir / f"{i:07d}.pkl").write_bytes(self._serialize_object(obj))
-
-        # --- metadata ---
-        if not self._metadata.empty:
-            try:
-                self._metadata.to_parquet(root / "metadata.parquet", index=False)
-            except ImportError:
-                self._metadata.to_csv(root / "metadata.csv", index=False)
-
-        # --- features ---
-        feat_dir = root / "features"
-        feat_dir.mkdir(exist_ok=True)
-        for name, arr in self._features.items():
-            safe_name = name.replace("/", "_")
-            if isinstance(arr, np.memmap):
-                # Save shape/dtype descriptor; the memmap file stays in place
-                np.save(feat_dir / f"{safe_name}.npy", np.array(arr))
-            else:
-                np.save(feat_dir / f"{safe_name}.npy", arr)
-
-        # --- history ---
-        history_data = [e.to_dict() for e in self._history]
-        (root / "history.json").write_text(
-            json.dumps(history_data, indent=2), encoding="utf-8"
+        # Delegate data writing to the backend
+        self._backend.save(
+            root,
+            serializer=self._serialize_object,
         )
 
-        # --- meta ---
-        (root / "_meta.json").write_text(
-            json.dumps(
-                {
-                    "type": self.__class__.__name__,
-                    "object_type": self._object_type_name(),
-                    "schema_version": 1,
-                    "n": self.n,
-                }
-            ),
-            encoding="utf-8",
+        # Write config.json manifest
+        history_data = [e.to_dict() for e in self._history]
+        config = {
+            "table_class": self.__class__.__name__,
+            "object_type": self._object_type_name(),
+            "backend_class": type(self._backend).__name__,
+            "schema_version": 2,
+            "n": self.n,
+            "history": history_data,
+        }
+        (root / "config.json").write_text(
+            json.dumps(config, indent=2), encoding="utf-8"
         )
 
         return root
@@ -566,33 +679,81 @@ class BaseTable(ABC, Generic[T]):
         path: Union[str, Path],
         *,
         mmap_features: bool = False,
-    ) -> "BaseTable[T]":
+    ) -> "BaseTable[OT]":
         """
         Load a table saved with ``save()``.
+
+        Reads the ``config.json`` manifest to reconstruct the exact backend
+        type and history, then delegates data loading to the backend.
 
         Parameters
         ----------
         path
-            Directory written by ``save()``.
+            Bundle directory written by ``save()``.
         mmap_features
-            If True, load feature arrays as ``numpy.memmap`` (memory-mapped)
-            instead of loading them fully into RAM. Useful for large datasets.
+            If True, load feature arrays as ``numpy.memmap``.
         """
         root = Path(path)
         if not root.is_dir():
             raise FileNotFoundError(f"No table found at '{root}'.")
 
+        config_path = root / "config.json"
+        if not config_path.exists():
+            # Fallback: attempt to load legacy format (schema_version 1)
+            return cls._load_legacy(root, mmap_features=mmap_features)
+
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+
+        # Reconstruct history
+        history = [HistoryEntry.from_dict(e) for e in config.get("history", [])]
+
+        # Load backend (currently only EagerMemoryBackend supported)
+        backend_class_name = config.get("backend_class", "EagerMemoryBackend")
+        if backend_class_name == "EagerMemoryBackend":
+            backend = EagerMemoryBackend.load(
+                root,
+                deserializer=cls._deserialize_object_static,
+                mmap_features=mmap_features,
+            )
+        else:
+            raise ValueError(
+                f"Unknown backend class '{backend_class_name}'. "
+                "Only 'EagerMemoryBackend' is supported in this release."
+            )
+
+        instance = object.__new__(cls)
+        BaseTable.__init__(
+            instance,
+            _backend=backend,
+            history=history,
+            auto_convert_numeric=False,
+        )
+        return instance
+
+    @classmethod
+    def _load_legacy(
+        cls,
+        root: Path,
+        *,
+        mmap_features: bool = False,
+    ) -> "BaseTable[OT]":
+        """
+        Fallback loader for tables saved with the old per-object-pickle format
+        (schema_version 1).  Reads ``_meta.json`` instead of ``config.json``.
+        """
+        import pickle as _pickle
+
         meta_info = json.loads((root / "_meta.json").read_text())
         n = meta_info["n"]
 
-        # --- objects ---
+        # objects (one file per object)
         obj_dir = root / "objects"
         objects = []
         for i in range(n):
             raw = (obj_dir / f"{i:07d}.pkl").read_bytes()
             objects.append(cls._deserialize_object_static(raw))
 
-        # --- metadata ---
+        # metadata
         parquet_path = root / "metadata.parquet"
         csv_path = root / "metadata.csv"
         if parquet_path.exists():
@@ -602,32 +763,37 @@ class BaseTable(ABC, Generic[T]):
         else:
             metadata = pd.DataFrame(index=range(n))
 
-        # --- features ---
+        # features
         feat_dir = root / "features"
         features: Dict[str, np.ndarray] = {}
         if feat_dir.exists():
             for npy_path in sorted(feat_dir.glob("*.npy")):
-                name = npy_path.stem
+                feat_name = npy_path.stem
                 if mmap_features:
-                    features[name] = np.load(str(npy_path), mmap_mode="r")
+                    features[feat_name] = np.load(str(npy_path), mmap_mode="r")
                 else:
-                    features[name] = np.load(str(npy_path), allow_pickle=False)
+                    features[feat_name] = np.load(str(npy_path), allow_pickle=False)
 
-        # --- history ---
+        # history
         history_path = root / "history.json"
         history = []
         if history_path.exists():
             raw_history = json.loads(history_path.read_text())
             history = [HistoryEntry.from_dict(e) for e in raw_history]
 
-        return cls(
+        backend = EagerMemoryBackend(
             objects=objects,
             metadata=metadata,
             features=features,
-            history=history,
-            # Data loaded from disk has already been converted on the initial save if necessary
-            auto_convert_numeric=False, 
         )
+        instance = object.__new__(cls)
+        BaseTable.__init__(
+            instance,
+            _backend=backend,
+            history=history,
+            auto_convert_numeric=False,
+        )
+        return instance
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -635,24 +801,37 @@ class BaseTable(ABC, Generic[T]):
 
     def _new_instance(
         self,
-        objects: List[T],
+        objects: List[OT],
         metadata: pd.DataFrame,
         features: Dict[str, np.ndarray],
         history: List[HistoryEntry],
-    ) -> "BaseTable[T]":
+    ) -> "BaseTable[OT]":
         """
-        Create a new instance of *this* subclass with the given data.
-        Subclasses with custom __init__ signatures should override this.
+        Create a new instance of *this* subclass with raw data.
+        Used by legacy internal callers (conformer/reaction modules).
+        """
+        backend = EagerMemoryBackend(
+            objects=objects,
+            metadata=metadata,
+            features=features,
+        )
+        return self._new_instance_from_backend(backend, history)
+
+    def _new_instance_from_backend(
+        self,
+        backend: BaseStorageBackend,
+        history: List[HistoryEntry],
+    ) -> "BaseTable[OT]":
+        """
+        Create a new instance of *this* subclass with a pre-built backend.
+        This is the canonical internal factory used by subset, copy, concat.
         """
         instance = object.__new__(self.__class__)
-        # Ensure we don't redundantly process string->numeric checks when subsetting/copying internally
         BaseTable.__init__(
-            instance, 
-            objects=objects, 
-            metadata=metadata, 
-            features=features, 
-            history=history, 
-            auto_convert_numeric=False
+            instance,
+            _backend=backend,
+            history=history,
+            auto_convert_numeric=False,
         )
         return instance
 

@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Any, Callable, List, Optional, Sequence, Union
+from typing import Any, Callable, List, Optional, Sequence, Union, Dict
 
 import numpy as np
 import pandas as pd
@@ -67,8 +67,49 @@ class BaseStorageBackend(ABC):
         """
 
     @abstractmethod
-    def update_metadata(self, df: pd.DataFrame) -> None:
-        """Replace the entire metadata store with *df*."""
+    def update_metadata(
+        self,
+        value: pd.DataFrame,
+        idx: Optional[INDEX_LIKE] = None,
+    ) -> None:
+        """
+        Perform a partial, in-place update of the metadata with strict query pushdown.
+
+        Parameters
+        ----------
+        value : pd.DataFrame
+            The new data to insert.
+        idx : Optional[INDEX_LIKE], default None
+            Row selector. ``None`` → apply to all rows.
+            Accepts ``int``, ``slice``, or ``List[int]``.
+        """
+
+    @abstractmethod
+    def drop_metadata(
+        self,
+        cols: Optional[List[str]] = None
+    ) -> None:
+        """
+        Drop metadata columns given as *cols*. If *cols* is None, drop all columns.
+
+        Parameters
+        ----------
+        cols : Optional[List[str]], default None
+            List of columns to drop. If None, drop all columns.
+        """
+        
+
+    def set_metadata(self, df: pd.DataFrame) -> None:
+        """
+        Replace the entire metadata store with *df*.
+
+        Parameters
+        ----------
+        df : pd.DataFrame
+            The new DataFrame that will completely overwrite the existing metadata.
+        """
+        assert len(self) == df.shape[0]
+        self.update_metadata(df)
 
     # ------------------------------------------------------------------
     # Object API
@@ -79,7 +120,7 @@ class BaseStorageBackend(ABC):
         """Return the number of stored objects."""
 
     @abstractmethod
-    def get_objects(self, idx: INDEX_LIKE) -> Union[Any, List[Any]]:
+    def get_objects(self, idx: Optional[INDEX_LIKE] = None) -> Union[Any, List[Any]]:
         """
         Fetch one or multiple objects with backend-level query pushdown.
 
@@ -89,11 +130,17 @@ class BaseStorageBackend(ABC):
             ``int``        → return a single object.
             ``slice``      → return a list of objects.
             ``List[int]``  → return a list of objects in the specified order.
+            ``None``       → return all objects.
         """
 
     @abstractmethod
     def put_object(self, index: int, obj: Any) -> None:
         """Overwrite the object at *index*."""
+
+    def set_objects(self, objs: List[Any]) -> None:
+        assert len(self) == len(objs)
+        for i, new_obj in enumerate(objs):
+            self.put_object(i, new_obj)
 
     # ------------------------------------------------------------------
     # Feature API
@@ -134,6 +181,11 @@ class BaseStorageBackend(ABC):
     def get_feature_names(self) -> List[str]:
         """Return the list of stored feature keys."""
 
+    def set_features(self, feats: Dict[str, np.ndarray]):
+        for name, array in feats.items():
+            assert len(self) == array.shape[0]
+            self.add_feature(name, array)
+
     # ------------------------------------------------------------------
     # State & Synchronization
     # ------------------------------------------------------------------
@@ -173,3 +225,7 @@ class BaseStorageBackend(ABC):
             Optional callable ``(obj) -> bytes`` for object serialisation.
             If ``None`` the backend uses its own default strategy.
         """
+
+    def validate(self) -> None:
+        """Optional but STRONGLY SUGGESTED."""
+        pass
