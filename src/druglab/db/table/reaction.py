@@ -44,13 +44,6 @@ class ReactionTable(BaseTable["rdChemReactions.ChemicalReaction"]):
             return None
         return rdChemReactions.ChemicalReaction(raw)
 
-    @staticmethod
-    def _deserialize_object_static(raw: bytes) -> "rdChemReactions.ChemicalReaction":
-        _require_rdkit()
-        if not raw:
-            return None
-        return rdChemReactions.ChemicalReaction(raw)
-
     def _object_type_name(self) -> str:
         return "ChemicalReaction"
 

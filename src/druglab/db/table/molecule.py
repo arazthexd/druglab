@@ -72,13 +72,6 @@ class MoleculeTable(BaseTable["Chem.Mol"]):
             return None
         return Chem.Mol(raw)
 
-    @staticmethod
-    def _deserialize_object_static(raw: bytes) -> "Chem.Mol":
-        _require_rdkit()
-        if not raw:
-            return None
-        return Chem.Mol(raw)
-
     def _object_type_name(self) -> str:
         return "Mol"
 

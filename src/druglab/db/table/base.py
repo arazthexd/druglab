@@ -796,21 +796,20 @@ class BaseTable(ABC, Generic[OT]): # TODO: add BT
         # Reconstruct history
         history = [HistoryEntry.from_dict(e) for e in config.get("history", [])]
 
-        # Load backend (currently only EagerMemoryBackend supported)
+        # --- THE FIX: Allocate the instance early so we can use its instance methods! ---
+        instance = object.__new__(cls)
+
         backend_class_name = config.get("backend_class", "EagerMemoryBackend")
         if backend_class_name == "EagerMemoryBackend":
             backend = EagerMemoryBackend.load(
                 root,
-                deserializer=cls._deserialize_object_static,
+                deserializer=instance._deserialize_object,  # <-- Using the abstract instance contract!
                 mmap_features=mmap_features,
             )
         else:
-            raise ValueError(
-                f"Unknown backend class '{backend_class_name}'. "
-                "Only 'EagerMemoryBackend' is supported in this release."
-            )
+            raise ValueError(f"Unknown backend class '{backend_class_name}'.")
 
-        instance = object.__new__(cls)
+        # Now properly initialize the instance
         BaseTable.__init__(
             instance,
             _backend=backend,
@@ -834,12 +833,15 @@ class BaseTable(ABC, Generic[OT]): # TODO: add BT
         meta_info = json.loads((root / "_meta.json").read_text())
         n = meta_info["n"]
 
+        # FIX: Allocate instance early
+        instance = object.__new__(cls)
+
         # objects (one file per object)
         obj_dir = root / "objects"
         objects = []
         for i in range(n):
             raw = (obj_dir / f"{i:07d}.pkl").read_bytes()
-            objects.append(cls._deserialize_object_static(raw))
+            objects.append(instance._deserialize_object(raw))
 
         # metadata
         parquet_path = root / "metadata.parquet"
@@ -874,7 +876,8 @@ class BaseTable(ABC, Generic[OT]): # TODO: add BT
             metadata=metadata,
             features=features,
         )
-        instance = object.__new__(cls)
+        
+        # Initialize
         BaseTable.__init__(
             instance,
             _backend=backend,
@@ -920,12 +923,3 @@ class BaseTable(ABC, Generic[OT]): # TODO: add BT
             history=history,
         )
         return instance
-
-    @staticmethod
-    def _deserialize_object_static(raw: bytes) -> Any:
-        """
-        Fallback static deserialiser used by ``load()``.
-        Subclasses that need a different strategy should override ``load()``
-        or provide their own ``_deserialize_object``.
-        """
-        return pickle.loads(raw)  # noqa: S301
