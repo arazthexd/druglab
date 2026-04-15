@@ -42,7 +42,8 @@ from typing import Any, Dict, Generic, List, Optional, Sequence, Tuple, TypeVar,
 import numpy as np
 import pandas as pd
 
-from ..backend import EagerMemoryBackend, BaseStorageBackend
+# Updated imports based on standard project structure
+from ..backend import EagerMemoryBackend, BaseStorageBackend, INDEX_LIKE
 
 # ---------------------------------------------------------------------------
 # Type variables
@@ -212,11 +213,14 @@ class BaseTable(ABC, Generic[OT]): # TODO: add BT
     @property
     def features(self) -> Dict[str, np.ndarray]:
         """Full feature dictionary (proxied from backend)."""
-        return {k: self._backend.get_feature(k) for k in self._backend.get_feature_names()}
+        return self._backend.get_features() # Updated to use the batch reader
     
     @features.setter
     def features(self, feats: Dict[str, np.ndarray]):
-        return self._backend.set_features(feats)
+        # Clear existing features, then batch update new ones to simulate a total reset
+        for key in self._backend.get_feature_names():
+            self._backend.drop_feature(key)
+        self._backend.update_features(feats)
     
     @property
     def feature_names(self) -> List[str]:
@@ -238,7 +242,7 @@ class BaseTable(ABC, Generic[OT]): # TODO: add BT
     def __repr__(self) -> str:
         feat_names = self._backend.get_feature_names()
         feat_summary = ", ".join(
-            f"{k}:{self._backend.get_feature(k).shape}"
+            f"{k}:{self._backend.get_feature_shape(k)}" # Updated to use shape getter
             for k in feat_names
         )
         return (
@@ -253,28 +257,7 @@ class BaseTable(ABC, Generic[OT]): # TODO: add BT
     # ------------------------------------------------------------------
 
     def _validate(self) -> None:
-
-        # --------------------------------------------------------------
-        # n = len(self._backend)
-        # meta = self._backend.get_metadata()
-
-        # if not meta.empty and len(meta) != n and len(meta) != 0:
-        #     raise ValueError(
-        #         f"metadata has {len(meta)} rows but objects has {n}. "
-        #         "They must be the same length."
-        #     )
-        # # If metadata is empty DataFrame, pad it to the right shape
-        # if meta.empty and n > 0:
-        #     self._backend.update_metadata(pd.DataFrame(index=range(n)))
-
-        # for key in self._backend.get_feature_names():
-        #     arr = self._backend.get_feature(key)
-        #     if arr.shape[0] != n:
-        #         raise ValueError(
-        #             f"Feature '{key}' has {arr.shape[0]} rows but objects has {n}."
-        #         )
-        # --------------------------------------------------------------
-
+        # Backend natively orchestrates all dimensional checks now!
         self._backend.validate()
 
     # ------------------------------------------------------------------
@@ -294,88 +277,205 @@ class BaseTable(ABC, Generic[OT]): # TODO: add BT
         """Short human-readable name for the object type (e.g. 'Mol')."""
 
     # ------------------------------------------------------------------
-    # Metadata helpers (backwards-compatible public API)
+    # Backend Delegation API
     # ------------------------------------------------------------------
 
-    def add_metadata_column(self, name: str, values: Sequence) -> None:
-        """Add (or overwrite) a metadata column."""
-        if len(values) != self.n:
-            raise ValueError(
-                f"values length {len(values)} != table length {self.n}"
-            )
-        new_df = pd.DataFrame({name: values})
-        self._backend.update_metadata(new_df, idx=None)
+    def get_metadata(
+        self,
+        idx: Optional[INDEX_LIKE] = None,
+        cols: Optional[Union[str, List[str]]] = None,
+    ) -> pd.DataFrame:
+        """
+        Fetch a subset of the metadata DataFrame.
+        For full documentation, please refer to the active storage backend (e.g., `BaseStorageBackend`).
+        """
+        return self._backend.get_metadata(idx=idx, cols=cols)
 
-    def drop_metadata_columns(self, names: Union[str, List[str]]) -> None:
-        """Drop one or more metadata columns in-place."""
-        if isinstance(names, str):
-            names = [names]
-        self._backend.drop_metadata(cols=names)
+    def add_metadata_column(
+        self,
+        name: str,
+        value: Union[pd.Series, np.ndarray, List[Any]],
+        idx: Optional[INDEX_LIKE] = None,
+        na: Any = None,
+        **kwargs
+    ) -> None:
+        """
+        Add a new metadata column, optionally populating only specific rows.
+        For full documentation, please refer to the active storage backend.
+        """
+        self._backend.add_metadata_column(name=name, value=value, idx=idx, na=na, **kwargs)
 
-    # def rename_metadata_columns(self, columns: Dict[str, str]) -> None:
-    #     """Rename metadata columns in-place using a mapping dict."""
-    #     meta = self._backend.get_metadata()
-    #     meta.rename(columns=columns, inplace=True)
-    #     self._backend.update_metadata(meta)
+    def add_metadata_columns(
+        self,
+        columns: Dict[str, Union[pd.Series, np.ndarray, List[Any]]],
+        idx: Optional[INDEX_LIKE] = None,
+        na: Any = None,
+        **kwargs
+    ) -> None:
+        """
+        Add multiple new metadata columns simultaneously.
+        For full documentation, please refer to the active storage backend.
+        """
+        self._backend.add_metadata_columns(columns=columns, idx=idx, na=na, **kwargs)
 
-    def update_metadata(self, df: pd.DataFrame, on: Optional[str] = None) -> None:
-        """Merge external metadata into the table in-place."""
-        current = self._backend.get_metadata()
+    def update_metadata(
+        self,
+        values: Union[pd.DataFrame, pd.Series, Dict[str, Any]],
+        idx: Optional[INDEX_LIKE] = None,
+        **kwargs
+    ) -> None:
+        """
+        Perform a partial, in-place update of *existing* metadata columns.
+        For full documentation, please refer to the active storage backend.
+        """
+        self._backend.update_metadata(values=values, idx=idx, **kwargs)
 
-        if on is None:
-            if len(df) != self.n:
-                raise ValueError(
-                    f"Length of update DataFrame ({len(df)}) must match "
-                    f"table length ({self.n}) when joining by index."
-                )
-            for col in df.columns:
-                current[col] = df[col].values
-            self._backend.update_metadata(current)
-        else:
-            if on not in current.columns:
-                raise ValueError(f"Join column '{on}' not found in table metadata.")
-            if on not in df.columns:
-                raise ValueError(f"Join column '{on}' not found in provided DataFrame.")
+    def drop_metadata_columns(
+        self,
+        cols: Optional[Union[str, List[str]]] = None
+    ) -> None:
+        """
+        Remove specific metadata columns, or all columns if None.
+        For full documentation, please refer to the active storage backend.
+        """
+        self._backend.drop_metadata_columns(cols=cols)
 
-            temp_col = "__orig_idx__"
-            while temp_col in current.columns or temp_col in df.columns:
-                temp_col = f"_{temp_col}"
+    def get_feature(
+        self,
+        name: str,
+        idx: Optional[INDEX_LIKE] = None,
+    ) -> np.ndarray:
+        """
+        Fetch a feature array or a specific subset of it.
+        For full documentation, please refer to the active storage backend.
+        """
+        return self._backend.get_feature(name=name, idx=idx)
 
-            overlap = [c for c in df.columns if c != on and c in current.columns]
-            left: pd.DataFrame = (
-                current.drop(columns=overlap).assign(**{temp_col: np.arange(self.n)})
-            )
-            merged: pd.DataFrame = left.merge(df, on=on, how="left")
-            merged = merged.sort_values(temp_col).reset_index(drop=True)
-            merged.drop(columns=[temp_col], inplace=True)
+    def get_features(
+        self,
+        names: Optional[List[str]] = None,
+        idx: Optional[INDEX_LIKE] = None,
+    ) -> Dict[str, np.ndarray]:
+        """
+        Fetch multiple feature arrays or specific subsets of them.
+        For full documentation, please refer to the active storage backend.
+        """
+        return self._backend.get_features(names=names, idx=idx)
 
-            if len(merged) != self.n:
-                raise ValueError(
-                    f"Merge resulted in {len(merged)} rows, but table has {self.n}. "
-                    "Ensure the join key does not create duplicates."
-                )
-            self._backend.update_metadata(merged)
+    def update_feature(
+        self,
+        name: str,
+        array: np.ndarray,
+        idx: Optional[INDEX_LIKE] = None,
+        na: Any = None,
+        **kwargs
+    ) -> None:
+        """
+        Add or perform a partial, in-place update of a feature array.
+        For full documentation, please refer to the active storage backend.
+        """
+        self._backend.update_feature(name=name, array=array, idx=idx, na=na, **kwargs)
 
-    # ------------------------------------------------------------------
-    # Feature helpers (backwards-compatible public API)
-    # ------------------------------------------------------------------
-
-    def add_feature(self, name: str, array: np.ndarray) -> None:
-        """Add (or overwrite) a feature array."""
-        if array.shape[0] != self.n:
-            raise ValueError(
-                f"Feature array '{name}' has {array.shape[0]} rows; "
-                f"table has {self.n}."
-            )
-        self._backend.add_feature(name, array)
+    def update_features(
+        self,
+        arrays: Dict[str, np.ndarray],
+        idx: Optional[INDEX_LIKE] = None,
+        na: Any = None,
+        **kwargs
+    ) -> None:
+        """
+        Add or perform a partial, in-place update of multiple feature arrays.
+        For full documentation, please refer to the active storage backend.
+        """
+        self._backend.update_features(arrays=arrays, idx=idx, na=na, **kwargs)
 
     def drop_feature(self, name: str) -> None:
-        """Remove a feature by name."""
-        self._backend.drop_feature(name)
+        """
+        Remove a feature array from the table.
+        For full documentation, please refer to the active storage backend.
+        """
+        self._backend.drop_feature(name=name)
+
+    def get_feature_shape(self, name: str) -> Tuple:
+        """
+        Inspect the shape of a feature array without loading it entirely into RAM.
+        For full documentation, please refer to the active storage backend.
+        """
+        return self._backend.get_feature_shape(name=name)
+    
+    def get_feature_names(self) -> List[str]:
+        """
+        List of all feature names.
+        For full documentation, please refer to the active storage backend.
+        """
+        return self._backend.get_feature_names()
+
+    def get_objects(self, idx: Optional[INDEX_LIKE] = None) -> Union[OT, List[OT]]:
+        """
+        Retrieve one or more objects (e.g., Molecules) from the table.
+        For full documentation, please refer to the active storage backend.
+        """
+        return self._backend.get_objects(idx=idx)
+
+    def update_objects(
+        self,
+        objs: Union[OT, List[OT]],
+        idx: Optional[INDEX_LIKE] = None,
+        **kwargs
+    ) -> None:
+        """
+        Perform a partial or full update of stored objects.
+        For full documentation, please refer to the active storage backend.
+        """
+        self._backend.update_objects(objs=objs, idx=idx, **kwargs)
+
+    # ------------------------------------------------------------------
+    # Backend API Helpers
+    # ------------------------------------------------------------------
 
     def has_feature(self, name: str) -> bool:
-        """Return True if the feature exists."""
-        return name in self._backend.get_feature_names()
+        return name in self.get_feature_names()
+
+    def merge_metadata(self, df: pd.DataFrame, on: str) -> None:
+        """
+        Merge external metadata into the table in-place using a relational join key.
+        This modifies the schema by appending new columns.
+        """
+        current_cols = set(self.metadata_columns)
+        
+        if on not in current_cols:
+            raise ValueError(f"Join column '{on}' not found in table metadata.")
+        if on not in df.columns:
+            raise ValueError(f"Join column '{on}' not found in provided DataFrame.")
+
+        # Fetch ONLY the join column from the backend (Query Pushdown!)
+        target_keys = self.get_metadata(cols=[on])
+        target_keys['_orig_idx'] = np.arange(self.n)
+        
+        aligned_df: pd.DataFrame = target_keys.merge(df, on=on, how="left")
+        aligned_df = aligned_df.sort_values('_orig_idx').reset_index(drop=True)
+        aligned_df.drop(columns=[on, '_orig_idx'], inplace=True)
+        
+        if len(aligned_df) != self.n:
+            raise ValueError(
+                f"Merge resulted in {len(aligned_df)} rows, but table has {self.n}. "
+                "Ensure the join key does not create duplicates."
+            )
+        
+        # Route the aligned data to the appropriate backend methods
+        to_update = {}
+        to_add = {}
+
+        for col in aligned_df.columns:
+            if col in current_cols:
+                to_update[col] = aligned_df[col].values
+            else:
+                to_add[col] = aligned_df[col].values
+
+        if to_update:
+            self.update_metadata(to_update)
+        if to_add:
+            self.add_metadata_columns(to_add)
 
     # ------------------------------------------------------------------
     # History helpers
@@ -417,11 +517,8 @@ class BaseTable(ABC, Generic[OT]): # TODO: add BT
         attr = key[0]
 
         # Safely parse variable-length tuple without IndexError.
-        # For FEAT with 2 elements: table[FEAT, 'fp'] means name='fp', idx=None.
-        # For META/OBJ with 2 elements: table[META, 0:5] means names=None, idx=0:5.
         if len(key) == 2:
             if attr in (FEAT, F) and isinstance(key[1], str):
-                # table[FEAT, 'fp'] — feature name only, no index
                 names = key[1]
                 idx = None
             else:
@@ -447,17 +544,9 @@ class BaseTable(ABC, Generic[OT]): # TODO: add BT
         elif attr in (FEAT, F):
             if isinstance(names, str):
                 return self._backend.get_feature(name=names, idx=idx)
-            elif isinstance(names, list):
-                return {
-                    feat_name: self._backend.get_feature(name=feat_name, idx=idx)
-                    for feat_name in names
-                }
-            elif names is None:
-                all_feats = self._backend.get_feature_names()
-                return {
-                    feat_name: self._backend.get_feature(name=feat_name, idx=idx)
-                    for feat_name in all_feats
-                }
+            # Utilize the new batch-fetching capability in the backend!
+            elif isinstance(names, list) or names is None:
+                return self._backend.get_features(names=names, idx=idx)
             else:
                 raise ValueError(
                     f"Expected str, List[str], or None for feature names; "
@@ -511,9 +600,6 @@ class BaseTable(ABC, Generic[OT]): # TODO: add BT
 
         # Push selection down to the backend
         new_backend = self._backend.create_view(idx.tolist())
-
-        # If copy_objects=False we skip the deep-copy that create_view already did.
-        # For now create_view always copies; this flag is preserved for API compat.
 
         hist = list(self._history) + [
             HistoryEntry.now(

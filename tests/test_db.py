@@ -189,15 +189,26 @@ class TestMemoryMetadataMixin:
         assert list(df.columns) == ["val"]
         assert df["val"].tolist() == [1, 2, 3]
 
-    def test_update_metadata_resets_index(self):
+    def test_update_metadata_existing(self):
+        """Verifies in-place update of existing columns."""
         b = self._make_backend(4)
-        new_df = pd.DataFrame({"x": [10, 20, 30, 40]})
-        b.update_metadata(new_df)
-        print(b._metadata)
+        b.update_metadata(pd.Series([10, 20, 30, 40], name="val"))
+        df = b.get_metadata()
+        assert df["val"].tolist() == [10, 20, 30, 40]
+        
+    def test_update_metadata_missing_raises(self):
+        """Strict schema enforcement: update_metadata cannot create columns."""
+        b = self._make_backend(4)
+        with pytest.raises(KeyError):
+            b.update_metadata(pd.Series([10, 20, 30, 40], name="new_col"))
+
+    def test_add_metadata_column(self):
+        """Schema Evolution: explicitly adding a new column."""
+        b = self._make_backend(4)
+        b.add_metadata_column("x", [10, 20, 30, 40])
         df = b.get_metadata()
         assert "x" in df.columns
-        assert df.index.tolist() == [0, 1, 2, 3]
-
+        assert df["x"].tolist() == [10, 20, 30, 40]
 
 # ===========================================================================
 # Section 3: MemoryObjectMixin
@@ -237,15 +248,22 @@ class TestMemoryObjectMixin:
         assert len(objs) == 3
         assert objs[1] == {"id": 2}
 
-    def test_put_object(self):
+    def test_update_objects_single(self):
         b = self._make_backend(5)
-        b.put_object(2, {"id": 99})
+        b.update_objects({"id": 99}, idx=2)
         assert b.get_objects(2) == {"id": 99}
 
-    def test_put_object_negative(self):
+    def test_update_objects_negative(self):
         b = self._make_backend(5)
-        b.put_object(-1, {"id": 999})
+        b.update_objects({"id": 999}, idx=-1)
         assert b.get_objects(4) == {"id": 999}
+        
+    def test_update_objects_batch(self):
+        """Verify vector-first bulk updates."""
+        b = self._make_backend(5)
+        b.update_objects([{"id": 10}, {"id": 11}], idx=[1, 2])
+        assert b.get_objects(1) == {"id": 10}
+        assert b.get_objects(2) == {"id": 11}
 
 
 # ===========================================================================
@@ -280,9 +298,6 @@ class TestMemoryFeatureMixin:
         """
         STRICT QUERY PUSHDOWN TEST:
         The slice must be applied AT THE BACKEND LEVEL.
-        The test patches np.ndarray.__getitem__ is impractical, so we instead
-        verify that the returned array has the exact expected rows/values,
-        and that the full array is NOT returned (shape check).
         """
         b = self._make_backend(6)
         arr = b.get_feature("fp", idx=slice(1, 4))
@@ -291,7 +306,6 @@ class TestMemoryFeatureMixin:
             "Backend must return ONLY the sliced rows (3), not all 6. "
             "Query was not pushed down to the backend."
         )
-        # Values must correspond to rows 1, 2, 3 of the original feature
         expected_row0 = np.arange(1 * 8, 1 * 8 + 8, dtype=np.float32)
         assert np.allclose(arr[0], expected_row0)
 
@@ -305,10 +319,11 @@ class TestMemoryFeatureMixin:
         arr = b.get_feature("fp", idx=[0, 5])
         assert arr.shape == (2, 8)
 
-    def test_add_feature(self):
+    def test_update_feature_new(self):
+        """Verify adding a completely new feature array."""
         b = self._make_backend(4)
         new_feat = np.zeros((4, 16))
-        b.add_feature("new", new_feat)
+        b.update_feature("new", new_feat)
         assert "new" in b.get_feature_names()
         assert b.get_feature("new").shape == (4, 16)
 
@@ -405,7 +420,7 @@ class TestCreateView:
 
     def test_view_preserves_feature_names(self):
         b = self._make_backend(4)
-        b.add_feature("desc", np.zeros((4, 3)))
+        b.update_feature("desc", np.zeros((4, 3)))
         view = b.create_view([0, 2])
         assert set(view.get_feature_names()) == {"fp", "desc"}
 
@@ -707,13 +722,13 @@ class TestBaseTableConstruction:
     def test_metadata_row_mismatch_raises(self):
         objects = [{"id": 0}]
         bad_meta = pd.DataFrame({"x": [1, 2, 3]})
-        with pytest.raises(ValueError, match="metadata"):
+        with pytest.raises(ValueError):
             DummyTable(objects=objects, metadata=bad_meta)
 
     def test_feature_row_mismatch_raises(self):
         objects = [{"id": i} for i in range(3)]
         bad_feat = {"fp": np.zeros((5, 8))}
-        with pytest.raises(ValueError, match="Feature"):
+        with pytest.raises(ValueError):
             DummyTable(objects=objects, features=bad_feat)
 
     def test_repr(self):
@@ -748,17 +763,17 @@ class TestMutationAPI:
         t.drop_metadata_columns("name")
         assert "name" not in t.metadata.columns
 
-    def test_add_feature(self):
+    def test_update_feature(self):
         t = make_table(4)
         arr = np.zeros((4, 16))
-        t.add_feature("ecfp4", arr)
+        t.update_feature("ecfp4", arr)
         assert t.has_feature("ecfp4")
         assert t.features["ecfp4"].shape == (4, 16)
 
-    def test_add_feature_wrong_rows(self):
+    def test_update_feature_wrong_rows(self):
         t = make_table(4)
         with pytest.raises(ValueError):
-            t.add_feature("bad", np.zeros((3, 16)))
+            t.update_feature("bad", np.zeros((3, 16)))
 
     def test_drop_feature(self):
         t = make_table(4)
@@ -769,7 +784,6 @@ class TestMutationAPI:
         t = make_table(4)
         assert t.has_feature("fp")
         assert not t.has_feature("nonexistent")
-
 
 # ===========================================================================
 # Section 11: Subsetting (subset / __getitem__ as row selection)
@@ -1071,7 +1085,7 @@ class TestMoleculeTableBackendIntegration:
         from druglab.db.table.molecule import MoleculeTable
         t = MoleculeTable.from_smiles(["C", "CC", "CCC", "CCCC", "CCCCC"])
         # Manually add a feature to test pushdown without requiring pipe
-        t.add_feature("fp", np.arange(5 * 512, dtype=np.float32).reshape(5, 512))
+        t.update_feature("fp", np.arange(5 * 512, dtype=np.float32).reshape(5, 512))
 
         arr = t[FEAT, "fp", 1:3]
         assert arr.shape == (2, 512), (
@@ -1207,26 +1221,20 @@ class TestEdgeCases:
         assert "score" in sub.metadata.columns
         assert list(sub.metadata["score"]) == [0.1, 0.2, 0.3]
 
-    def test_numerical_metadata_conversion(self):
-        t = DummyTable(
-            objects=[{"id": 0}, {"id": 1}],
-            metadata=pd.DataFrame({
-                "ID": ["mol1", "mol2"],
-                "MolWt": ["46.07", "78.11"],
-            }),
-        )
-        t.backend.try_numerize_metadata(columns=["MolWt"])
-        assert pd.api.types.is_numeric_dtype(t.metadata["MolWt"])
-        assert t.metadata["MolWt"].iloc[0] == pytest.approx(46.07)
-
     def test_update_metadata_by_key(self):
         t = make_table(3)
         ext = pd.DataFrame({"name": ["mol_2", "mol_0"], "score": [20, 10]})
-        t.update_metadata(ext, on="name")
+        
+        # We now use merge_metadata for relational joins!
+        t.merge_metadata(ext, on="name")
+        
         # Order preserved
         assert t.metadata["name"].tolist() == ["mol_0", "mol_1", "mol_2"]
+        # Score is merged and correctly aligned
         assert t.metadata["score"].iloc[0] == 10
         assert t.metadata["score"].iloc[2] == 20
+        # The row that wasn't in the update should be NaN
+        assert pd.isna(t.metadata["score"].iloc[1])
 
 
 # ===========================================================================

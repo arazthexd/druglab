@@ -1,5 +1,5 @@
 """
-druglab.db.backends.base
+druglab.db.backend.base
 ~~~~~~~~~~~~~~~~~~~~~~~~
 Abstract base interface that all storage backends must implement.
 
@@ -22,25 +22,12 @@ import pandas as pd
 # Type alias for index arguments
 # ---------------------------------------------------------------------------
 
-INDEX_LIKE = Union[int, slice, List[int]]
+INDEX_LIKE = Union[int, slice, List[int], np.ndarray]
 
-
-class BaseStorageBackend(ABC):
+class BaseMetadataMixin(ABC):
     """
-    The single unified interface for managing DrugLab table state.
-
-    All concrete backends implement this interface.  The ``idx`` arguments
-    in every read method are mandatory in the API so that future disk-backed
-    implementations can push the selection all the way to the I/O layer
-    rather than loading an entire array and then slicing it in Python.
-
-    Backend implementations should interpret ``idx=None`` as "return all
-    rows" and should handle ``int``, ``slice``, and ``List[int]`` forms.
+    Mixin for metadata handling in backends.
     """
-
-    # ------------------------------------------------------------------
-    # Metadata API
-    # ------------------------------------------------------------------
 
     @abstractmethod
     def get_metadata(
@@ -49,15 +36,15 @@ class BaseStorageBackend(ABC):
         cols: Optional[Union[str, List[str]]] = None,
     ) -> pd.DataFrame:
         """
-        Fetch metadata rows.
+        Fetch metadata rows with strict query pushdown.
 
         Parameters
         ----------
         idx
-            Row selector.  ``None`` → all rows.
-            Accepts ``int``, ``slice``, or ``List[int]``.
+            Row selector. ``None`` → all rows.
+            Accepts ``int``, ``slice``, ``List[int]``, or ``np.ndarray``.
         cols
-            Column selector.  ``None`` → all columns.
+            Column selector. ``None`` → all columns.
             Accepts a single column name or a list of names.
 
         Returns
@@ -67,60 +54,138 @@ class BaseStorageBackend(ABC):
         """
 
     @abstractmethod
-    def update_metadata(
+    def add_metadata_column(
         self,
-        value: pd.DataFrame,
+        name: str,
+        value: Union[pd.Series, np.ndarray, List[Any]],
         idx: Optional[INDEX_LIKE] = None,
+        na: Any = None,
+        **kwargs
     ) -> None:
         """
-        Perform a partial, in-place update of the metadata with strict query pushdown.
+        Schema Evolution: Add a completely new metadata column to the backend.
 
         Parameters
         ----------
-        value : pd.DataFrame
-            The new data to insert.
+        name : str
+            The name of the new column to create.
+        value : Union[pd.Series, np.ndarray, List[Any]]
+            The data for the new column. If *idx* is None, this must have the 
+            same length as the backend. If *idx* is provided, it must match 
+            the elements in *idx*. Pandas indices are ignored.
+        idx : Optional[INDEX_LIKE], default None
+            Row selector. If provided, the new column will be populated with 
+            *value* at these specific indices, and all other rows will be 
+            filled with the *na* value.
+        na : Any, default None
+            The value to use for rows not specified by *idx*. If None, the 
+            backend should infer an appropriate null type based on *value*.
+        """
+
+    def add_metadata_columns(
+        self,
+        columns: Dict[str, Union[pd.Series, np.ndarray, List[Any]]],
+        idx: Optional[INDEX_LIKE] = None,
+        na: Any = None,
+        **kwargs
+    ) -> None:
+        """
+        Schema Evolution: Add multiple new metadata columns to the backend.
+
+        Can be overridden to provide a more efficient bulk-insert implementation.
+
+        Parameters
+        ----------
+        columns : Dict[str, Union[pd.Series, np.ndarray, List[Any]]]
+            Dictionary mapping new column names to their data arrays.
+        idx : Optional[INDEX_LIKE], default None
+            Row selector applied to all incoming arrays.
+        na : Any, default None
+            The value to use for missing rows.
+        """
+        for name, value in columns.items():
+            self.add_metadata_column(name, value, idx=idx, na=na, **kwargs)
+
+    @abstractmethod
+    def update_metadata(
+        self,
+        values: Union[pd.DataFrame, pd.Series, Dict[str, Any]],
+        idx: Optional[INDEX_LIKE] = None,
+        **kwargs
+    ) -> None:
+        """
+        Perform a partial, in-place update of *existing* metadata columns.
+
+        This method should raise a KeyError (or backend-equivalent) if the user 
+        attempts to update a column that does not exist. Use `add_metadata_column(s)` 
+        to alter the schema.
+
+        Parameters
+        ----------
+        values : Union[pd.DataFrame, pd.Series, Dict[str, Any]]
+            The new data to insert. Keys/columns must match existing metadata. 
+            Pandas indices are ignored; updates rely strictly on positional alignment.
         idx : Optional[INDEX_LIKE], default None
             Row selector. ``None`` → apply to all rows.
-            Accepts ``int``, ``slice``, or ``List[int]``.
         """
 
     @abstractmethod
-    def drop_metadata(
+    def drop_metadata_columns(
         self,
-        cols: Optional[List[str]] = None
+        cols: Optional[Union[str, List[str]]] = None
     ) -> None:
         """
         Drop metadata columns given as *cols*. If *cols* is None, drop all columns.
 
         Parameters
         ----------
-        cols : Optional[List[str]], default None
-            List of columns to drop. If None, drop all columns.
+        cols : Optional[Union[str, List[str]]], default None
+            Column or list of columns to drop. If None, drop all columns, 
+            effectively resetting the metadata schema.
         """
-        
 
     def set_metadata(self, df: pd.DataFrame) -> None:
         """
         Replace the entire metadata store with *df*.
+
+        This drops all existing metadata and replaces it with the schema and 
+        values of the provided DataFrame.
 
         Parameters
         ----------
         df : pd.DataFrame
             The new DataFrame that will completely overwrite the existing metadata.
         """
-        assert len(self) == df.shape[0]
-        self.update_metadata(df)
-
-    # ------------------------------------------------------------------
-    # Object API
-    # ------------------------------------------------------------------
-
-    @abstractmethod
-    def __len__(self) -> int:
-        """Return the number of stored objects."""
+        assert self._n_metadata_rows() == df.shape[0], "Length of new metadata must match backend."
+        self.drop_metadata_columns()
+        
+        # Convert DataFrame to dictionary of arrays for efficient batch insertion
+        column_dict = {col: df[col].values for col in df.columns}
+        self.add_metadata_columns(column_dict)
 
     @abstractmethod
-    def get_objects(self, idx: Optional[INDEX_LIKE] = None) -> Union[Any, List[Any]]:
+    def _n_metadata_rows(self) -> int:
+        """
+        Return the number of rows in the metadata table.
+        """
+
+    def _validate_metadata(self) -> None:
+        """
+        Validate the backend's metadata schema.
+        """
+        return
+
+
+class BaseObjectMixin(ABC):
+    """
+    Mixin for object handling in backends.
+    """
+
+    @abstractmethod
+    def get_objects(
+        self, 
+        idx: Optional[INDEX_LIKE] = None
+    ) -> Union[Any, List[Any]]:
         """
         Fetch one or multiple objects with backend-level query pushdown.
 
@@ -130,21 +195,67 @@ class BaseStorageBackend(ABC):
             ``int``        → return a single object.
             ``slice``      → return a list of objects.
             ``List[int]``  → return a list of objects in the specified order.
+            ``np.ndarray`` → return a list of objects based on boolean/int mask.
             ``None``       → return all objects.
+            
+        Returns
+        -------
+        Union[Any, List[Any]]
+            A single object if idx is an int, otherwise a list of objects.
         """
+    
+    @abstractmethod
+    def update_objects(
+        self, 
+        objs: Union[Any, List[Any]], 
+        idx: Optional[INDEX_LIKE] = None,
+        **kwargs
+    ) -> None:
+        """
+        Perform a partial or full update of stored objects.
+
+        This method replaces the legacy `put_object` to enforce vector-first 
+        writes, eliminating N+1 query bottlenecks in out-of-core backends.
+
+        Parameters
+        ----------
+        objs : Union[Any, List[Any]]
+            The new object(s) to insert. If `idx` is an integer, this should be 
+            a single object. Otherwise, it must be a sequence of objects matching 
+            the length of the resolved index.
+        idx : Optional[INDEX_LIKE], default None
+            Row selector. ``None`` → apply to all rows (length of objs must match 
+            length of the backend).
+        """
+    
+    def set_objects(self, objs: List[Any], **kwargs) -> None:
+        """
+        Replace the entire object store with a new list of objects.
+
+        Parameters
+        ----------
+        objs : List[Any]
+            The new list of objects that will completely overwrite the existing store.
+        """
+        assert self._n_objects() == len(objs), "Length of new objects must match backend."
+        self.update_objects(objs, **kwargs)
 
     @abstractmethod
-    def put_object(self, index: int, obj: Any) -> None:
-        """Overwrite the object at *index*."""
+    def _n_objects(self) -> int:
+        """
+        Return the number of rows in the object table.
+        """
+    
+    def _validate_objects(self) -> None:
+        """
+        Validate the backend's object schema.
+        """
+        return
 
-    def set_objects(self, objs: List[Any]) -> None:
-        assert len(self) == len(objs)
-        for i, new_obj in enumerate(objs):
-            self.put_object(i, new_obj)
-
-    # ------------------------------------------------------------------
-    # Feature API
-    # ------------------------------------------------------------------
+class BaseFeatureMixin(ABC):
+    """
+    Mixin for feature handling in backends.
+    """
 
     @abstractmethod
     def get_feature(
@@ -160,8 +271,8 @@ class BaseStorageBackend(ABC):
         name
             Feature key.
         idx
-            Row selector.  ``None`` → return the full array.
-            Accepts ``int``, ``slice``, or ``List[int]``.
+            Row selector.  If None, return the full array. Otherwise,
+            selected rows will only be returned.
 
         Returns
         -------
@@ -169,63 +280,173 @@ class BaseStorageBackend(ABC):
             The (possibly subset) feature array.
         """
 
+    def get_features(
+        self,
+        names: Optional[List[str]] = None,
+        idx: Optional[INDEX_LIKE] = None,
+    ) -> Dict[str, np.ndarray]:
+        """
+        Fetch multiple feature arrays with strict query pushdown.
+        
+        Can be overridden to provide a more efficient implementation.
+        
+        Parameters
+        ----------
+        names
+            List of feature keys.
+        idx
+            Row selector.  If None, return the full arrays. Otherwise,
+            selected rows will only be returned for each feature.
+        
+        Returns
+        -------
+        Dict[str, np.ndarray]
+            A dictionary mapping feature keys to feature arrays.
+        """
+
+        if names is None:
+            names = self.get_feature_names()
+        return {name: self.get_feature(name, idx) for name in names}
+
     @abstractmethod
-    def add_feature(self, name: str, array: np.ndarray) -> None:
-        """Add or overwrite a feature array."""
+    def update_feature(
+        self, 
+        name: str, 
+        array: np.ndarray,
+        idx: Optional[INDEX_LIKE] = None,
+        na: Any = None,
+        **kwargs
+    ) -> None:
+        """Add or perform a partial, in-place update of a feature array.
+        
+        Parameters
+        ----------
+        name
+            Feature key / name.
+        array
+            Feature array. If *idx* is None, this must have the same number of
+            rows as the current backend. Otherwise, this must have the same
+            elements as *idx*.
+        idx
+            Row selector.  If None, all rows are considered. Otherwise, the input
+            array will only be used to define features of specified rows.
+        na
+            Value to use for missing values. Defaults to None.
+        """
+
+    def update_features(
+        self,
+        arrays: Dict[str, np.ndarray],
+        idx: Optional[INDEX_LIKE] = None,
+        na: Any = None,
+        **kwargs
+    ) -> None:
+        """Add or perform a partial, in-place update of multiple feature arrays.
+
+        Can be overridden to provide a more efficient implementation.
+        
+        Parameters
+        ----------
+        arrays
+            A dictionary mapping feature keys to feature arrays.
+        idx
+            Row selector.  If None, all rows are considered. Otherwise, the input
+            arrays will only be used to define features of specified rows.
+        na
+            Value to use for missing values. Defaults to None.
+        """
+        for name, array in arrays.items():
+            self.update_feature(name, array, idx, na, **kwargs)
 
     @abstractmethod
     def drop_feature(self, name: str) -> None:
-        """Remove a feature by name.  Raises ``KeyError`` if absent."""
+        """Remove a feature by name.  Raises ``KeyError`` if absent.
+        
+        Parameters
+        ----------
+        name
+            Feature key.
+        """
 
     @abstractmethod
     def get_feature_names(self) -> List[str]:
-        """Return the list of stored feature keys."""
-
-    def set_features(self, feats: Dict[str, np.ndarray]):
-        for name, array in feats.items():
-            assert len(self) == array.shape[0]
-            self.add_feature(name, array)
-
-    # ------------------------------------------------------------------
-    # State & Synchronization
-    # ------------------------------------------------------------------
-
-    @abstractmethod
-    def create_view(self, indices: Sequence[int]) -> "BaseStorageBackend":
-        """
-        Return a synchronized, independent view of this backend restricted
-        to *indices*.
-
-        The view contains copies of the selected metadata rows, objects, and
-        feature sub-arrays.  Mutating the view must **not** affect the
-        original backend and vice-versa.
-
-        Parameters
-        ----------
-        indices
-            Ordered sequence of integer row indices.
-
+        """Return the list of stored feature keys.
+        
         Returns
         -------
-        BaseStorageBackend
-            A new backend instance of the same concrete type.
+        List[str]
+            List of feature keys.
         """
 
     @abstractmethod
-    def save(self, path: Path, serializer: Optional[Callable] = None) -> None:
-        """
-        Persist backend data inside a ``.dlb`` bundle directory.
-
+    def get_feature_shape(self, name: str) -> tuple[int, ...]:
+        """Return the shape of a feature array.
+        
         Parameters
         ----------
-        path
-            The bundle directory (already created by the orchestrating
-            ``BaseTable.save()``).  The backend writes its data files here.
-        serializer
-            Optional callable ``(obj) -> bytes`` for object serialisation.
-            If ``None`` the backend uses its own default strategy.
+        name
+            Feature key.
+        
+        Returns
+        -------
+        tuple
+            Feature array shape.
         """
 
+    def _n_feature_rows(self) -> int:
+        """
+        Return the number of rows in each feature array.
+        """
+        if not self.get_feature_names():
+            return len(self)
+        return self.get_feature_shape(self.get_feature_names()[0])[0]
+
+    def _validate_features(self) -> None:
+        """
+        Validate the backend's feature schema.
+        """
+        if not self.get_feature_names():
+            return
+        n = self._n_feature_rows()
+        for name in self.get_feature_names():
+            assert n == self.get_feature_shape(name)[0]
+    
+
+class BaseStorageBackend(
+    BaseMetadataMixin, 
+    BaseObjectMixin, 
+    BaseFeatureMixin
+):
+    """
+    The single unified interface for managing DrugLab table state.
+    """
+
     def validate(self) -> None:
-        """Optional but STRONGLY SUGGESTED."""
-        pass
+        """
+        STRONGLY SUGGESTED: Validates the entire backend by checking 
+        individual domain integrity and ensuring dimension alignment.
+        """
+        # 1. Get the global, official length (provided by the concrete backend)
+        expected_len = len(self)
+
+        # 2. Run domain-specific validations and capture their lengths
+        self._validate_metadata()
+        self._validate_features()
+        self._validate_objects()
+
+        meta_len = self._n_metadata_rows()
+        feat_len = self._n_feature_rows()
+        obj_len = self._n_objects()
+
+        # 3. Cross-validate lengths
+        if not (expected_len == meta_len == feat_len == obj_len):
+            raise ValueError(
+                f"Backend Dimension Mismatch!\n"
+                f"Global Length: {expected_len}\n"
+                f"Metadata Rows: {meta_len}\n"
+                f"Feature Rows:  {feat_len}\n"
+                f"Object Count:  {obj_len}"
+            )
+        
+        # 4. Any other global state validations can go here...
+        return

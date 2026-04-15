@@ -1,5 +1,5 @@
 """
-druglab.db.backends
+druglab.db.backend
 ~~~~~~~~~~~~~~~~~~~
 Storage backend architecture for DrugLab tables.
 
@@ -24,7 +24,13 @@ EagerMemoryBackend
     Fully in-memory concrete backend combining all memory mixins.
 """
 
-from druglab.db.backend.base import BaseStorageBackend, INDEX_LIKE
+from druglab.db.backend.base import (
+    BaseObjectMixin,
+    BaseMetadataMixin,
+    BaseFeatureMixin,
+    BaseStorageBackend, 
+    INDEX_LIKE
+)
 from druglab.db.backend.memory import (
     MemoryMetadataMixin,
     MemoryObjectMixin,
@@ -33,6 +39,9 @@ from druglab.db.backend.memory import (
 )
 
 __all__ = [
+    "BaseObjectMixin",
+    "BaseMetadataMixin",
+    "BaseFeatureMixin",
     "BaseStorageBackend",
     "INDEX_LIKE",
     "MemoryMetadataMixin",

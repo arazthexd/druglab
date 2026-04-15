@@ -1,5 +1,5 @@
 """
-druglab.db.backends.memory
+druglab.db.backend.memory
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
 In-memory storage mixins and the EagerMemoryBackend concrete class.
 
@@ -18,9 +18,9 @@ Persistence
         features/
             <name>.npy        (one file per feature array)
 
-All reads via ``get_*`` methods support ``idx`` arguments (int, slice,
-List[int]) so the same interface works identically whether data lives in
-RAM or on disk.
+All reads/writes via ``get_*`` and ``update_*`` methods support ``idx`` 
+arguments (int, slice, List[int], np.ndarray) so the same interface works 
+identically whether data lives in RAM or on disk.
 """
 
 from __future__ import annotations
@@ -33,8 +33,13 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Union
 import numpy as np
 import pandas as pd
 
-from druglab.db.backend.base import BaseStorageBackend, INDEX_LIKE
-
+from .base import (
+    BaseStorageBackend, 
+    INDEX_LIKE,
+    BaseMetadataMixin,
+    BaseObjectMixin,
+    BaseFeatureMixin
+)
 
 # ---------------------------------------------------------------------------
 # Index normalisation helper
@@ -42,8 +47,29 @@ from druglab.db.backend.base import BaseStorageBackend, INDEX_LIKE
 
 def _resolve_idx(idx: Optional[INDEX_LIKE], n: int) -> Union[np.ndarray, None]:
     """
-    Convert ``idx`` (None / int / slice / List[int]) to a NumPy integer array
-    of row indices, or return ``None`` to signal "all rows".
+    Normalize various index representations into a standard NumPy integer array.
+
+    Handles standard integers, slices, lists of integers, and boolean masks.
+    Automatically resolves negative indices relative to the backend length `n`.
+
+    Parameters
+    ----------
+    idx : Optional[INDEX_LIKE]
+        The user-provided index (int, slice, list, or ndarray).
+    n : int
+        The total number of rows/objects currently in the domain to resolve 
+        negative indices against.
+
+    Returns
+    -------
+    Union[np.ndarray, None]
+        A 1D numpy array of integer indices (dtype=np.intp), or None if `idx` 
+        was None (signaling "all rows").
+
+    Raises
+    ------
+    TypeError
+        If the provided index type is unsupported.
     """
     if idx is None:
         return None
@@ -55,12 +81,18 @@ def _resolve_idx(idx: Optional[INDEX_LIKE], n: int) -> Union[np.ndarray, None]:
     if isinstance(idx, slice):
         return np.arange(*idx.indices(n), dtype=np.intp)
     if isinstance(idx, (list, np.ndarray)):
-        arr = np.asarray(idx, dtype=np.intp)
+        arr = np.asarray(idx)
+        # Handle boolean masks
+        if arr.dtype == bool:
+            return np.where(arr)[0].astype(np.intp)
+        
+        arr = arr.astype(np.intp)
         # Handle negative indices
         arr = np.where(arr < 0, n + arr, arr)
         return arr
+    
     raise TypeError(
-        f"idx must be None, int, slice, or List[int]; got {type(idx).__name__}"
+        f"idx must be None, int, slice, List[int], or np.ndarray; got {type(idx).__name__}"
     )
 
 
@@ -68,19 +100,18 @@ def _resolve_idx(idx: Optional[INDEX_LIKE], n: int) -> Union[np.ndarray, None]:
 # MemoryMetadataMixin
 # ---------------------------------------------------------------------------
 
-class MemoryMetadataMixin:
+class MemoryMetadataMixin(BaseMetadataMixin):
     """
-    Manages tabular metadata in a Pandas DataFrame kept entirely in RAM.
-
-    Relies on ``self._n`` being defined (provided by ``MemoryObjectMixin``
-    or a concrete backend's ``__init__``).
+    In-memory metadata storage mixin utilizing Pandas DataFrames.
+    
+    This mixin manages tabular metadata natively in RAM. Operations rely on 
+    Pandas `.iloc` and `.loc` indexing to enforce strict query pushdown and 
+    avoid unnecessary DataFrame copies.
     """
 
-    _metadata: pd.DataFrame
-
-    # ------------------------------------------------------------------
-    # Metadata API
-    # ------------------------------------------------------------------
+    def __init__(self, metadata: Optional[pd.DataFrame] = None, **kwargs):
+        super().__init__(**kwargs)  # Passes leftovers down the chain
+        self._metadata = metadata if metadata is not None else pd.DataFrame()
 
     def get_metadata(
         self,
@@ -88,32 +119,28 @@ class MemoryMetadataMixin:
         cols: Optional[Union[str, List[str]]] = None,
     ) -> pd.DataFrame:
         """
-        Fetch rows and/or columns with strict query pushdown.
-
-        Query pushdown means the index selection happens directly on the
-        underlying DataFrame without first materialising a full copy.
+        Fetch a subset of the metadata DataFrame.
 
         Parameters
         ----------
-        idx
-            Row selector (None → all rows).
-        cols
-            Column selector (None → all columns).
+        idx : Optional[INDEX_LIKE], default None
+            Row selector. None indicates all rows.
+        cols : Optional[Union[str, List[str]]], default None
+            Column selector. None indicates all columns.
 
         Returns
         -------
         pd.DataFrame
-            Always a DataFrame with a reset integer index.
+            A new DataFrame containing the requested subset. The index is 
+            always reset to standard integers.
         """
         resolved = _resolve_idx(idx, len(self._metadata))
 
-        # Row selection
         if resolved is None:
             df = self._metadata
         else:
             df = self._metadata.iloc[resolved]
 
-        # Column selection
         if cols is not None:
             if isinstance(cols, str):
                 cols = [cols]
@@ -121,187 +148,369 @@ class MemoryMetadataMixin:
 
         return df.reset_index(drop=True)
 
-    def update_metadata(
+    def add_metadata_column(
         self,
-        value: pd.DataFrame,
+        name: str,
+        value: Union[pd.Series, np.ndarray, List[Any]],
         idx: Optional[INDEX_LIKE] = None,
+        na: Any = None,
+        **kwargs
     ) -> None:
         """
-        Perform a partial, in-place update of the metadata with strict query pushdown.
+        Add a new metadata column, optionally populating only specific rows.
+
+        Pandas indices on incoming Series are explicitly ignored; data is 
+        aligned strictly by position.
 
         Parameters
         ----------
-        value : pd.DataFrame
-            The new data to insert.
+        name : str
+            The name of the new column.
+        value : Union[pd.Series, np.ndarray, List[Any]]
+            The data to populate the new column.
         idx : Optional[INDEX_LIKE], default None
-            Row selector. ``None`` → apply to all rows.
-            Accepts ``int``, ``slice``, or ``List[int]``.
+            Specific rows to populate with `value`. If provided, all other 
+            rows will be filled with `na`.
+        na : Any, default None
+            The fill value used for rows not included in `idx`.
         """
         resolved = _resolve_idx(idx, len(self._metadata))
-        new_cols = [col for col in value.columns if col not in self._metadata.columns]
+        
         if resolved is None:
-            self._metadata.update(value)
-            if len(new_cols) > 0:
-                self._metadata[new_cols] = value[new_cols].values
-            return
-        self._metadata.iloc[resolved].update(value)
-        if len(new_cols) > 0:
-            self._metadata[new_cols].iloc[resolved] = value[new_cols].values
+            # Positional assignment ignoring Pandas index
+            self._metadata[name] = np.asarray(value)
+        else:
+            # Create a full array of `na` and populate the targeted indices
+            arr = np.full(len(self._metadata), na, dtype=np.asarray(value).dtype)
+            arr[resolved] = value
+            self._metadata[name] = arr
 
-    def drop_metadata(
+    def update_metadata(
         self,
-        cols: Optional[List[str]] = None
+        values: Union[pd.DataFrame, pd.Series, Dict[str, Any]],
+        idx: Optional[INDEX_LIKE] = None,
+        **kwargs
     ) -> None:
         """
-        Drop metadata columns given as *cols*. If *cols* is None, drop all columns.
+        Perform an in-place update of existing metadata columns.
 
         Parameters
         ----------
-        cols : Optional[List[str]], default None
-            List of columns to drop. If None, drop all columns.
+        values : Union[pd.DataFrame, pd.Series, Dict[str, Any]]
+            The new values to insert. Keys/column names must match existing 
+            metadata columns.
+        idx : Optional[INDEX_LIKE], default None
+            Specific rows to update. None applies the update to all rows.
+
+        Raises
+        ------
+        KeyError
+            If any column in `values` does not already exist in the metadata.
+        ValueError
+            If a Series without a name is provided.
+        """
+        resolved = _resolve_idx(idx, len(self._metadata))
+        
+        # Standardize inputs to a dictionary of numpy arrays
+        if isinstance(values, pd.DataFrame):
+            val_dict = {col: values[col].values for col in values.columns}
+        elif isinstance(values, pd.Series):
+            if values.name is None:
+                raise ValueError("Series must have a name to update metadata.")
+            val_dict = {values.name: values.values}
+        else:
+            val_dict = values
+
+        for col, val in val_dict.items():
+            if col not in self._metadata.columns:
+                raise KeyError(f"Column '{col}' does not exist in metadata. Use add_metadata_column.")
+            
+            if resolved is None:
+                self._metadata[col] = val
+            else:
+                self._metadata.loc[resolved, col] = val
+
+    def drop_metadata_columns(self, cols: Optional[Union[str, List[str]]] = None) -> None:
+        """
+        Remove metadata columns from the internal DataFrame.
+
+        Parameters
+        ----------
+        cols : Optional[Union[str, List[str]]], default None
+            The column(s) to remove. If None, the entire DataFrame is wiped 
+            and replaced with an empty DataFrame maintaining the same index.
         """
         if cols is None:
             self._metadata = pd.DataFrame(index=self._metadata.index)
         else:
+            if isinstance(cols, str):
+                cols = [cols]
             self._metadata.drop(columns=cols, inplace=True)
 
-    def try_numerize_metadata(
-        self,
-        columns: Optional[List[str]] = None,
-    ) -> None:
-        meta = self.get_metadata()
-        if columns is None:
-            columns = meta.columns
-        columns_set = set(columns)
+    def _n_metadata_rows(self) -> int:
+        """
+        Get the total number of rows in the metadata DataFrame.
 
-        for col in meta.select_dtypes(include=["object", "string"]).columns:
-            if col not in columns_set:
-                continue
-            try:
-                meta[col] = pd.to_numeric(meta[col])
-            except (ValueError, TypeError):
-                pass
+        If case metadata is empty (no access to row number), we return `len(self)`, assuming
+        that the number of rows is equal to the number of objects or any number that the
+        final storage backend will provide (refer to the backend in use for details).
 
-        self._metadata = meta
+        Returns
+        -------
+        int
+            Length of the internal metadata DataFrame.
+        """
+        if self._metadata.empty:
+            return len(self)
+        return len(self._metadata)
+
+    def _validate_metadata(self) -> None:
+        """
+        Validate internal metadata consistency. 
+        (No-op for in-memory as Pandas inherently enforces rectangular integrity).
+        """
+        # In-memory pandas dataframes inherently enforce structural integrity
+        pass
 
 
 # ---------------------------------------------------------------------------
 # MemoryObjectMixin
 # ---------------------------------------------------------------------------
 
-class MemoryObjectMixin:
+class MemoryObjectMixin(BaseObjectMixin):
     """
-    Manages a flat Python list of objects (RDKit Mols, reactions, dicts, …).
+    In-memory object storage mixin utilizing a standard Python list.
 
-    This mixin owns ``self._objects`` and ``self._n`` (derived from the list
-    length).
+    Optimized for rapid, transactional point-lookups and vector updates 
+    for generic Python objects (e.g., RDKit Mol instances).
     """
 
-    _objects: List[Any]
-
-    # ------------------------------------------------------------------
-    # Sizing
-    # ------------------------------------------------------------------
-
-    def __len__(self) -> int:
-        return len(self._objects)
-
-    # ------------------------------------------------------------------
-    # Object API
-    # ------------------------------------------------------------------
+    def __init__(self, objects: Optional[List[Any]] = None, **kwargs):
+        super().__init__(**kwargs)  # Passes leftovers down the chain
+        self._objects = objects if objects is not None else []
 
     def get_objects(self, idx: Optional[INDEX_LIKE] = None) -> Union[Any, List[Any]]:
         """
-        Fetch one or multiple objects.
+        Retrieve one or more objects from RAM.
 
         Parameters
         ----------
-        idx
-            ``int``        → returns the single object (not wrapped in a list).
-            ``slice``      → returns a list.
-            ``List[int]``  → returns a list in the specified order.
-            ``None``       → returns all objects.
+        idx : Optional[INDEX_LIKE], default None
+            Row selector. 
+
+        Returns
+        -------
+        Union[Any, List[Any]]
+            Returns a single object if `idx` is an integer. Otherwise, returns 
+            a list of objects.
         """
+
         if idx is None:
             return self._objects.copy()
         
         if isinstance(idx, int):
             n = len(self._objects)
-            if idx < 0:
-                idx = n + idx
-            return self._objects[idx]
+            index = n + idx if idx < 0 else idx
+            return self._objects[index]
 
         resolved = _resolve_idx(idx, len(self._objects))
         return [self._objects[i] for i in resolved]
 
-    def put_object(self, index: int, obj: Any) -> None:
-        """Overwrite the object at *index*."""
-        if index < 0:
-            index = len(self._objects) + index
-        self._objects[index] = obj
+    def update_objects(
+        self, 
+        objs: Union[Any, List[Any]], 
+        idx: Optional[INDEX_LIKE] = None,
+        **kwargs
+    ) -> None:
+        """
+        Perform an in-place update of stored objects.
+
+        Parameters
+        ----------
+        objs : Union[Any, List[Any]]
+            The object or sequence of objects to insert.
+        idx : Optional[INDEX_LIKE], default None
+            The specific index/indices to overwrite. If None, the entire 
+            internal list is replaced by `objs`.
+
+        Raises
+        ------
+        ValueError
+            If `idx` is a sequence but its length does not match `objs`.
+        """
+
+        if idx is None:
+            self._objects = list(objs)
+            return
+            
+        if isinstance(idx, int):
+            n = len(self._objects)
+            index = n + idx if idx < 0 else idx
+            self._objects[index] = objs
+            return
+            
+        resolved = _resolve_idx(idx, len(self._objects))
+        if len(resolved) != len(objs):
+            raise ValueError("Length of objs sequence must match length of resolved index.")
+            
+        for i, obj in zip(resolved, objs):
+            self._objects[i] = obj
+
+    def _n_objects(self) -> int:
+        """
+        Get the total number of stored objects.
+
+        Returns
+        -------
+        int
+            Length of the internal object list.
+        """
+        return len(self._objects)
+
+    def _validate_objects(self) -> None:
+        """
+        Validate internal object consistency.
+        (No-op for in-memory list storage).
+        """
+        pass
 
 
 # ---------------------------------------------------------------------------
 # MemoryFeatureMixin
 # ---------------------------------------------------------------------------
 
-class MemoryFeatureMixin:
+class MemoryFeatureMixin(BaseFeatureMixin):
     """
-    Manages named NumPy arrays in a Python dictionary kept entirely in RAM.
+    In-memory feature storage mixin utilizing a dictionary of NumPy arrays.
 
-    Query pushdown is implemented via NumPy fancy indexing, which avoids
-    making a full copy when only a slice is needed (NumPy views for slices).
+    Implements query pushdown via NumPy fancy indexing and slicing, returning 
+    zero-copy views where possible.
     """
 
-    _features: Dict[str, np.ndarray]
+    def __init__(self, features: Optional[Dict[str, np.ndarray]] = None, **kwargs):
+        super().__init__(**kwargs)  # Passes leftovers down the chain
+        self._features = features if features is not None else {}
 
-    # ------------------------------------------------------------------
-    # Feature API
-    # ------------------------------------------------------------------
-
-    def get_feature(
-        self,
-        name: str,
-        idx: Optional[INDEX_LIKE] = None,
-    ) -> np.ndarray:
+    def get_feature(self, name: str, idx: Optional[INDEX_LIKE] = None) -> np.ndarray:
         """
-        Fetch a feature array, pushing the index selection into NumPy.
-
-        For slices NumPy returns a *view* (zero-copy).  For list/int
-        indices NumPy performs fancy indexing (copy, but no full-array
-        materialisation in the caller).
+        Fetch a feature array or a specific subset of it.
 
         Parameters
         ----------
-        name
-            Feature key.
-        idx
-            Row selector.  ``None`` → return full array.
+        name : str
+            The name of the feature to retrieve.
+        idx : Optional[INDEX_LIKE], default None
+            Row selector. If None, returns the full array. If a slice is 
+            provided, attempts to return a memory view.
 
         Returns
         -------
         np.ndarray
+            The requested feature array subset.
         """
         arr = self._features[name]
         resolved = _resolve_idx(idx, arr.shape[0])
+        
         if resolved is None:
             return arr
-        # Prefer slice-based indexing (returns a view) when possible
+            
         if len(resolved) == 0:
-            return arr[0:0]  # empty array with correct dtype/shape
+            return arr[0:0] 
+            
         return arr[resolved]
 
-    def add_feature(self, name: str, array: np.ndarray) -> None:
-        """Add or overwrite a feature array."""
-        self._features[name] = array
+    def update_feature(
+        self, 
+        name: str, 
+        array: np.ndarray,
+        idx: Optional[INDEX_LIKE] = None,
+        na: Any = None,
+        **kwargs
+    ) -> None:
+        """
+        Add or update a feature array in-place.
+
+        If the feature does not exist and `idx` is provided, a new array is 
+        initialized filled with `na` values, and the target indices are populated.
+
+        Parameters
+        ----------
+        name : str
+            The name of the feature to update/create.
+        array : np.ndarray
+            The incoming feature data.
+        idx : Optional[INDEX_LIKE], default None
+            Row selector targeting exactly where `array` should be written.
+        na : Any, default None
+            Fill value for un-targeted rows when creating a new partial array. 
+            Defaults to np.nan for floats, 0 for integers.
+        """
+        if name not in self._features:
+            if idx is None:
+                if array.shape[0] != self._n_feature_rows():
+                    raise ValueError(
+                        f"Length of array's first dimension ({array.shape[0]}) must "
+                        f"match number of feature rows ({self._n_feature_rows()})."
+                    )
+                self._features[name] = np.asarray(array)
+            else:
+                resolved = _resolve_idx(idx, self._n_feature_rows() or len(array))
+                n_rows = self._n_feature_rows() or (resolved.max() + 1 if len(resolved) > 0 else 0)
+                shape = (n_rows, *np.asarray(array).shape[1:])
+                
+                # Default numeric 'na' to np.nan if not provided and dtype is float
+                if na is None and np.issubdtype(np.asarray(array).dtype, np.floating):
+                    na = np.nan
+                elif na is None:
+                    na = 0
+                    
+                full_arr = np.full(shape, na, dtype=np.asarray(array).dtype)
+                full_arr[resolved] = array
+                self._features[name] = full_arr
+        else:
+            if idx is None:
+                self._features[name] = np.asarray(array)
+            else:
+                resolved = _resolve_idx(idx, self._features[name].shape[0])
+                self._features[name][resolved] = array
 
     def drop_feature(self, name: str) -> None:
-        """Remove a feature by name."""
+        """
+        Remove a feature array from memory.
+
+        Parameters
+        ----------
+        name : str
+            The name of the feature to delete.
+        """
         del self._features[name]
 
     def get_feature_names(self) -> List[str]:
-        """Return the list of stored feature keys."""
+        """
+        List all stored feature names.
+
+        Returns
+        -------
+        List[str]
+            A list containing the dictionary keys of stored feature arrays.
+        """
         return list(self._features.keys())
+
+    def get_feature_shape(self, name: str) -> tuple:
+        """
+        Quickly inspect the shape of a feature array.
+
+        Parameters
+        ----------
+        name : str
+            The target feature.
+
+        Returns
+        -------
+        tuple
+            The shape of the requested NumPy array.
+        """
+        return self._features[name].shape
 
 
 # ---------------------------------------------------------------------------
@@ -315,75 +524,50 @@ class EagerMemoryBackend(
     BaseStorageBackend,
 ):
     """
-    Fully in-memory backend.
+    Fully eager, in-memory unified storage backend.
 
-    All data lives in RAM:
-    * ``_objects``  - Python list
-    * ``_metadata`` - Pandas DataFrame
-    * ``_features`` - dict of NumPy arrays
-
-    Saves to a ``.dlb`` bundle directory as Parquet + pickle + .npy files.
-    Restoring from disk is handled by ``EagerMemoryBackend.load()``.
-
-    Parameters
-    ----------
-    objects
-        Initial object list.
-    metadata
-        Initial metadata DataFrame.
-    features
-        Initial feature dictionary.
+    Inherits and orchestrates Metadata (Pandas), Objects (Lists), and 
+    Features (NumPy). This is the default backend for small to medium 
+    cheminformatics datasets that fit comfortably in RAM.
     """
 
     BACKEND_NAME = "EagerMemoryBackend"
 
-    def __init__(
-        self,
-        objects: Optional[List[Any]] = None,
-        metadata: Optional[pd.DataFrame] = None,
-        features: Optional[Dict[str, np.ndarray]] = None,
-    ) -> None:
-        self._objects: List[Any] = objects if objects is not None else []
-        self._metadata: pd.DataFrame = (
-            metadata.reset_index(drop=True) if metadata is not None else pd.DataFrame()
-        )
-        self._features: Dict[str, np.ndarray] = features if features is not None else {}
+    def __len__(self) -> int:
+        """
+        Return the global, official length of the dataset.
 
-    # ------------------------------------------------------------------
-    # create_view (query pushdown for subsetting)
-    # ------------------------------------------------------------------
+        Returns
+        -------
+        int
+            The authoritative row count (delegated to object count).
+        """
+        return self._n_objects()
 
     def create_view(self, indices: Sequence[int]) -> "EagerMemoryBackend":
         """
-        Return an independent, synchronised view restricted to *indices*.
+        Return an independent, deep-copied view restricted to specific indices.
 
-        All three data stores (objects, metadata, features) are sliced at
-        the backend level and deep-copied so mutations do not propagate.
+        Used internally by table subsetting to ensure mutations in the child 
+        table do not affect the parent table's data in RAM.
 
         Parameters
         ----------
-        indices
-            Ordered integer row indices.
+        indices : Sequence[int]
+            The exact row numbers to extract into the new backend.
 
         Returns
         -------
         EagerMemoryBackend
+            A completely new backend instance containing only the requested rows.
         """
-        idx_arr = np.asarray(indices, dtype=np.intp)
-        n = len(self._objects)
+        idx_arr = _resolve_idx(indices, len(self))
 
-        # Resolve negatives
-        idx_arr = np.where(idx_arr < 0, n + idx_arr, idx_arr)
+        if idx_arr is None or len(idx_arr) == 0:
+            return EagerMemoryBackend()
 
-        # Objects: deep-copy selected items
         new_objects = [copy.deepcopy(self._objects[i]) for i in idx_arr]
-
-        # Metadata: iloc + reset (no full copy needed; .copy() after iloc is minimal)
-        new_metadata = (
-            self._metadata.iloc[idx_arr].reset_index(drop=True).copy()
-        )
-
-        # Features: NumPy fancy-index (copies, but only the selected rows)
+        new_metadata = self._metadata.iloc[idx_arr].reset_index(drop=True).copy()
         new_features = {k: v[idx_arr].copy() for k, v in self._features.items()}
 
         return EagerMemoryBackend(
@@ -392,24 +576,20 @@ class EagerMemoryBackend(
             features=new_features,
         )
 
-    # ------------------------------------------------------------------
-    # Persistence
-    # ------------------------------------------------------------------
-
     def save(self, path: Path, serializer: Optional[Callable] = None) -> None:
         """
-        Save backend data inside the ``.dlb`` bundle directory at *path*.
+        Persist backend state into a '.dlb' bundle directory.
 
-        Layout
-        ------
-        ::
+        Writes metadata as Parquet (or CSV), serializes the entire object 
+        list into a single pickle file, and saves feature arrays natively 
+        as `.npy` files.
 
-            <path>/
-                metadata.parquet   (fallback: metadata.csv)
-                objects/
-                    objects.pkl    (single pickle of the full list with serializer applied)
-                features/
-                    <name>.npy
+        Parameters
+        ----------
+        path : Path
+            The target `.dlb` directory path (pre-created by the Orchestrator).
+        serializer : Optional[Callable], default None
+            An optional function `(obj) -> bytes` to serialize generic objects.
         """
         path = Path(path)
 
@@ -444,20 +624,22 @@ class EagerMemoryBackend(
         mmap_features: bool = False,
     ) -> "EagerMemoryBackend":
         """
-        Load backend state from a ``.dlb`` bundle directory.
+        Reconstruct the backend from a '.dlb' bundle directory.
 
         Parameters
         ----------
-        path
-            Bundle directory written by ``save()``.
-        deserializer
-            Optional callable ``(raw) -> obj`` to reconstruct objects.
-        mmap_features
-            If ``True``, load feature arrays as memory-mapped ``np.memmap``.
+        path : Path
+            The location of the `.dlb` bundle.
+        deserializer : Optional[Callable], default None
+            An optional function `(bytes) -> obj` to reconstruct stored objects.
+        mmap_features : bool, default False
+            If True, loads `.npy` feature files as memory-mapped arrays rather 
+            than fully pulling them into RAM.
 
         Returns
         -------
         EagerMemoryBackend
+            A fully populated instance of the in-memory backend.
         """
         path = Path(path)
 
@@ -474,7 +656,7 @@ class EagerMemoryBackend(
         # --- objects ---
         obj_path = path / "objects" / "objects.pkl"
         if obj_path.exists():
-            raw_list = pickle.loads(obj_path.read_bytes())  # noqa: S301
+            raw_list = pickle.loads(obj_path.read_bytes()) 
             if deserializer is not None:
                 objects = [deserializer(r) for r in raw_list]
             else:
@@ -494,24 +676,3 @@ class EagerMemoryBackend(
                     features[name] = np.load(str(npy_path), allow_pickle=False)
 
         return cls(objects=objects, metadata=metadata, features=features)
-    
-    def validate(self):
-        super().validate()
-        n = len(self)
-        meta = self.get_metadata()
-
-        if not meta.empty and len(meta) != n and len(meta) != 0:
-            raise ValueError(
-                f"metadata has {len(meta)} rows but objects has {n}. "
-                "They must be the same length."
-            )
-        # If metadata is empty DataFrame, pad it to the right shape
-        if meta.empty and n > 0:
-            self._metadata = pd.DataFrame(index=range(n))
-
-        for key in self.get_feature_names():
-            arr = self.get_feature(key)
-            if arr.shape[0] != n:
-                raise ValueError(
-                    f"Feature '{key}' has {arr.shape[0]} rows but objects has {n}."
-                )
