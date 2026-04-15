@@ -29,6 +29,7 @@ Backwards-compatible dot-notation still works:
 
 from __future__ import annotations
 
+import re
 import copy
 import json
 import pickle
@@ -374,6 +375,13 @@ class BaseTable(ABC, Generic[OT]): # TODO: add BT
         Add or perform a partial, in-place update of a feature array.
         For full documentation, please refer to the active storage backend.
         """
+        # Strict validation: Only allow alphanumeric characters and underscores
+        if not re.match(r"^[a-zA-Z0-9_=]+$", name):
+            raise ValueError(
+                f"Invalid feature name '{name}'. Feature names must be alphanumeric "
+                f"and contain no spaces or special characters (e.g., use 'ecfp_4' instead of 'ecfp/4')."
+            )
+            
         self._backend.update_feature(name=name, array=array, idx=idx, na=na, **kwargs)
 
     def update_features(
@@ -721,9 +729,17 @@ class BaseTable(ABC, Generic[OT]): # TODO: add BT
     # Persistence — "Directory as a Bundle" (.dlb)
     # ------------------------------------------------------------------
 
-    def save(self, path: Union[str, Path]) -> Path:
+    def save(self, path: Union[str, Path], overwrite: bool = False) -> Path:
         """
         Save the table to a ``.dlb`` directory bundle.
+
+        Parameters
+        ----------
+        path
+            The destination path for the ``.dlb`` bundle.
+        overwrite
+            If False (default), raises a FileExistsError if the target 
+            path already exists. If True, atomically replaces the existing bundle.
 
         Layout
         ------
@@ -737,28 +753,58 @@ class BaseTable(ABC, Generic[OT]): # TODO: add BT
                 features/
                     <name>.npy
         """
+        import tempfile
+        import shutil
+        import json
+        
         root = Path(path)
-        root.mkdir(parents=True, exist_ok=True)
+        
+        # --- Safety Check: Prevent accidental overwrites ---
+        if root.exists():
+            if not overwrite:
+                raise FileExistsError(
+                    f"A bundle already exists at '{root}'. "
+                    "Pass `overwrite=True` to explicitly replace it."
+                )
+        
+        # Ensure the parent directory exists so we can create a temp dir next to it
+        root.parent.mkdir(parents=True, exist_ok=True)
+        
+        # 1. Create a secure temporary directory on the same filesystem
+        temp_dir = Path(tempfile.mkdtemp(dir=root.parent, prefix=".tmp_dlb_"))
 
-        # Delegate data writing to the backend
-        self._backend.save(
-            root,
-            serializer=self._serialize_object,
-        )
+        try:
+            # 2. Delegate data writing to the backend into the temporary directory
+            self._backend.save(
+                temp_dir,
+                serializer=self._serialize_object,
+            )
 
-        # Write config.json manifest
-        history_data = [e.to_dict() for e in self._history]
-        config = {
-            "table_class": self.__class__.__name__,
-            "object_type": self._object_type_name(),
-            "backend_class": type(self._backend).__name__,
-            "schema_version": 2,
-            "n": self.n,
-            "history": history_data,
-        }
-        (root / "config.json").write_text(
-            json.dumps(config, indent=2), encoding="utf-8"
-        )
+            # 3. Write config.json manifest
+            history_data = [e.to_dict() for e in self._history]
+            config = {
+                "table_class": self.__class__.__name__,
+                "object_type": self._object_type_name(),
+                "backend_class": type(self._backend).__name__,
+                "schema_version": 2,
+                "n": self.n,
+                "history": history_data,
+            }
+            (temp_dir / "config.json").write_text(
+                json.dumps(config, indent=2), encoding="utf-8"
+            )
+
+            # 4. Atomic Swap: Remove the old bundle (if overwriting) and move the new one into place
+            if root.exists():
+                shutil.rmtree(root)
+            temp_dir.replace(root)
+
+        except Exception:
+            # If ANYTHING fails during the save, clean up the temp directory 
+            # and leave the original bundle (if it existed) completely untouched.
+            if temp_dir.exists():
+                shutil.rmtree(temp_dir)
+            raise
 
         return root
 
