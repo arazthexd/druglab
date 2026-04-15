@@ -15,7 +15,7 @@ from typing import Any, Dict, Iterator, List, Optional
 
 import numpy as np
 
-from druglab.db.base import BaseTable, HistoryEntry
+from druglab.db.table import BaseTable, HistoryEntry
 from druglab.pipe.cache import BaseCache, default_cache
 
 

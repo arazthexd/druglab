@@ -42,7 +42,7 @@ from typing import Any, Dict, Generic, List, Optional, Sequence, Tuple, TypeVar,
 import numpy as np
 import pandas as pd
 
-from .backends import EagerMemoryBackend, BaseStorageBackend
+from ..backend import EagerMemoryBackend, BaseStorageBackend
 
 # ---------------------------------------------------------------------------
 # Type variables

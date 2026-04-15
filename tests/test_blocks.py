@@ -10,7 +10,7 @@ import numpy as np
 
 pytest.importorskip("rdkit")
 
-from druglab.db.molecule import MoleculeTable
+from druglab.db.table.molecule import MoleculeTable
 from druglab.pipe.blocks import *
 
 @pytest.fixture

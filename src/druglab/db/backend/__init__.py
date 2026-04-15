@@ -24,8 +24,8 @@ EagerMemoryBackend
     Fully in-memory concrete backend combining all memory mixins.
 """
 
-from druglab.db.backends.base import BaseStorageBackend, INDEX_LIKE
-from druglab.db.backends.memory import (
+from druglab.db.backend.base import BaseStorageBackend, INDEX_LIKE
+from druglab.db.backend.memory import (
     MemoryMetadataMixin,
     MemoryObjectMixin,
     MemoryFeatureMixin,

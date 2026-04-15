@@ -32,8 +32,8 @@ except ImportError:
 
 pytestmark = pytest.mark.skipif(not _RDKIT, reason="RDKit not installed")
 
-from druglab.db.molecule import MoleculeTable
-from druglab.db.conformer import ConformerTable
+from druglab.db.table.molecule import MoleculeTable
+from druglab.db.table.conformer import ConformerTable
 
 
 # ---------------------------------------------------------------------------

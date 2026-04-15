@@ -41,11 +41,20 @@ Storage Backends
     EagerMemoryBackend   — fully in-memory (default)
 """
 
-from druglab.db.base import BaseTable, HistoryEntry, META, M, OBJ, O, FEAT, F
-from druglab.db.molecule import MoleculeTable
-from druglab.db.reaction import ReactionTable
-from druglab.db.conformer import ConformerTable
-from druglab.db.backends import (
+from .table import (
+    BaseTable,
+    HistoryEntry,
+    MoleculeTable,
+    ReactionTable,
+    ConformerTable,
+    META,
+    M,
+    OBJ,
+    O,
+    FEAT,
+    F,
+)
+from .backend import (
     BaseStorageBackend,
     EagerMemoryBackend,
     MemoryMetadataMixin,

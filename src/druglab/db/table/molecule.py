@@ -16,8 +16,8 @@ from typing import Dict, Iterable, List, Optional, Sequence, Union, TYPE_CHECKIN
 import numpy as np
 import pandas as pd
 
-from druglab.db.base import BaseTable, HistoryEntry
-from druglab.db.backends import EagerMemoryBackend
+from ..backend import EagerMemoryBackend
+from .base import BaseTable, HistoryEntry
 
 try:
     from rdkit import Chem
@@ -27,8 +27,8 @@ except ImportError:
     _RDKIT = False
 
 if TYPE_CHECKING:
-    from druglab.io._record import MoleculeRecord
-    from druglab.db.conformer import ConformerTable
+    from ...io._record import MoleculeRecord
+    from .conformer import ConformerTable
 
 
 def _require_rdkit() -> None:
@@ -301,7 +301,7 @@ class MoleculeTable(BaseTable["Chem.Mol"]):
         every row holds exactly one conformer.
         """
         _require_rdkit()
-        from druglab.db.conformer import ConformerTable
+        from .conformer import ConformerTable
 
         new_objects: List[Chem.Mol] = []
         meta_rows: List[dict] = []

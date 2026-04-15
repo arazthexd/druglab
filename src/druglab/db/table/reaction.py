@@ -11,7 +11,7 @@ from typing import Dict, Iterable, List, Optional, TYPE_CHECKING
 import numpy as np
 import pandas as pd
 
-from druglab.db.base import BaseTable, HistoryEntry
+from .base import BaseTable, HistoryEntry
 
 try:
     from rdkit.Chem import AllChem, rdChemReactions
@@ -193,7 +193,7 @@ class ReactionTable(BaseTable["rdChemReactions.ChemicalReaction"]):
 
     def reactant_tables(self) -> List["MoleculeTable"]:  # type: ignore
         _require_rdkit()
-        from druglab.db.molecule import MoleculeTable
+        from .molecule import MoleculeTable
         tables = []
         for rxn in self._backend._objects:
             if rxn is None:
@@ -205,7 +205,7 @@ class ReactionTable(BaseTable["rdChemReactions.ChemicalReaction"]):
 
     def product_tables(self) -> List["MoleculeTable"]:  # type: ignore
         _require_rdkit()
-        from druglab.db.molecule import MoleculeTable
+        from .molecule import MoleculeTable
         tables = []
         for rxn in self._backend._objects:
             if rxn is None:

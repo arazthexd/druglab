@@ -26,8 +26,8 @@ from typing import Dict, List, Optional, Union
 import numpy as np
 import pandas as pd
 
-from druglab.db.base import HistoryEntry
-from druglab.db.molecule import MoleculeTable, _require_rdkit
+from .base import HistoryEntry
+from .molecule import MoleculeTable, _require_rdkit
 
 try:
     from rdkit import Chem

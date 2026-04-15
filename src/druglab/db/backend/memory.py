@@ -33,7 +33,7 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Union
 import numpy as np
 import pandas as pd
 
-from druglab.db.backends.base import BaseStorageBackend, INDEX_LIKE
+from druglab.db.backend.base import BaseStorageBackend, INDEX_LIKE
 
 
 # ---------------------------------------------------------------------------

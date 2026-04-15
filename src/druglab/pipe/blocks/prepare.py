@@ -1,6 +1,6 @@
 from typing import Optional
 
-from druglab.db.base import BaseTable
+from druglab.db.table import BaseTable
 from druglab.pipe.archetypes import BasePreparation
 
 # ---------------------------------------------------------------------------

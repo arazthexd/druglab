@@ -1,7 +1,7 @@
 import numpy as np
 from typing import Optional, List, Tuple, Set, Union
 
-from druglab.db.base import BaseTable
+from druglab.db.table import BaseTable
 from druglab.pipe.archetypes import BaseFilter
 
 # ---------------------------------------------------------------------------

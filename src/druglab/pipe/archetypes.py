@@ -6,7 +6,7 @@ Standard block types: Featurizers, Filters, Preparations, IO.
 
 import numpy as np
 from typing import Any, List, Optional, Callable
-from druglab.db.base import BaseTable
+from druglab.db.table import BaseTable
 from druglab.pipe.base import ItemBlock, BaseBlock
 
 class BaseFeaturizer(ItemBlock):

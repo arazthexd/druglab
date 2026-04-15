@@ -38,17 +38,15 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 # Imports under test
 # ---------------------------------------------------------------------------
 
-from druglab.db.backends import (
+from druglab.db.backend import (
     BaseStorageBackend,
     EagerMemoryBackend,
     MemoryMetadataMixin,
     MemoryObjectMixin,
     MemoryFeatureMixin,
 )
-from druglab.db.backends.memory import _resolve_idx
-from druglab.db.base import BaseTable, HistoryEntry, META, OBJ, FEAT, M, O, F
-from druglab.db.base import META as META_ALIAS
-
+from druglab.db.backend.memory import _resolve_idx
+from druglab.db.table import BaseTable, HistoryEntry, META, OBJ, FEAT, M, O, F
 
 # ---------------------------------------------------------------------------
 # Minimal concrete table (no RDKit required)
@@ -1051,26 +1049,26 @@ class TestMoleculeTableBackendIntegration:
     """Verify MoleculeTable works end-to-end with the new backend."""
 
     def test_from_smiles_uses_eager_backend(self):
-        from druglab.db.molecule import MoleculeTable
+        from druglab.db.table.molecule import MoleculeTable
         t = MoleculeTable.from_smiles(["CCO", "c1ccccc1"])
         assert isinstance(t._backend, EagerMemoryBackend)
         assert t.n == 2
 
     def test_smiles_property(self):
-        from druglab.db.molecule import MoleculeTable
+        from druglab.db.table.molecule import MoleculeTable
         t = MoleculeTable.from_smiles(["CCO", "c1ccccc1"])
         assert len(t.smiles) == 2
         assert all(s is not None for s in t.smiles)
 
     def test_subset_preserves_molecules(self):
-        from druglab.db.molecule import MoleculeTable
+        from druglab.db.table.molecule import MoleculeTable
         t = MoleculeTable.from_smiles(["C", "CC", "CCC", "CCCC"])
         sub = t[0:2]
         assert sub.n == 2
         assert sub.smiles[0] == t.smiles[0]
 
     def test_multi_axis_feat_pushdown_with_molecule_table(self):
-        from druglab.db.molecule import MoleculeTable
+        from druglab.db.table.molecule import MoleculeTable
         t = MoleculeTable.from_smiles(["C", "CC", "CCC", "CCCC", "CCCCC"])
         # Manually add a feature to test pushdown without requiring pipe
         t.add_feature("fp", np.arange(5 * 512, dtype=np.float32).reshape(5, 512))
@@ -1081,7 +1079,7 @@ class TestMoleculeTableBackendIntegration:
         )
 
     def test_save_load_molecule_table(self, tmp_path):
-        from druglab.db.molecule import MoleculeTable
+        from druglab.db.table.molecule import MoleculeTable
         t = MoleculeTable.from_smiles(["CCO", "c1ccccc1", "CC(=O)O"])
         root = t.save(tmp_path / "mols.dlb")
 
@@ -1092,7 +1090,7 @@ class TestMoleculeTableBackendIntegration:
         assert original_smiles == loaded_smiles
 
     def test_config_json_table_class_is_molecule_table(self, tmp_path):
-        from druglab.db.molecule import MoleculeTable
+        from druglab.db.table.molecule import MoleculeTable
         t = MoleculeTable.from_smiles(["CCO"])
         root = t.save(tmp_path / "mol.dlb")
         config = json.loads((root / "config.json").read_text())
@@ -1104,8 +1102,8 @@ class TestMoleculeTableBackendIntegration:
         unroll_conformers must function correctly with the new backend proxy wrappers.
         """
         from rdkit.Chem import AllChem
-        from druglab.db.molecule import MoleculeTable
-        from druglab.db.conformer import ConformerTable
+        from druglab.db.table.molecule import MoleculeTable
+        from druglab.db.table.conformer import ConformerTable
 
         mol = Chem.MolFromSmiles("CCO")
         mol = Chem.AddHs(mol)
@@ -1128,7 +1126,7 @@ class TestMoleculeTableBackendIntegration:
     def test_unroll_collapse_round_trip_with_new_backend(self):
         """Full round-trip: unroll → collapse restores conformer count."""
         from rdkit.Chem import AllChem
-        from druglab.db.molecule import MoleculeTable
+        from druglab.db.table.molecule import MoleculeTable
 
         mols = []
         for smi in ["CCO", "c1ccccc1"]:

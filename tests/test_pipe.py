@@ -13,7 +13,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from druglab.db.base import BaseTable, HistoryEntry
+from druglab.db.table import BaseTable, HistoryEntry
 from druglab.pipe import (
     Pipeline, FunctionFeaturizer, FunctionFilter, 
     FunctionPreparation, DictCache, MemoryIOBlock

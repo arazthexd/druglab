@@ -87,8 +87,8 @@ _install_rdkit_stub()
 # druglab imports (after stub is in place)
 # ---------------------------------------------------------------------------
 
-from druglab.db.molecule import MoleculeTable
-from druglab.db.reaction import ReactionTable
+from druglab.db.table.molecule import MoleculeTable
+from druglab.db.table.reaction import ReactionTable
 from druglab.io._record import MoleculeRecord, ReactionRecord
 from druglab.io.utils import get_mols, get_rxns
 
