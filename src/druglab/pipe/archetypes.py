@@ -6,7 +6,7 @@ Standard block types: Featurizers, Filters, Preparations, IO.
 
 import numpy as np
 from typing import Any, List, Optional, Callable
-from druglab.db.base import BaseTable
+from druglab.db.table import BaseTable
 from druglab.pipe.base import ItemBlock, BaseBlock
 
 class BaseFeaturizer(ItemBlock):
@@ -18,7 +18,9 @@ class BaseFeaturizer(ItemBlock):
         
         # Get feature name to save into the table
         feat_name = self.get_feature_name()
-        table.add_feature(feat_name, feature_array)
+        
+        # USE NEW STRICT API: update_feature
+        table.update_feature(feat_name, feature_array)
         
         return table
 
@@ -48,7 +50,7 @@ class BasePreparation(ItemBlock):
     def _apply_results(self, table: BaseTable, results: List[Any]) -> BaseTable:
         # Replaces the objects. (Assumes 1:1 mapping. If enumeration is needed, 
         # this logic would need to expand to adjust metadata/features lengths).
-        table._objects = results 
+        table.objects = results 
         return table
 
 

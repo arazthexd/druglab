@@ -2,7 +2,7 @@ import pytest
 import pandas as pd
 import numpy as np
 
-from druglab.db.molecule import MoleculeTable
+from druglab.db.table.molecule import MoleculeTable
 
 def test_convert_numeric():
     """Verify that BaseTable converts string numerals to proper numerics."""
@@ -15,7 +15,7 @@ def test_convert_numeric():
     })
     
     table = MoleculeTable.from_smiles(smiles, metadata=meta)
-    table.try_numerize_metadata()
+    table.backend.try_numerize_metadata()
     
     # ID should remain object/string
     assert pd.api.types.is_object_dtype(table.metadata["ID"]) or pd.api.types.is_string_dtype(table.metadata["ID"])
@@ -37,8 +37,8 @@ def test_pythonic_mask_filtering():
     assert len(heavy_table) == 2
     assert heavy_table.smiles == ["CCC", "CCCC"]
 
-def test_rename_and_drop_metadata():
-    """Verify column renaming and dropping functionalities."""
+def test_drop_metadata():
+    """Verify column dropping functionalities."""
     table = MoleculeTable.from_smiles(["CCO"])
     table.add_metadata_column("Prop1", [10])
     table.add_metadata_column("Prop2", [20])
@@ -46,29 +46,25 @@ def test_rename_and_drop_metadata():
     
     assert set(table.metadata_columns) == {"smiles", "Prop1", "Prop2", "Prop3"}
     
-    # Test renaming
-    table.rename_metadata_columns({"Prop1": "Score", "Prop2": "Activity"})
-    assert set(table.metadata_columns) == {"smiles", "Score", "Activity", "Prop3"}
-    
     # Test plural dropping
-    table.drop_metadata_columns(["Score", "Prop3"])
-    assert set(table.metadata_columns) == {"smiles", "Activity"}
+    table.drop_metadata_columns(["Prop1", "Prop3"])
+    assert set(table.metadata_columns) == {"smiles", "Prop2"}
 
-def test_update_metadata_without_join_key():
-    """Verify merging external metadata by index strictness."""
+def test_add_metadata_columns_batch():
+    """Verify adding multiple completely new metadata columns."""
     table = MoleculeTable.from_smiles(["C", "CC"])
     
-    # Test exact length match (no 'on' specified)
+    # Test batch adding a dataframe
     external_df = pd.DataFrame({"NewProp": [100, 200]})
-    table.update_metadata(external_df)
+    table.add_metadata_columns(external_df)
     
     assert "NewProp" in table.metadata.columns
     assert list(table.metadata["NewProp"]) == [100, 200]
     
     # Test length mismatch protection
     bad_df = pd.DataFrame({"BadProp": [100]})
-    with pytest.raises(ValueError, match="must match table length"):
-        table.update_metadata(bad_df)
+    with pytest.raises(ValueError):
+        table.add_metadata_columns(bad_df)
 
 def test_update_metadata_with_join_key():
     """Verify merging external metadata using a join key safely preserves table invariants."""
@@ -80,7 +76,7 @@ def test_update_metadata_with_join_key():
         "Score": [30, 10, 20]
     })
     
-    table.update_metadata(external_df, on="ID")
+    table.merge_metadata(external_df, on="ID")
     
     # Verify order is strictly maintained
     assert list(table.metadata["ID"]) == ["A", "B", "C"]
@@ -88,4 +84,4 @@ def test_update_metadata_with_join_key():
     
     # Ensure invalid merge key throws error
     with pytest.raises(ValueError, match="not found in table"):
-        table.update_metadata(external_df, on="MissingKey")
+        table.merge_metadata(external_df, on="MissingKey")

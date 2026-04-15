@@ -5,7 +5,7 @@ Pipeline orchestrator that manages block execution and batch boundaries.
 """
 
 from typing import List, Optional, Iterator, TypeVar
-from druglab.db.base import BaseTable
+from druglab.db.table import BaseTable
 from druglab.pipe.base import BaseBlock
 
 TableT = TypeVar("T", bound="BaseTable")
