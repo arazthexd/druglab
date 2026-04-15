@@ -156,7 +156,10 @@ class BaseMetadataMixin(ABC):
         df : pd.DataFrame
             The new DataFrame that will completely overwrite the existing metadata.
         """
-        assert self._n_metadata_rows() == df.shape[0], "Length of new metadata must match backend."
+        if self._n_metadata_rows() != df.shape[0]:
+            raise ValueError(
+                f"metadata has {df.shape[0]} rows but backend has {self._n_metadata_rows()} objects"
+            )
         self.drop_metadata_columns()
         
         # Convert DataFrame to dictionary of arrays for efficient batch insertion
@@ -237,7 +240,10 @@ class BaseObjectMixin(ABC):
         objs : List[Any]
             The new list of objects that will completely overwrite the existing store.
         """
-        assert self._n_objects() == len(objs), "Length of new objects must match backend."
+        if self._n_objects() != len(objs):
+            raise ValueError(
+                f"new objects has {len(objs)} items but backend has {self._n_objects()}"
+            )
         self.update_objects(objs, **kwargs)
 
     @abstractmethod
@@ -409,7 +415,11 @@ class BaseFeatureMixin(ABC):
             return
         n = self._n_feature_rows()
         for name in self.get_feature_names():
-            assert n == self.get_feature_shape(name)[0]
+            if n != self.get_feature_shape(name)[0]:
+                raise ValueError(
+                    f"Feature '{name}' has {self.get_feature_shape(name)[0]} rows, "
+                    f"expected {n}"
+                )
     
 
 class BaseStorageBackend(
