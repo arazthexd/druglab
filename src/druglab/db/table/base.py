@@ -289,10 +289,7 @@ class BaseTable(ABC, Generic[OT]): # TODO: add BT
         For full documentation, please refer to the active storage backend (e.g., `BaseStorageBackend`).
         """
         meta = self._backend.get_metadata(idx=idx, cols=cols)
-        if meta.empty:
-            return pd.DataFrame(index=idx if idx is not None else range(self.n))
-        else:
-            return meta
+        return meta
 
     def add_metadata_column(
         self,
