@@ -689,11 +689,14 @@ class BaseTable(ABC, Generic[OT]): # TODO: add BT
                         if t.has_feature(key)
                     )
                     shape = (len(t),) + present_arr.shape[1:]
-                    fill = (
-                        np.full(shape, np.nan, dtype=present_arr.dtype)
-                        if handle_missing_features == "nan"
-                        else np.zeros(shape, dtype=present_arr.dtype)
-                    )
+                    if handle_missing_features == "nan":
+                        if not np.issubdtype(present_arr.dtype, np.floating):
+                            raise ValueError(
+                                f"Feature '{key}' has dtype {present_arr.dtype}, which cannot represent NaN."
+                            )
+                        fill = np.full(shape, np.nan, dtype=present_arr.dtype)
+                    else:
+                        fill = np.zeros(shape, dtype=present_arr.dtype)
                     parts.append(fill)
             combined_features[key] = np.concatenate(parts, axis=0)
 
