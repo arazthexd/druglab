@@ -183,11 +183,23 @@ class MemoryMetadataMixin(BaseMetadataMixin):
             The fill value used for rows not included in `idx`.
         """
         resolved = _resolve_idx(idx, len(self._metadata))
+        value = np.asarray(value)
         
         if resolved is None:
             # Positional assignment ignoring Pandas index
-            self._metadata[name] = np.asarray(value)
+            self._metadata[name] = value
         else:
+            if na is None and value.dtype == int:
+                raise ValueError(
+                    "na must be provided when populating integer columns"
+                )
+            if na is None and value.dtype == float:
+                na = np.nan
+            if value.shape[0] != len(resolved):
+                raise ValueError(
+                    f"Expected {len(resolved)} values, got {value.shape[0]}"
+                )
+            
             # Create a full array of `na` and populate the targeted indices
             arr = np.full(len(self._metadata), na, dtype=np.asarray(value).dtype)
             arr[resolved] = value
