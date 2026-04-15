@@ -162,7 +162,7 @@ class BaseTable(ABC, Generic[OT]): # TODO: add BT
         else:
             # Build the default EagerMemoryBackend from raw arguments
             obj_list  = objects  if objects  is not None else []
-            meta_df   = metadata if metadata is not None else pd.DataFrame()
+            meta_df   = metadata if metadata is not None else pd.DataFrame(index=range(len(obj_list)))
             feat_dict = features if features is not None else {}
 
             if not isinstance(meta_df, pd.DataFrame):
