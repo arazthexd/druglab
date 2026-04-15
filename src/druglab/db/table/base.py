@@ -153,7 +153,6 @@ class BaseTable(ABC, Generic[OT]): # TODO: add BT
         features: Optional[Dict[str, np.ndarray]] = None,
         history: Optional[List[HistoryEntry]] = None,
         *, 
-        auto_convert_numeric: bool = False, # TODO: Reimplmenet try_numerize_metadata
         _backend: Optional[BT] = None,
     ) -> None:
         # Allow callers to pass a pre-built backend (used internally by load())
@@ -816,7 +815,6 @@ class BaseTable(ABC, Generic[OT]): # TODO: add BT
             instance,
             _backend=backend,
             history=history,
-            auto_convert_numeric=False,
         )
         return instance
 
@@ -881,7 +879,6 @@ class BaseTable(ABC, Generic[OT]): # TODO: add BT
             instance,
             _backend=backend,
             history=history,
-            auto_convert_numeric=False,
         )
         return instance
 
@@ -921,7 +918,6 @@ class BaseTable(ABC, Generic[OT]): # TODO: add BT
             instance,
             _backend=backend,
             history=history,
-            auto_convert_numeric=False,
         )
         return instance
 
