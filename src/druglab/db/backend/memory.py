@@ -76,6 +76,10 @@ def _resolve_idx(idx: Optional[INDEX_LIKE], n: int) -> Union[np.ndarray, None]:
     if isinstance(idx, int):
         # Negative indexing support
         if idx < 0:
+            if idx + n < 0:
+                raise IndexError(
+                    f"index {idx} is out of bounds for axis 0 with size {n}"
+                )
             idx = n + idx
         return np.array([idx], dtype=np.intp)
     if isinstance(idx, slice):
@@ -89,6 +93,10 @@ def _resolve_idx(idx: Optional[INDEX_LIKE], n: int) -> Union[np.ndarray, None]:
         arr = arr.astype(np.intp)
         # Handle negative indices
         arr = np.where(arr < 0, n + arr, arr)
+        if np.any((arr < 0) | (arr >= n)):
+            raise IndexError(
+                f"index {arr} is out of bounds for axis 0 with size {n}"
+            )
         return arr
     
     raise TypeError(
