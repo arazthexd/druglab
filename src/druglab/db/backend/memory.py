@@ -236,7 +236,7 @@ class MemoryMetadataMixin(BaseMetadataMixin):
             if resolved is None:
                 self._metadata[col] = val
             else:
-                self._metadata.loc[resolved, col] = val
+                self._metadata.iloc[resolved, self._metadata.columns.get_loc(col)] = val
 
     def drop_metadata_columns(self, cols: Optional[Union[str, List[str]]] = None) -> None:
         """
