@@ -48,7 +48,7 @@ class BasePreparation(ItemBlock):
     def _apply_results(self, table: BaseTable, results: List[Any]) -> BaseTable:
         # Replaces the objects. (Assumes 1:1 mapping. If enumeration is needed, 
         # this logic would need to expand to adjust metadata/features lengths).
-        table._objects = results 
+        table.objects = results 
         return table
 
 
