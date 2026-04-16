@@ -265,7 +265,7 @@ class MemoryMetadataMixin(BaseMetadataMixin):
         else:
             if isinstance(cols, str):
                 cols = [cols]
-            self._metadata.drop(columns=cols, inplace=True)
+            self._metadata = self._metadata.drop(columns=cols)
 
     def _n_metadata_rows(self) -> int:
         """
