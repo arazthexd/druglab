@@ -66,6 +66,14 @@ def test_block_cannot_return_none():
     with pytest.raises(ValueError):
         BadBlock().run(make_table(4))
 
+def test_block_must_return_base_table():
+    class BadBlock(BaseBlock):
+        def _process(self, table):
+            return {"not": "a table"}
+
+    with pytest.raises(TypeError):
+        BadBlock().run(make_table(4))
+
 def test_eager_backend_avoids_pickle_dumps(monkeypatch, tmp_path):
     import pickle
     from druglab.db.backend.memory import EagerMemoryBackend

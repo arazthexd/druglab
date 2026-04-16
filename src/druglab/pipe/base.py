@@ -61,6 +61,11 @@ class BaseBlock(ABC):
                 f"{self.__class__.__name__} returned None as its block output. "
                 "This is likely a bug in the block implementation."
             )
+        if not isinstance(out_table, BaseTable):
+            raise TypeError(
+                f"{self.__class__.__name__} must return a subclass of BaseTable, "
+                f"got {type(out_table).__name__}."
+            )
 
         rows_out = len(out_table) if out_table is not None else 0
         if out_table is not None:
