@@ -45,14 +45,19 @@ class PropertyFilter(BaseFilter):
             return False
         from rdkit.Chem import Descriptors
         
-        if self.min_mw is not None and Descriptors.MolWt(item) < self.min_mw:
-            return False
-        if self.max_mw is not None and Descriptors.MolWt(item) > self.max_mw:
-            return False
-        if self.min_logp is not None and Descriptors.MolLogP(item) < self.min_logp:
-            return False
-        if self.max_logp is not None and Descriptors.MolLogP(item) > self.max_logp:
-            return False
+        if self.min_mw is not None or self.max_mw is not None:
+            mw = Descriptors.MolWt(item)
+            if self.min_mw is not None and mw < self.min_mw:
+                return False
+            if self.max_mw is not None and mw > self.max_mw:
+                return False
+                
+        if self.min_logp is not None or self.max_logp is not None:
+            logp = Descriptors.MolLogP(item)
+            if self.min_logp is not None and logp < self.min_logp:
+                return False
+            if self.max_logp is not None and logp > self.max_logp:
+                return False
         
         return True
 
