@@ -271,3 +271,26 @@ def test_save_overwrite(tmp_path):
     table2.save(bundle, overwrite=True)
     loaded = DummyTable.load(bundle)
     assert loaded.n == 2
+
+def test_eager_backend_default_save_streams_without_list_payload(monkeypatch, tmp_path):
+    from druglab.db.backend.memory import EagerMemoryBackend
+
+    dumped_types = []
+    original_dump = pickle.dump
+
+    def spy_dump(obj, fp, *args, **kwargs):
+        dumped_types.append(type(obj))
+        return original_dump(obj, fp, *args, **kwargs)
+
+    monkeypatch.setattr(pickle, "dump", spy_dump)
+
+    backend = EagerMemoryBackend(objects=[{"a": 1}, {"b": 2}])
+    bundle_path = tmp_path / "default_stream_bundle.dlb"
+    bundle_path.mkdir(parents=True, exist_ok=True)
+
+    backend.save(bundle_path)
+    loaded = EagerMemoryBackend.load(bundle_path)
+
+    assert dumped_types[0] is dict
+    assert dumped_types.count(list) == 0
+    assert loaded.get_objects() == [{"a": 1}, {"b": 2}]

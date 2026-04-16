@@ -653,14 +653,20 @@ class EagerMemoryBackend(
         # --- objects ---
         obj_dir = path / "objects"
         obj_dir.mkdir(exist_ok=True)
-        if serializer is not None:
-            with open(obj_dir / "objects.pkl", "wb") as f:
-                pickle.dump({"format": "stream_v1", "count": len(self._objects)}, f)
-                for obj in self._objects:
-                    pickle.dump(serializer(obj), f)
-        else:
-            with open(obj_dir / "objects.pkl", "wb") as f:
-                pickle.dump(self._objects, f)
+
+        # stream_v2: Stream all object payloads (serialized or raw) to prevent list-level pickle OOM spikes.
+        with open(obj_dir / "objects.pkl", "wb") as f:
+            pickle.dump(
+                {
+                    "format": "stream_v2",
+                    "count": len(self._objects),
+                    "serialized": serializer is not None,
+                },
+                f,
+            )
+            for obj in self._objects:
+                payload = serializer(obj) if serializer is not None else obj
+                pickle.dump(payload, f)
 
         # --- features ---
         feat_dir = path / "features"
@@ -711,12 +717,19 @@ class EagerMemoryBackend(
         if obj_path.exists():
             with open(obj_path, "rb") as f:
                 raw_payload = pickle.load(f)
-                if isinstance(raw_payload, dict) and raw_payload.get("format") == "stream_v1":
+                
+                # Support streamed object payloads while keeping backward compatibility with legacy list payloads
+                if isinstance(raw_payload, dict) and raw_payload.get("format") in {"stream_v1", "stream_v2"}:
                     count = int(raw_payload["count"])
                     raw_list = [pickle.load(f) for _ in range(count)]
+                    payload_is_serialized = (
+                        raw_payload.get("format") == "stream_v1"
+                        or bool(raw_payload.get("serialized", False))
+                    )
                 else:
                     raw_list = raw_payload
-                if deserializer is not None:
+                    payload_is_serialized = deserializer is not None
+                if deserializer is not None and payload_is_serialized:
                     objects = [deserializer(r) for r in raw_list]
                 else:
                     objects = raw_list
