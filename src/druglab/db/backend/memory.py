@@ -513,7 +513,13 @@ class MemoryFeatureMixin(BaseFeatureMixin):
                 self._features[name] = full_arr
         else:
             if idx is None:
-                self._features[name] = np.asarray(array)
+                arr = np.asarray(array)
+                if arr.shape[0] != self._features[name].shape[0]:
+                    raise ValueError(
+                        f"Cannot update feature '{name}': array has {arr.shape[0]} rows "
+                        f"but existing feature has {self._features[name].shape[0]} rows."
+                    )
+                self._features[name] = arr
             else:
                 resolved = _resolve_idx(idx, self._features[name].shape[0])
                 self._features[name][resolved] = array
