@@ -55,6 +55,9 @@ def test_dict_cache_memory_bound():
     cache.clear()
     assert len(cache._store) == 0
 
+    with pytest.raises(ValueError):
+        DictCache(max_size=0)
+
 def test_block_cannot_return_none():
     class BadBlock(BaseBlock):
         def _process(self, table):

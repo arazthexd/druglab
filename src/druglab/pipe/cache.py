@@ -6,6 +6,7 @@ Caching interfaces for pipeline blocks.
 
 from abc import ABC, abstractmethod
 from typing import Any
+from collections import OrderedDict
 
 
 class BaseCache(ABC):
@@ -26,26 +27,25 @@ class DictCache(BaseCache):
     """A simple in-memory dictionary cache."""
 
     def __init__(self, max_size: int = 1000):
-        self._store = {}
-        self._order = []
+        if max_size < 1:
+            raise ValueError("max_size must be at least 1.")
+        self._store = OrderedDict()
         self.max_size = max_size
 
     def set(self, key, value):
-        if key not in self._store:
-            self._order.append(key)
+        if key in self._store:
+            self._store.move_to_end(key)
 
         self._store[key] = value
 
-        if len(self._order) > self.max_size:
-            oldest = self._order.pop(0)
-            del self._store[oldest]
+        if len(self._store) > self.max_size:
+            self._store.popitem(last=False)
 
     def get(self, key: str) -> Any:
         return self._store.get(key)
     
     def clear(self) -> None:
         self._store.clear()
-        self._order.clear()
 
 # Global memory cache (can be overridden by specific blocks)
 default_cache = DictCache()
