@@ -353,3 +353,65 @@ class TestMemoryBackendResolveIDXBoundsChecking:
         )
         with pytest.raises(IndexError):
             backend.get_feature("fp", idx=[0, 5])
+
+class TestMetadataRowCount:
+    """
+    REGRESSION: Before the fix, _n_metadata_rows() returned len(self) whenever
+    the DataFrame was "empty" (no columns).  This masked real dimension
+    mismatches: an empty-column DataFrame with 0 rows after a bad reset would
+    report the wrong count and let validate() pass when it should fail.
+    """
+ 
+    def test_drop_all_columns_preserves_row_count(self):
+        """
+        After drop_metadata_columns(None), the backend must still report the
+        correct row count via _n_metadata_rows().
+        """
+        backend = EagerMemoryBackend(
+            objects=[1, 2, 3],
+            metadata=pd.DataFrame({"a": [10, 20, 30]}),
+        )
+        backend.drop_metadata_columns(None)
+ 
+        # _n_metadata_rows must still return 3 (index is preserved)
+        assert backend._n_metadata_rows() == 3, (
+            "SAFETY-03 regression: dropping all columns must not lose the "
+            "row count."
+        )
+ 
+    def test_validate_catches_zero_row_metadata_mismatch(self):
+        """
+        A backend with 4 objects but a 0-row metadata DataFrame (improperly
+        constructed) must fail validate().
+ 
+        REGRESSION: old _n_metadata_rows returned len(self)=4 for any empty
+        DataFrame, hiding this mismatch.
+        """
+        backend = EagerMemoryBackend(objects=[1, 2, 3, 4])
+        # Force a corrupt state: metadata with 0 rows
+        backend._metadata = pd.DataFrame({"x": []})
+ 
+        with pytest.raises(ValueError, match="[Dd]imension|[Mm]ismatch|rows"):
+            backend.validate()
+ 
+    def test_normal_metadata_row_count(self):
+        backend = EagerMemoryBackend(
+            objects=[1, 2],
+            metadata=pd.DataFrame({"v": [10, 20]}),
+        )
+        assert backend._n_metadata_rows() == 2
+ 
+    def test_empty_backend_row_count_is_zero(self):
+        backend = EagerMemoryBackend()
+        assert backend._n_metadata_rows() == 0
+ 
+    def test_set_metadata_correct_length_succeeds(self):
+        table = make_table(3)
+        new_meta = pd.DataFrame({"x": [1, 2, 3]})
+        table.metadata = new_meta  # must not raise
+ 
+    def test_set_metadata_wrong_length_raises(self):
+        table = make_table(4)
+        bad_meta = pd.DataFrame({"x": [1, 2, 3]})
+        with pytest.raises(ValueError):
+            table.metadata = bad_meta

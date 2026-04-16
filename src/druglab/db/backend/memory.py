@@ -278,18 +278,24 @@ class MemoryMetadataMixin(BaseMetadataMixin):
         """
         Get the total number of rows in the metadata DataFrame.
 
-        If case metadata is empty (no access to row number), we return `len(self)`, assuming
-        that the number of rows is equal to the number of objects or any number that the
-        final storage backend will provide (refer to the backend in use for details).
-
         Returns
         -------
         int
-            Length of the internal metadata DataFrame.
+            Length of the internal metadata DataFrame. If the DataFrame is empty
+            (0 rows, 0 columns), this function returns the length of the object 
+            store (i.e., the number of objects stored in the backend).
+
+        Notes
+        -----
+        The implementation first checks if the DataFrame is empty (0 rows, 0 columns).
+        If it is, the function returns the length of the object store. Otherwise, it returns
+        the length of the DataFrame.
         """
-        if self._metadata.empty:
+        n_rows, n_columns = self._metadata.shape
+        if n_rows == 0 and n_columns == 0:
+            # Genuinely empty backend
             return len(self)
-        return len(self._metadata)
+        return n_rows
 
     def _validate_metadata(self) -> None:
         """
