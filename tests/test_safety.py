@@ -296,7 +296,7 @@ def test_eager_backend_default_save_streams_without_list_payload(monkeypatch, tm
     assert dumped_types.count(list) == 0
     assert loaded.get_objects() == [{"a": 1}, {"b": 2}]
 
-class TestSafety02_BoundsChecking:
+class TestMemoryBackendResolveIDXBoundsChecking:
     """
     REGRESSION: Before the fix, _resolve_idx accepted out-of-bounds positive
     integers silently and the error only surfaced later as a confusing
