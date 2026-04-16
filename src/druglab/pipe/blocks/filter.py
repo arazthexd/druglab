@@ -14,6 +14,11 @@ class MWFilter(BaseFilter):
     def __init__(self, max_mw: float = 500.0, **kwargs):
         super().__init__(**kwargs)
         self.max_mw = max_mw
+
+    def get_config(self):
+        config = super().get_config()
+        config["max_mw"] = self.max_mw
+        return config
         
     def _process_item(self, item):
         from rdkit.Chem import Descriptors

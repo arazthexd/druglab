@@ -98,6 +98,11 @@ class TestPreparations:
             assert mol.GetNumConformers() == 3
 
 class TestFilters:
+    def test_mw_filter_config_contains_threshold(self):
+        block = MWFilter(max_mw=320.0)
+        cfg = block.get_config()
+        assert cfg["max_mw"] == 320.0
+        
     def test_property_filter(self, sample_table):
         block = PropertyFilter(max_mw=150.0)
         out = block.run(sample_table)
