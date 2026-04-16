@@ -617,7 +617,7 @@ class EagerMemoryBackend(
             return EagerMemoryBackend()
 
         new_objects = [copy.deepcopy(self._objects[i]) for i in idx_arr]
-        new_metadata = self.get_metadata().iloc[idx_arr].reset_index(drop=True).copy()
+        new_metadata = self._metadata.iloc[idx_arr].reset_index(drop=True).copy()
         new_features = {k: v[idx_arr].copy() for k, v in self._features.items()}
 
         return EagerMemoryBackend(
