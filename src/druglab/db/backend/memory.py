@@ -651,7 +651,9 @@ class EagerMemoryBackend(
             serialised = [serializer(obj) for obj in self._objects]
         else:
             serialised = self._objects
-        (obj_dir / "objects.pkl").write_bytes(pickle.dumps(serialised))
+            
+        with open(obj_dir / "objects.pkl", "wb") as f:
+            pickle.dump(serialised, f)
 
         # --- features ---
         feat_dir = path / "features"
@@ -700,7 +702,8 @@ class EagerMemoryBackend(
         # --- objects ---
         obj_path = path / "objects" / "objects.pkl"
         if obj_path.exists():
-            raw_list = pickle.loads(obj_path.read_bytes()) 
+            with open(obj_path, "rb") as f:
+                raw_list = pickle.load(f)
             if deserializer is not None:
                 objects = [deserializer(r) for r in raw_list]
             else:
