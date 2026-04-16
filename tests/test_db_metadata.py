@@ -85,3 +85,9 @@ def test_update_metadata_with_join_key():
     # Ensure invalid merge key throws error
     with pytest.raises(ValueError, match="not found in table"):
         table.merge_metadata(external_df, on="MissingKey")
+
+def test_add_metadata_column_int_partial_requires_na():
+    """Integer partial column insertion should require an explicit NA fill value."""
+    table = MoleculeTable.from_smiles(["C", "CC", "CCC"])
+    with pytest.raises(ValueError, match="na must be provided"):
+        table.add_metadata_column("cluster_id", [1, 2], idx=[0, 2], na=None)
