@@ -87,7 +87,7 @@ def _resolve_idx(idx: Optional[INDEX_LIKE], n: int) -> Union[np.ndarray, None]:
     if isinstance(idx, (list, np.ndarray)):
         arr = np.asarray(idx)
         # Handle boolean masks
-        if arr.dtype == bool:
+        if np.issubdtype(arr.dtype, np.bool_):
             return np.where(arr)[0].astype(np.intp)
         
         arr = arr.astype(np.intp)
@@ -189,11 +189,11 @@ class MemoryMetadataMixin(BaseMetadataMixin):
             # Positional assignment ignoring Pandas index
             self._metadata[name] = value
         else:
-            if na is None and value.dtype == int:
+            if na is None and np.issubdtype(value.dtype, np.integer):
                 raise ValueError(
                     "na must be provided when populating integer columns"
                 )
-            if na is None and value.dtype == float:
+            if na is None and np.issubdtype(value.dtype, np.floating):
                 na = np.nan
             if value.shape[0] != len(resolved):
                 raise ValueError(
