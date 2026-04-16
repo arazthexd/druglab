@@ -38,7 +38,7 @@ from abc import ABC, abstractmethod
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Generic, List, Optional, Sequence, Tuple, TypeVar, Union
+from typing import Any, Callable, Dict, Generic, List, Optional, Sequence, Tuple, TypeVar, Union
 
 import numpy as np
 import pandas as pd
@@ -194,7 +194,11 @@ class BaseTable(ABC, Generic[OT]): # TODO: add BT
     
     @objects.setter
     def objects(self, objs: List[OT]):
-        self._backend.set_objects(objs)
+        self._mutate_with_validation(
+            domain="object",
+            method="objects.setter",
+            mutate=lambda: self._backend.set_objects(objs),
+        )
 
     @property
     def metadata(self) -> pd.DataFrame:
@@ -203,7 +207,11 @@ class BaseTable(ABC, Generic[OT]): # TODO: add BT
     
     @metadata.setter
     def metadata(self, meta: pd.DataFrame):
-        return self._backend.set_metadata(meta)
+        self._mutate_with_validation(
+            domain="metadata",
+            method="metadata.setter",
+            mutate=lambda: self._backend.set_metadata(meta),
+        )
 
     @property
     def metadata_columns(self) -> List[str]:
@@ -218,9 +226,16 @@ class BaseTable(ABC, Generic[OT]): # TODO: add BT
     @features.setter
     def features(self, feats: Dict[str, np.ndarray]):
         # Clear existing features, then batch update new ones to simulate a total reset
-        for key in self._backend.get_feature_names():
-            self._backend.drop_feature(key)
-        self._backend.update_features(feats)
+        def _mutate() -> None:
+            for key in self._backend.get_feature_names():
+                self._backend.drop_feature(key)
+            self._backend.update_features(feats)
+
+        self._mutate_with_validation(
+            domain="feature",
+            method="features.setter",
+            mutate=_mutate,
+        )
     
     @property
     def feature_names(self) -> List[str]:
@@ -259,6 +274,44 @@ class BaseTable(ABC, Generic[OT]): # TODO: add BT
     def _validate(self) -> None:
         # Backend natively orchestrates all dimensional checks now!
         self._backend.validate()
+
+    def _run_post_mutation_validation(
+        self,
+        *,
+        domain: str,
+        method: str,
+    ) -> None:
+        """
+        Run strict backend-level validation after a domain mutation.
+
+        The error message always includes the domain/method boundary that
+        introduced the mismatch for easier debugging.
+        """
+        try:
+            self._backend.validate()
+        except Exception as exc:
+            raise ValueError(
+                f"Post-mutation validation failed in domain='{domain}', method='{method}': {exc}"
+            ) from exc
+
+    def _mutate_with_validation(
+        self,
+        *,
+        domain: str,
+        method: str,
+        mutate: Callable[[], None],
+    ) -> None:
+        """
+        Execute a mutating backend operation and enforce final validation.
+        """
+        try:
+            mutate()
+        except Exception as exc:
+            raise type(exc)(
+                f"Mutation failed in domain='{domain}', method='{method}': {exc}"
+            ) from exc
+
+        self._run_post_mutation_validation(domain=domain, method=method)
 
     # ------------------------------------------------------------------
     # Abstract interface (subclasses implement object serialisation)
@@ -304,7 +357,11 @@ class BaseTable(ABC, Generic[OT]): # TODO: add BT
         Add a new metadata column, optionally populating only specific rows.
         For full documentation, please refer to the active storage backend.
         """
-        self._backend.add_metadata_column(name=name, value=value, idx=idx, na=na, **kwargs)
+        self._mutate_with_validation(
+            domain="metadata",
+            method="add_metadata_column",
+            mutate=lambda: self._backend.add_metadata_column(name=name, value=value, idx=idx, na=na, **kwargs),
+        )
 
     def add_metadata_columns(
         self,
@@ -317,7 +374,11 @@ class BaseTable(ABC, Generic[OT]): # TODO: add BT
         Add multiple new metadata columns simultaneously.
         For full documentation, please refer to the active storage backend.
         """
-        self._backend.add_metadata_columns(columns=columns, idx=idx, na=na, **kwargs)
+        self._mutate_with_validation(
+            domain="metadata",
+            method="add_metadata_columns",
+            mutate=lambda: self._backend.add_metadata_columns(columns=columns, idx=idx, na=na, **kwargs),
+        )
 
     def update_metadata(
         self,
@@ -329,7 +390,11 @@ class BaseTable(ABC, Generic[OT]): # TODO: add BT
         Perform a partial, in-place update of *existing* metadata columns.
         For full documentation, please refer to the active storage backend.
         """
-        self._backend.update_metadata(values=values, idx=idx, **kwargs)
+        self._mutate_with_validation(
+            domain="metadata",
+            method="update_metadata",
+            mutate=lambda: self._backend.update_metadata(values=values, idx=idx, **kwargs),
+        )
 
     def drop_metadata_columns(
         self,
@@ -339,7 +404,11 @@ class BaseTable(ABC, Generic[OT]): # TODO: add BT
         Remove specific metadata columns, or all columns if None.
         For full documentation, please refer to the active storage backend.
         """
-        self._backend.drop_metadata_columns(cols=cols)
+        self._mutate_with_validation(
+            domain="metadata",
+            method="drop_metadata_columns",
+            mutate=lambda: self._backend.drop_metadata_columns(cols=cols),
+        )
 
     def get_feature(
         self,
@@ -382,7 +451,11 @@ class BaseTable(ABC, Generic[OT]): # TODO: add BT
                 f"and contain no spaces or special characters (e.g., use 'ecfp_4' instead of 'ecfp/4')."
             )
             
-        self._backend.update_feature(name=name, array=array, idx=idx, na=na, **kwargs)
+        self._mutate_with_validation(
+            domain="feature",
+            method="update_feature",
+            mutate=lambda: self._backend.update_feature(name=name, array=array, idx=idx, na=na, **kwargs),
+        )
 
     def update_features(
         self,
@@ -395,14 +468,22 @@ class BaseTable(ABC, Generic[OT]): # TODO: add BT
         Add or perform a partial, in-place update of multiple feature arrays.
         For full documentation, please refer to the active storage backend.
         """
-        self._backend.update_features(arrays=arrays, idx=idx, na=na, **kwargs)
+        self._mutate_with_validation(
+            domain="feature",
+            method="update_features",
+            mutate=lambda: self._backend.update_features(arrays=arrays, idx=idx, na=na, **kwargs),
+        )
 
     def drop_feature(self, name: str) -> None:
         """
         Remove a feature array from the table.
         For full documentation, please refer to the active storage backend.
         """
-        self._backend.drop_feature(name=name)
+        self._mutate_with_validation(
+            domain="feature",
+            method="drop_feature",
+            mutate=lambda: self._backend.drop_feature(name=name),
+        )
 
     def get_feature_shape(self, name: str) -> Tuple:
         """
@@ -435,7 +516,11 @@ class BaseTable(ABC, Generic[OT]): # TODO: add BT
         Perform a partial or full update of stored objects.
         For full documentation, please refer to the active storage backend.
         """
-        self._backend.update_objects(objs=objs, idx=idx, **kwargs)
+        self._mutate_with_validation(
+            domain="object",
+            method="update_objects",
+            mutate=lambda: self._backend.update_objects(objs=objs, idx=idx, **kwargs),
+        )
 
     # ------------------------------------------------------------------
     # Backend API Helpers

@@ -785,6 +785,61 @@ class TestMutationAPI:
         assert t.has_feature("fp")
         assert not t.has_feature("nonexistent")
 
+
+class TestMutationValidationBoundaries:
+    """Regression tests for table-level post-mutation validation hooks."""
+
+    def test_metadata_mutation_detects_backend_corruption(self):
+        """
+        If a backend mutator leaves cross-domain dimensions inconsistent,
+        the table API must fail with domain/method context.
+
+        Without the table-level validation hook, this mutation would have
+        returned successfully and left the table in a broken state.
+        """
+        t = make_table(3)
+        original_update_metadata = t._backend.update_metadata
+
+        def corrupting_update_metadata(*args, **kwargs):
+            original_update_metadata(*args, **kwargs)
+            # Introduce a mismatch after the metadata update.
+            t._backend._objects.append({"id": 999, "val": -1})
+
+        t._backend.update_metadata = corrupting_update_metadata
+
+        with pytest.raises(ValueError, match=r"domain='metadata'.*method='update_metadata'"):
+            t.update_metadata({"mw": [10.0, 11.0, 12.0]})
+
+    def test_feature_mutation_validation_error_is_contextualized(self):
+        """Feature boundary validation failures should identify the source method."""
+        t = make_table(3)
+        original_validate = t._backend.validate
+        call_count = {"n": 0}
+
+        def flaky_validate():
+            call_count["n"] += 1
+            # Fail only on the post-mutation validation call.
+            if call_count["n"] >= 1:
+                raise ValueError("feature rows do not match object rows")
+            original_validate()
+
+        t._backend.validate = flaky_validate
+
+        with pytest.raises(ValueError, match=r"domain='feature'.*method='update_feature'"):
+            t.update_feature("ecfp4", np.zeros((3, 16), dtype=np.float32))
+
+    def test_object_mutation_error_includes_domain_and_method(self):
+        """Backend mutation errors should be re-raised with boundary context."""
+        t = make_table(3)
+
+        def exploding_update_objects(*args, **kwargs):
+            raise RuntimeError("synthetic object write failure")
+
+        t._backend.update_objects = exploding_update_objects
+
+        with pytest.raises(RuntimeError, match=r"domain='object'.*method='update_objects'"):
+            t.update_objects([{"id": i, "val": i} for i in range(3)])
+
 # ===========================================================================
 # Section 11: Subsetting (subset / __getitem__ as row selection)
 # ===========================================================================
