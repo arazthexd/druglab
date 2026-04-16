@@ -8,6 +8,7 @@ import pickle
 import pytest
 
 from druglab.db import BaseTable
+from druglab.db.backend.memory import _resolve_idx, EagerMemoryBackend
 from druglab.pipe import DictCache, BaseBlock, Pipeline
 
 # ---------------------------------------------------------------------------
@@ -294,3 +295,61 @@ def test_eager_backend_default_save_streams_without_list_payload(monkeypatch, tm
     assert dumped_types[0] is dict
     assert dumped_types.count(list) == 0
     assert loaded.get_objects() == [{"a": 1}, {"b": 2}]
+
+class TestSafety02_BoundsChecking:
+    """
+    REGRESSION: Before the fix, _resolve_idx accepted out-of-bounds positive
+    integers silently and the error only surfaced later as a confusing
+    downstream exception (e.g. IndexError in NumPy with no context about
+    what was being indexed).
+    """
+ 
+    def test_resolve_idx_positive_oob_raises_index_error(self):
+        """
+        REGRESSION: _resolve_idx(5, n=4) must raise IndexError immediately.
+        Old code let 5 pass through; the error only appeared at array index time.
+        """
+        with pytest.raises(IndexError, match="out of bounds"):
+            _resolve_idx(5, n=4)
+ 
+    def test_resolve_idx_negative_oob_raises_index_error(self):
+        with pytest.raises(IndexError):
+            _resolve_idx(-10, n=4)
+ 
+    def test_resolve_idx_list_with_oob_raises(self):
+        with pytest.raises(IndexError):
+            _resolve_idx([0, 5], n=4)
+ 
+    def test_resolve_idx_valid_positive(self):
+        result = _resolve_idx(3, n=4)
+        assert result.tolist() == [3]
+ 
+    def test_resolve_idx_valid_negative(self):
+        result = _resolve_idx(-1, n=4)
+        assert result.tolist() == [3]
+ 
+    def test_resolve_idx_boundary_last_element(self):
+        """Index n-1 is valid; index n is not."""
+        result = _resolve_idx(3, n=4)
+        assert result.tolist() == [3]
+        with pytest.raises(IndexError):
+            _resolve_idx(4, n=4)
+ 
+    def test_get_objects_oob_raises(self):
+        """EagerMemoryBackend.get_objects with oob int must raise cleanly."""
+        backend = EagerMemoryBackend(objects=[1, 2, 3])
+        with pytest.raises(IndexError):
+            backend.get_objects(10)
+ 
+    def test_get_objects_negative_oob_raises(self):
+        backend = EagerMemoryBackend(objects=[1, 2, 3])
+        with pytest.raises(IndexError):
+            backend.get_objects(-10)
+ 
+    def test_get_feature_oob_list_raises(self):
+        backend = EagerMemoryBackend(
+            objects=[1, 2],
+            features={"fp": np.zeros((2, 4))}
+        )
+        with pytest.raises(IndexError):
+            backend.get_feature("fp", idx=[0, 5])

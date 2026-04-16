@@ -81,6 +81,10 @@ def _resolve_idx(idx: Optional[INDEX_LIKE], n: int) -> Union[np.ndarray, None]:
                     f"index {idx} is out of bounds for axis 0 with size {n}"
                 )
             idx = n + idx
+        if idx >= n:
+            raise IndexError(
+                f"index {idx} is out of bounds for axis 0 with size {n}"
+            )
         return np.array([idx], dtype=np.intp)
     if isinstance(idx, slice):
         return np.arange(*idx.indices(n), dtype=np.intp)
@@ -356,6 +360,13 @@ class MemoryObjectMixin(BaseObjectMixin):
             return self._objects.copy()
         
         if isinstance(idx, int):
+            n = len(self._objects)
+            # Validate bounds before indexing to give a clean IndexError 
+            # instead of a confusing list index error.
+            if idx >= n or idx < -n:
+                raise IndexError(
+                    f"index {idx} is out of bounds for axis 0 with size {n}"
+                )
             n = len(self._objects)
             index = n + idx if idx < 0 else idx
             return self._objects[index]
