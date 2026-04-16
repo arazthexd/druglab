@@ -937,6 +937,28 @@ class TestConcat:
         c = DummyTable.concat([a, b])
         assert isinstance(c._backend, EagerMemoryBackend)
 
+    def test_concat_missing_feature_with_interleaved_sources(self):
+        a = DummyTable(
+            objects=[{"id": 0}],
+            metadata=pd.DataFrame({"name": ["a"], "mw": [1.0]}),
+            features={},
+        )
+        b = DummyTable(
+            objects=[{"id": 1}],
+            metadata=pd.DataFrame({"name": ["b"], "mw": [2.0]}),
+            features={"fp": np.ones((1, 4), dtype=np.float32)},
+        )
+        c = DummyTable(
+            objects=[{"id": 2}],
+            metadata=pd.DataFrame({"name": ["c"], "mw": [3.0]}),
+            features={},
+        )
+        out = DummyTable.concat([a, b, c], handle_missing_features="zeros")
+        assert out.features["fp"].shape == (3, 4)
+        assert np.all(out.features["fp"][0] == 0.0)
+        assert np.all(out.features["fp"][1] == 1.0)
+        assert np.all(out.features["fp"][2] == 0.0)
+
 
 # ===========================================================================
 # Section 14: History

@@ -676,9 +676,17 @@ class BaseTable(ABC, Generic[OT]): # TODO: add BT
         for t in tables:
             all_keys.update(t._backend.get_feature_names())
 
+        key_templates: Dict[str, np.ndarray] = {}
+        for key in all_keys:
+            for table in tables:
+                if table.has_feature(key):
+                    key_templates[key] = table._backend.get_feature(key)
+                    break
+
         combined_features: Dict[str, np.ndarray] = {}
         for key in all_keys:
             parts = []
+            present_arr = key_templates[key]
             for t in tables:
                 if t.has_feature(key):
                     parts.append(t._backend.get_feature(key))
@@ -687,12 +695,6 @@ class BaseTable(ABC, Generic[OT]): # TODO: add BT
                         raise ValueError(
                             f"Feature '{key}' missing in at least one table."
                         )
-                    # Find shape from the first table that has this feature
-                    present_arr = next(
-                        t._backend.get_feature(key)
-                        for t in tables
-                        if t.has_feature(key)
-                    )
                     shape = (len(t),) + present_arr.shape[1:]
                     if handle_missing_features == "nan":
                         if not np.issubdtype(present_arr.dtype, np.floating):
