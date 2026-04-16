@@ -456,7 +456,7 @@ class MemoryFeatureMixin(BaseFeatureMixin):
         resolved = _resolve_idx(idx, arr.shape[0])
         
         if resolved is None:
-            return arr
+            return arr.copy()
             
         if len(resolved) == 0:
             return arr[0:0] 
@@ -496,7 +496,7 @@ class MemoryFeatureMixin(BaseFeatureMixin):
                         f"Length of array's first dimension ({array.shape[0]}) must "
                         f"match number of feature rows ({self._n_feature_rows()})."
                     )
-                self._features[name] = np.asarray(array)
+                self._features[name] = np.asarray(array).copy()
             else:
                 resolved = _resolve_idx(idx, self._n_feature_rows() or len(array))
                 n_rows = self._n_feature_rows() or (resolved.max() + 1 if len(resolved) > 0 else 0)
@@ -519,7 +519,7 @@ class MemoryFeatureMixin(BaseFeatureMixin):
                         f"Cannot update feature '{name}': array has {arr.shape[0]} rows "
                         f"but existing feature has {self._features[name].shape[0]} rows."
                     )
-                self._features[name] = arr
+                self._features[name] = arr.copy()
             else:
                 resolved = _resolve_idx(idx, self._features[name].shape[0])
                 self._features[name][resolved] = array
