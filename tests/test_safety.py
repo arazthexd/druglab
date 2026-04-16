@@ -87,6 +87,30 @@ def test_eager_backend_avoids_pickle_dumps(monkeypatch, tmp_path):
     
     assert loaded.get_objects() == [1, 2, 3]
 
+def test_eager_backend_serializer_mode_streams_without_list_payload(monkeypatch, tmp_path):
+    from druglab.db.backend.memory import EagerMemoryBackend
+
+    dumped_types = []
+    original_dump = pickle.dump
+
+    def spy_dump(obj, fp, *args, **kwargs):
+        dumped_types.append(type(obj))
+        return original_dump(obj, fp, *args, **kwargs)
+
+    monkeypatch.setattr(pickle, "dump", spy_dump)
+
+    backend = EagerMemoryBackend(objects=[1, 2, 3, 4])
+    bundle_path = tmp_path / "stream_bundle.dlb"
+    bundle_path.mkdir(parents=True, exist_ok=True)
+
+    backend.save(bundle_path, serializer=lambda x: str(x).encode())
+    loaded = EagerMemoryBackend.load(bundle_path, deserializer=lambda b: int(b.decode()))
+
+    # The streaming format writes a header dict + one serialized item per object.
+    assert dumped_types[0] is dict
+    assert dumped_types.count(list) == 0
+    assert loaded.get_objects() == [1, 2, 3, 4]
+
 def test_subset_with_bool_mask_wrong_length():
     """subset() should raise, not silently truncate, on wrong-length bool mask."""
     table = make_table(4)

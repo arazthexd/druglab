@@ -654,12 +654,13 @@ class EagerMemoryBackend(
         obj_dir = path / "objects"
         obj_dir.mkdir(exist_ok=True)
         if serializer is not None:
-            serialised = [serializer(obj) for obj in self._objects]
+            with open(obj_dir / "objects.pkl", "wb") as f:
+                pickle.dump({"format": "stream_v1", "count": len(self._objects)}, f)
+                for obj in self._objects:
+                    pickle.dump(serializer(obj), f)
         else:
-            serialised = self._objects
-            
-        with open(obj_dir / "objects.pkl", "wb") as f:
-            pickle.dump(serialised, f)
+            with open(obj_dir / "objects.pkl", "wb") as f:
+                pickle.dump(self._objects, f)
 
         # --- features ---
         feat_dir = path / "features"
@@ -709,11 +710,16 @@ class EagerMemoryBackend(
         obj_path = path / "objects" / "objects.pkl"
         if obj_path.exists():
             with open(obj_path, "rb") as f:
-                raw_list = pickle.load(f)
-            if deserializer is not None:
-                objects = [deserializer(r) for r in raw_list]
-            else:
-                objects = raw_list
+                raw_payload = pickle.load(f)
+                if isinstance(raw_payload, dict) and raw_payload.get("format") == "stream_v1":
+                    count = int(raw_payload["count"])
+                    raw_list = [pickle.load(f) for _ in range(count)]
+                else:
+                    raw_list = raw_payload
+                if deserializer is not None:
+                    objects = [deserializer(r) for r in raw_list]
+                else:
+                    objects = raw_list
         else:
             objects = []
 
