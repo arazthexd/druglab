@@ -88,6 +88,9 @@ def _resolve_idx(idx: Optional[INDEX_LIKE], n: int) -> Union[np.ndarray, None]:
         arr = np.asarray(idx)
         # Handle boolean masks
         if np.issubdtype(arr.dtype, np.bool_):
+            if len(arr) != n:
+                # Prevent silent boolean mask truncation by enforcing exact dimension matches
+                raise IndexError(f"boolean index length {len(arr)} does not match array size {n}")
             return np.where(arr)[0].astype(np.intp)
         
         arr = arr.astype(np.intp)
