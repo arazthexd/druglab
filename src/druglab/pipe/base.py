@@ -56,6 +56,11 @@ class BaseBlock(ABC):
 
         # Execute the core logic defined by subclasses
         out_table = self._process(t)
+        if out_table is None:
+            raise ValueError(
+                f"{self.__class__.__name__} returned None as its block output. "
+                "This is likely a bug in the block implementation."
+            )
 
         rows_out = len(out_table) if out_table is not None else 0
         if out_table is not None:
