@@ -134,6 +134,7 @@ class SDFFormatReader(BaseFormatReader):
     def iter_records(self, path: str) -> Iterator[MoleculeRecord]:
         try:
             from rdkit.Chem import ForwardSDMolSupplier  # type: ignore
+            from rdkit import Chem
         except ImportError as e:
             raise DrugLabIOError(
                 "RDKit is required for SDF reading. Install it with: "
@@ -152,10 +153,9 @@ class SDFFormatReader(BaseFormatReader):
                     if rec is not None:
                         yield rec
                     continue
-
-                props: Dict[str, object] = {
-                    k: mol.GetPropsAsDict()[k] for k in mol.GetPropsAsDict()
-                }
+                
+                mol: Chem.Mol
+                props: Dict[str, object] = mol.GetPropsAsDict()
                 yield MoleculeRecord(
                     mol=mol,
                     name=mol.GetProp("_Name") if mol.HasProp("_Name") else "",
