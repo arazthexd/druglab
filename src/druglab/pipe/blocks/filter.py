@@ -159,16 +159,16 @@ class UniqueFilter(BaseFilter):
     Stateful filter that drops duplicate molecules across the pipeline run.
  
     Uniqueness is determined by canonical SMILES (default) or InChIKey.
-    The internal seen-set is shared across all calls to ``run()`` on the
-    **same block instance**, so duplicates are detected even when a pipeline
-    runs in batch mode.  Call :meth:`reset` between independent runs if you
-    want a clean slate.
-
+ 
+    State management
+    ----------------
+    The internal ``_seen`` set accumulates entries across every call to
+    ``run()`` on the **same block instance**.  This is intentional for
+    batch-mode pipelines where duplicates must be detected across chunk
+    boundaries.
+ 
     NOTE: this block is stateful and the state is shared across all calls to
-    ``run()`` on the **same block instance**. As a result, multiprocessing
-    is not supported.
-
-    NOTE: Cache is not supported for this block for the same reasosn above.
+    ``run()`` on the **same block instance**. Multiprocessing is not supported.
  
     Parameters
     ----------
@@ -176,19 +176,24 @@ class UniqueFilter(BaseFilter):
         Hashing strategy.  ``"smiles"`` (default) uses RDKit canonical SMILES
         which is fast.  ``"inchikey"`` is more robust to different input
         representations at the cost of extra computation.
+    auto_reset : bool
+        If True (default), the seen-set is cleared at the start of each
+        ``run()`` call.  Set to False when this block is used inside a batch
+        pipeline that calls ``run()`` per chunk and needs cross-chunk dedup.
     """
  
-    def __init__(self, key: str = "smiles", **kwargs):
+    def __init__(self, key: str = "smiles", auto_reset: bool = True, **kwargs):
         super().__init__(**kwargs)
         if key not in ("smiles", "inchikey"):
             raise ValueError("key must be 'smiles' or 'inchikey'")
         self.key = key
+        # New parameter controlling reset-on-run behaviour.
+        self.auto_reset = auto_reset
         self._seen: Set[str] = set()
 
         if self.n_workers > 1:
             print("WARNING: UniqueFilter does not support multiprocessing. Setting n_workers=1.")
             self.n_workers = 1
-
         if self.use_cache:
             print("WARNING: UniqueFilter does not support cache. Setting use_cache=False.")
             self.use_cache = False
@@ -196,11 +201,20 @@ class UniqueFilter(BaseFilter):
     def get_config(self):
         config = super().get_config()
         config["key"] = self.key
+        # Expose auto_reset in config for history/audit.
+        config["auto_reset"] = self.auto_reset
         return config
  
     def reset(self) -> None:
         """Clear the internal seen-set so the filter starts fresh."""
         self._seen.clear()
+ 
+    def run(self, table):
+        # Honour auto_reset before delegating to the parent run() 
+        # which eventually calls _process() and then _process_item().
+        if self.auto_reset:
+            self.reset()
+        return super().run(table)
  
     def _get_key(self, item) -> Optional[str]:
         try:

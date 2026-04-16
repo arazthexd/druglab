@@ -200,6 +200,54 @@ class TestFilters:
         out = block.run(mols)
         assert out.n == 1
 
+    def test_unique_filter_auto_reset_second_run_keeps_all(self):
+        """
+        REGRESSION: with auto_reset=True (the default), running the same block
+        twice on identical data should produce the full deduplicated table each
+        time — NOT an empty table on the second call.
+        """
+        block = UniqueFilter(key="smiles", auto_reset=True)
+        smis = [
+            "c1ccccc1",    # benzene
+            "C1=CC=CC=C1", # same molecule, different notation
+        ]
+        t1 = MoleculeTable.from_smiles(smis)
+        t2 = MoleculeTable.from_smiles(smis)
+ 
+        out1 = block.run(t1)
+        out2 = block.run(t2)
+ 
+        # REGRESSION: old code would make out2 empty because all keys were
+        # already in _seen from out1.
+        assert out1.n == 4, f"First run: expected 4, got {out1.n}"
+        assert out2.n == 4, (
+            f"Second run returned {out2.n} items "
+            "instead of 4.  State from the first run bled into the second."
+        )
+ 
+    def test_unique_filter_no_reset_second_run_keeps_none(self):
+        """
+        With auto_reset=False, state IS accumulated across calls — which is
+        the correct behaviour for a batch-mode pipeline processing chunks.
+        """
+        block = UniqueFilter(key="smiles", auto_reset=False)
+        smis = [
+            "c1ccccc1",    # benzene
+            "C1=CC=CC=C1", # same molecule, different notation
+        ]
+        t1 = MoleculeTable.from_smiles(smis)
+        t2 = MoleculeTable.from_smiles(smis)
+ 
+        out1 = block.run(t1)
+        out2 = block.run(t2)
+ 
+        assert out1.n == 3, f"Expected 3 from first batch, got {out1.n}"
+        # All molecules in batch 2 were already seen in batch 1
+        assert out2.n == 0, (
+            f"With auto_reset=False, the second batch of identical molecules "
+            f"should all be filtered out (got {out2.n})."
+        )
+        
 class TestFeaturizers:
     def test_maccs_featurizer(self, sample_table):
         block = MACCSFeaturizer()
