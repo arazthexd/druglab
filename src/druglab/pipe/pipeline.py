@@ -16,8 +16,12 @@ class Pipeline:
     Handles transparent chunking and concatenation when a block declares a batch_size.
     """
 
-    def __init__(self, steps: List[BaseBlock]):
-        self.steps = steps
+    def __init__(self, steps: Optional[List[BaseBlock]] = None):
+        self.steps = steps if steps is not None else []
+
+    def add_step(self, step: BaseBlock) -> None:
+        """Appends a new step to the pipeline."""
+        self.steps.append(step)
 
     def run(self, table: Optional[TableT] = None) -> TableT:
         """Run the pipeline on an initial table (or None if starting with an IO block)."""

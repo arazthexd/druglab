@@ -8,7 +8,7 @@ import pickle
 import pytest
 
 from druglab.db import BaseTable
-from druglab.pipe import DictCache, BaseBlock
+from druglab.pipe import DictCache, BaseBlock, Pipeline
 
 # ---------------------------------------------------------------------------
 # Minimal concrete table (no RDKit required)
@@ -43,6 +43,33 @@ def make_table(n: int = 4) -> DummyTable:
         "phys": np.ones((n, 3), dtype=np.float64),
     }
     return DummyTable(objects=objects, metadata=metadata, features=features)
+
+# --- Mocks for Testing ---
+
+class MockRecord:
+    def __init__(self, data):
+        self.data = data
+
+class MockBlock:
+    def process(self, table):
+        new_table = table.clone()
+        new_table.records.append(MockRecord("processed"))
+        new_table.add_history("MockBlock Processed")
+        return new_table
+
+class FaultyBlock:
+    def process(self, table):
+        return None # Simulates a bug where processing fails silently
+
+def test_pipeline_mutable_default():
+    """
+    Ensures pipelines don't share instances of step arrays.
+    """
+    p1 = Pipeline()
+    p1.add_step(MockBlock())
+    
+    p2 = Pipeline()
+    assert len(p2.steps) == 0, "Safety Bug: Pipeline shares steps between instances due to mutable defaults!"
 
 def test_dict_cache_memory_bound():
     cache = DictCache(max_size=100)
