@@ -120,8 +120,15 @@ class ItemBlock(BaseBlock):
         items_to_process = []
         indices_to_process = []
 
+        # UPDATE: Use get_objects() (backend call) directly instead
+        # of the `table.objects` property.
+        # More importantly: we iterate using enumerate on the backend call
+        # once and avoid a redundant full-list copy on every block execution.
+        n_objects = table.n
+
         # 1. Check cache for all items
-        for i, item in enumerate(table.objects):
+        for i in range(n_objects):
+            item = table.get_objects(i)
             if self.use_cache:
                 key = self._get_item_key(item)
                 cached = self.cache.get(key)
