@@ -24,7 +24,12 @@ class BaseCache(ABC):
 
 
 class DictCache(BaseCache):
-    """A simple in-memory dictionary cache."""
+    """
+    A simple in-memory LRU dictionary cache.
+    
+    Eviction policy: least-recently-used (accessed or inserted) items are
+    dropped first when ``max_size`` is exceeded.
+    """
 
     def __init__(self, max_size: int = 1000):
         if max_size < 1:
@@ -42,7 +47,10 @@ class DictCache(BaseCache):
             self._store.popitem(last=False)
 
     def get(self, key: str) -> Any:
-        return self._store.get(key)
+        if key not in self._store:
+            return None
+        self._store.move_to_end(key)
+        return self._store[key]
     
     def clear(self) -> None:
         self._store.clear()
