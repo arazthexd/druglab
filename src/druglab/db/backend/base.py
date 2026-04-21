@@ -7,6 +7,9 @@ The interface enforces strict Query Pushdown: index/slice arguments must be
 passed directly to the backend so that out-of-core implementations (Zarr,
 SQLite, HDF5) can read exactly the bytes they need without loading full
 arrays into memory first.
+
+Index normalisation is handled by ``druglab.db.indexing``, which is the
+single source of truth for all row-addressing in DrugLab.
 """
 
 from __future__ import annotations
@@ -18,11 +21,28 @@ from typing import Any, Callable, List, Optional, Sequence, Union, Dict
 import numpy as np
 import pandas as pd
 
-# ---------------------------------------------------------------------------
-# Type alias for index arguments
-# ---------------------------------------------------------------------------
+# Re-export INDEX_LIKE from the canonical indexing module so that existing
+# imports of ``INDEX_LIKE`` from this module continue to work unchanged.
+from druglab.db.indexing import (
+    INDEX_LIKE,
+    RowSelection,
+    normalize_row_index,
+    coerce_bool_mask,
+    validate_take_index,
+)
 
-INDEX_LIKE = Union[int, slice, List[int], np.ndarray]
+__all__ = [
+    "INDEX_LIKE",
+    "RowSelection",
+    "normalize_row_index",
+    "coerce_bool_mask",
+    "validate_take_index",
+    "BaseMetadataMixin",
+    "BaseObjectMixin",
+    "BaseFeatureMixin",
+    "BaseStorageBackend",
+]
+
 
 class BaseMetadataMixin(ABC):
     """
@@ -168,14 +188,10 @@ class BaseMetadataMixin(ABC):
 
     @abstractmethod
     def _n_metadata_rows(self) -> int:
-        """
-        Return the number of rows in the metadata table.
-        """
+        """Return the number of rows in the metadata table."""
 
     def _validate_metadata(self) -> None:
-        """
-        Validate the backend's metadata schema.
-        """
+        """Validate the backend's metadata schema."""
         return
 
 
@@ -186,7 +202,7 @@ class BaseObjectMixin(ABC):
 
     @abstractmethod
     def get_objects(
-        self, 
+        self,
         idx: Optional[INDEX_LIKE] = None
     ) -> Union[Any, List[Any]]:
         """
@@ -206,11 +222,11 @@ class BaseObjectMixin(ABC):
         Union[Any, List[Any]]
             A single object if idx is an int, otherwise a list of objects.
         """
-    
+
     @abstractmethod
     def update_objects(
-        self, 
-        objs: Union[Any, List[Any]], 
+        self,
+        objs: Union[Any, List[Any]],
         idx: Optional[INDEX_LIKE] = None,
         **kwargs
     ) -> None:
@@ -230,7 +246,7 @@ class BaseObjectMixin(ABC):
             Row selector. ``None`` → apply to all rows (length of objs must match 
             length of the backend).
         """
-    
+
     def set_objects(self, objs: List[Any], **kwargs) -> None:
         """
         Replace the entire object store with a new list of objects.
@@ -248,15 +264,12 @@ class BaseObjectMixin(ABC):
 
     @abstractmethod
     def _n_objects(self) -> int:
-        """
-        Return the number of rows in the object table.
-        """
-    
+        """Return the number of rows in the object table."""
+
     def _validate_objects(self) -> None:
-        """
-        Validate the backend's object schema.
-        """
+        """Validate the backend's object schema."""
         return
+
 
 class BaseFeatureMixin(ABC):
     """
@@ -316,29 +329,14 @@ class BaseFeatureMixin(ABC):
 
     @abstractmethod
     def update_feature(
-        self, 
-        name: str, 
+        self,
+        name: str,
         array: np.ndarray,
         idx: Optional[INDEX_LIKE] = None,
         na: Any = None,
         **kwargs
     ) -> None:
-        """Add or perform a partial, in-place update of a feature array.
-        
-        Parameters
-        ----------
-        name
-            Feature key / name.
-        array
-            Feature array. If *idx* is None, this must have the same number of
-            rows as the current backend. Otherwise, this must have the same
-            elements as *idx*.
-        idx
-            Row selector.  If None, all rows are considered. Otherwise, the input
-            array will only be used to define features of specified rows.
-        na
-            Value to use for missing values. Defaults to None.
-        """
+        """Add or perform a partial, in-place update of a feature array."""
 
     def update_features(
         self,
@@ -347,70 +345,30 @@ class BaseFeatureMixin(ABC):
         na: Any = None,
         **kwargs
     ) -> None:
-        """Add or perform a partial, in-place update of multiple feature arrays.
-
-        Can be overridden to provide a more efficient implementation.
-        
-        Parameters
-        ----------
-        arrays
-            A dictionary mapping feature keys to feature arrays.
-        idx
-            Row selector.  If None, all rows are considered. Otherwise, the input
-            arrays will only be used to define features of specified rows.
-        na
-            Value to use for missing values. Defaults to None.
-        """
+        """Add or perform a partial, in-place update of multiple feature arrays."""
         for name, array in arrays.items():
             self.update_feature(name, array, idx, na, **kwargs)
 
     @abstractmethod
     def drop_feature(self, name: str) -> None:
-        """Remove a feature by name.  Raises ``KeyError`` if absent.
-        
-        Parameters
-        ----------
-        name
-            Feature key.
-        """
+        """Remove a feature by name. Raises ``KeyError`` if absent."""
 
     @abstractmethod
     def get_feature_names(self) -> List[str]:
-        """Return the list of stored feature keys.
-        
-        Returns
-        -------
-        List[str]
-            List of feature keys.
-        """
+        """Return the list of stored feature keys."""
 
     @abstractmethod
-    def get_feature_shape(self, name: str) -> tuple[int, ...]:
-        """Return the shape of a feature array.
-        
-        Parameters
-        ----------
-        name
-            Feature key.
-        
-        Returns
-        -------
-        tuple
-            Feature array shape.
-        """
+    def get_feature_shape(self, name: str) -> tuple:
+        """Return the shape of a feature array."""
 
     def _n_feature_rows(self) -> int:
-        """
-        Return the number of rows in each feature array.
-        """
+        """Return the number of rows in each feature array."""
         if not self.get_feature_names():
             return len(self)
         return self.get_feature_shape(self.get_feature_names()[0])[0]
 
     def _validate_features(self) -> None:
-        """
-        Validate the backend's feature schema.
-        """
+        """Validate the backend's feature schema."""
         if not self.get_feature_names():
             return
         n = self._n_feature_rows()
@@ -420,11 +378,11 @@ class BaseFeatureMixin(ABC):
                     f"Feature '{name}' has {self.get_feature_shape(name)[0]} rows, "
                     f"expected {n}"
                 )
-    
+
 
 class BaseStorageBackend(
-    BaseMetadataMixin, 
-    BaseObjectMixin, 
+    BaseMetadataMixin,
+    BaseObjectMixin,
     BaseFeatureMixin
 ):
     """
@@ -433,7 +391,7 @@ class BaseStorageBackend(
 
     def validate(self) -> None:
         """
-        STRONGLY SUGGESTED: Validates the entire backend by checking 
+        STRONGLY SUGGESTED: Validates the entire backend by checking
         individual domain integrity and ensuring dimension alignment.
         """
         # 1. Get the global, official length (provided by the concrete backend)

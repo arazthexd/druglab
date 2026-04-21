@@ -7,6 +7,10 @@ Each mixin handles exactly one data dimension (metadata, objects, features).
 They compose via multiple inheritance into ``EagerMemoryBackend``, the
 default backend for new tables.
 
+Index normalisation is handled by ``druglab.db.indexing.normalize_row_index``
+(via the ``_resolve_idx`` shim defined at the bottom of this module for
+internal backward-compatibility).
+
 Persistence
 -----------
 ``EagerMemoryBackend.save()`` writes inside a ``.dlb`` bundle directory:
@@ -19,8 +23,8 @@ Persistence
             <name>.npy        (one file per feature array)
 
 All reads/writes via ``get_*`` and ``update_*`` methods support ``idx`` 
-arguments (int, slice, List[int], np.ndarray) so the same interface works 
-identically whether data lives in RAM or on disk.
+arguments which is handled by the ``druglab.db.indexing`` module. The same 
+interface works identically whether data lives in RAM or on disk.
 """
 
 from __future__ import annotations
@@ -34,86 +38,36 @@ import numpy as np
 import pandas as pd
 
 from .base import (
-    BaseStorageBackend, 
-    INDEX_LIKE,
+    BaseStorageBackend,
     BaseMetadataMixin,
     BaseObjectMixin,
-    BaseFeatureMixin
+    BaseFeatureMixin,
+)
+from druglab.db.indexing import (
+    INDEX_LIKE,
+    RowSelection,
+    normalize_row_index,
 )
 
 # ---------------------------------------------------------------------------
-# Index normalisation helper
+# Backward-compatibility shim
 # ---------------------------------------------------------------------------
 
-def _resolve_idx(idx: Optional[INDEX_LIKE], n: int) -> Union[np.ndarray, None]:
+def _resolve_idx(idx: Optional[INDEX_LIKE], n: int) -> Optional[np.ndarray]:
     """
-    Normalize various index representations into a standard NumPy integer array.
+    Thin compatibility shim that delegates to ``normalize_row_index``.
 
-    Handles standard integers, slices, lists of integers, and boolean masks.
-    Automatically resolves negative indices relative to the backend length `n`.
-
-    Parameters
-    ----------
-    idx : Optional[INDEX_LIKE]
-        The user-provided index (int, slice, list, or ndarray).
-    n : int
-        The total number of rows/objects currently in the domain to resolve 
-        negative indices against.
-
-    Returns
-    -------
-    Union[np.ndarray, None]
-        A 1D numpy array of integer indices (dtype=np.intp), or None if `idx` 
-        was None (signaling "all rows").
-
-    Raises
-    ------
-    TypeError
-        If the provided index type is unsupported.
+    All new code should call ``normalize_row_index`` directly.  This shim
+    exists so that any internal callers that still reference ``_resolve_idx``
+    (e.g. existing tests) continue to work without modification.
     """
-    if idx is None:
-        return None
-    if isinstance(idx, int):
-        # Negative indexing support
-        if idx < 0:
-            if idx + n < 0:
-                raise IndexError(
-                    f"index {idx} is out of bounds for axis 0 with size {n}"
-                )
-            idx = n + idx
-        if idx >= n:
-            raise IndexError(
-                f"index {idx} is out of bounds for axis 0 with size {n}"
-            )
-        return np.array([idx], dtype=np.intp)
-    if isinstance(idx, slice):
-        return np.arange(*idx.indices(n), dtype=np.intp)
-    if isinstance(idx, (list, np.ndarray)):
-        arr = np.asarray(idx)
-        # Handle boolean masks
-        if np.issubdtype(arr.dtype, np.bool_):
-            if len(arr) != n:
-                # Prevent silent boolean mask truncation by enforcing exact dimension matches
-                raise IndexError(f"boolean index length {len(arr)} does not match array size {n}")
-            return np.where(arr)[0].astype(np.intp)
-        
-        arr = arr.astype(np.intp)
-        # Handle negative indices
-        arr = np.where(arr < 0, n + arr, arr)
-        if np.any((arr < 0) | (arr >= n)):
-            raise IndexError(
-                f"index {arr} is out of bounds for axis 0 with size {n}"
-            )
-        return arr
-    
-    raise TypeError(
-        f"idx must be None, int, slice, List[int], or np.ndarray; got {type(idx).__name__}"
-    )
+    return normalize_row_index(idx, n)
 
 
 # ---------------------------------------------------------------------------
 # MemoryMetadataMixin
 # ---------------------------------------------------------------------------
+
 
 class MemoryMetadataMixin(BaseMetadataMixin):
     """
@@ -125,7 +79,7 @@ class MemoryMetadataMixin(BaseMetadataMixin):
     """
 
     def __init__(self, metadata: Optional[pd.DataFrame] = None, **kwargs):
-        super().__init__(**kwargs)  # Passes leftovers down the chain
+        super().__init__(**kwargs)
         self._metadata = metadata if metadata is not None else pd.DataFrame(index=range(len(self)))
 
     def get_metadata(
@@ -133,28 +87,12 @@ class MemoryMetadataMixin(BaseMetadataMixin):
         idx: Optional[INDEX_LIKE] = None,
         cols: Optional[Union[str, List[str]]] = None,
     ) -> pd.DataFrame:
-        """
-        Fetch a subset of the metadata DataFrame.
+        sel = RowSelection.from_raw(idx, len(self._metadata))
 
-        Parameters
-        ----------
-        idx : Optional[INDEX_LIKE], default None
-            Row selector. None indicates all rows.
-        cols : Optional[Union[str, List[str]]], default None
-            Column selector. None indicates all columns.
-
-        Returns
-        -------
-        pd.DataFrame
-            A new DataFrame containing the requested subset. The index is 
-            always reset to standard integers.
-        """
-        resolved = _resolve_idx(idx, len(self._metadata))
-
-        if resolved is None:
+        if sel.is_full:
             df = self._metadata
         else:
-            df = self._metadata.iloc[resolved]
+            df = self._metadata.iloc[sel.positions]
 
         if cols is not None:
             if isinstance(cols, str):
@@ -171,31 +109,13 @@ class MemoryMetadataMixin(BaseMetadataMixin):
         na: Any = None,
         **kwargs
     ) -> None:
-        """
-        Add a new metadata column, optionally populating only specific rows.
-
-        Pandas indices on incoming Series are explicitly ignored; data is 
-        aligned strictly by position.
-
-        Parameters
-        ----------
-        name : str
-            The name of the new column.
-        value : Union[pd.Series, np.ndarray, List[Any]]
-            The data to populate the new column.
-        idx : Optional[INDEX_LIKE], default None
-            Specific rows to populate with `value`. If provided, all other 
-            rows will be filled with `na`.
-        na : Any, default None
-            The fill value used for rows not included in `idx`.
-        """
-        resolved = _resolve_idx(idx, len(self._metadata))
+        sel = RowSelection.from_raw(idx, len(self._metadata))
         value = np.asarray(value)
-        
-        if resolved is None:
-            # Positional assignment ignoring Pandas index
+
+        if sel.is_full:
             self._metadata[name] = value
         else:
+            resolved = sel.positions
             if na is None and np.issubdtype(value.dtype, np.integer):
                 raise ValueError(
                     "na must be provided when populating integer columns"
@@ -218,27 +138,8 @@ class MemoryMetadataMixin(BaseMetadataMixin):
         idx: Optional[INDEX_LIKE] = None,
         **kwargs
     ) -> None:
-        """
-        Perform an in-place update of existing metadata columns.
+        sel = RowSelection.from_raw(idx, len(self._metadata))
 
-        Parameters
-        ----------
-        values : Union[pd.DataFrame, pd.Series, Dict[str, Any]]
-            The new values to insert. Keys/column names must match existing 
-            metadata columns.
-        idx : Optional[INDEX_LIKE], default None
-            Specific rows to update. None applies the update to all rows.
-
-        Raises
-        ------
-        KeyError
-            If any column in `values` does not already exist in the metadata.
-        ValueError
-            If a Series without a name is provided.
-        """
-        resolved = _resolve_idx(idx, len(self._metadata))
-        
-        # Standardize inputs to a dictionary of numpy arrays
         if isinstance(values, pd.DataFrame):
             val_dict = {col: values[col].values for col in values.columns}
         elif isinstance(values, pd.Series):
@@ -250,23 +151,22 @@ class MemoryMetadataMixin(BaseMetadataMixin):
 
         for col, val in val_dict.items():
             if col not in self._metadata.columns:
-                raise KeyError(f"Column '{col}' does not exist in metadata. Use add_metadata_column.")
-            
-            if resolved is None:
+                raise KeyError(
+                    f"Column '{col}' does not exist in metadata. "
+                    "Use add_metadata_column."
+                )
+            if sel.is_full:
                 self._metadata[col] = val
             else:
-                self._metadata.iloc[resolved, self._metadata.columns.get_loc(col)] = val
+                self._metadata.iloc[
+                    sel.positions,
+                    self._metadata.columns.get_loc(col)
+                ] = val
 
-    def drop_metadata_columns(self, cols: Optional[Union[str, List[str]]] = None) -> None:
-        """
-        Remove metadata columns from the internal DataFrame.
-
-        Parameters
-        ----------
-        cols : Optional[Union[str, List[str]]], default None
-            The column(s) to remove. If None, the entire DataFrame is wiped 
-            and replaced with an empty DataFrame maintaining the same index.
-        """
+    def drop_metadata_columns(
+        self,
+        cols: Optional[Union[str, List[str]]] = None
+    ) -> None:
         if cols is None:
             self._metadata = pd.DataFrame(index=self._metadata.index)
         else:
@@ -304,7 +204,7 @@ class MemoryMetadataMixin(BaseMetadataMixin):
         """
         # In-memory pandas dataframes inherently enforce structural integrity
         pass
-    
+
     def try_numerize_metadata(self, columns: Optional[List[str]] = None) -> None:
         """
         Attempt to numerize columns in the metadata DataFrame.
@@ -322,13 +222,14 @@ class MemoryMetadataMixin(BaseMetadataMixin):
         else:
             if isinstance(columns, str):
                 columns = [columns]
-                
+
         for col in columns:
             if col in self._metadata.columns:
                 try:
                     self._metadata[col] = pd.to_numeric(self._metadata[col])
                 except (ValueError, TypeError):
-                    pass # Leave untouched if it can't be safely converted
+                    pass
+
 
 # ---------------------------------------------------------------------------
 # MemoryObjectMixin
@@ -343,7 +244,7 @@ class MemoryObjectMixin(BaseObjectMixin):
     """
 
     def __init__(self, objects: Optional[List[Any]] = None, **kwargs):
-        super().__init__(**kwargs)  # Passes leftovers down the chain
+        super().__init__(**kwargs)
         self._objects = objects if objects is not None else []
 
     def get_objects(self, idx: Optional[INDEX_LIKE] = None) -> Union[Any, List[Any]]:
@@ -364,25 +265,24 @@ class MemoryObjectMixin(BaseObjectMixin):
 
         if idx is None:
             return self._objects.copy()
-        
-        if isinstance(idx, int):
+
+        # Scalar short-circuit: return a single object (not a list)
+        if isinstance(idx, (int, np.integer)):
             n = len(self._objects)
-            # Validate bounds before indexing to give a clean IndexError 
-            # instead of a confusing list index error.
-            if idx >= n or idx < -n:
+            i = int(idx)
+            if i >= n or i < -n:
                 raise IndexError(
                     f"index {idx} is out of bounds for axis 0 with size {n}"
                 )
-            n = len(self._objects)
-            index = n + idx if idx < 0 else idx
+            index = n + i if i < 0 else i
             return self._objects[index]
 
-        resolved = _resolve_idx(idx, len(self._objects))
-        return [self._objects[i] for i in resolved]
+        sel = RowSelection.from_raw(idx, len(self._objects))
+        return sel.apply_to_list(self._objects)
 
     def update_objects(
-        self, 
-        objs: Union[Any, List[Any]], 
+        self,
+        objs: Union[Any, List[Any]],
         idx: Optional[INDEX_LIKE] = None,
         **kwargs
     ) -> None:
@@ -406,18 +306,20 @@ class MemoryObjectMixin(BaseObjectMixin):
         if idx is None:
             self._objects = list(objs)
             return
-            
-        if isinstance(idx, int):
+
+        if isinstance(idx, (int, np.integer)):
             n = len(self._objects)
-            index = n + idx if idx < 0 else idx
+            i = int(idx)
+            index = n + i if i < 0 else i
             self._objects[index] = objs
             return
-            
-        resolved = _resolve_idx(idx, len(self._objects))
-        if len(resolved) != len(objs):
-            raise ValueError("Length of objs sequence must match length of resolved index.")
-            
-        for i, obj in zip(resolved, objs):
+
+        sel = RowSelection.from_raw(idx, len(self._objects))
+        if len(sel.positions) != len(objs):
+            raise ValueError(
+                "Length of objs sequence must match length of resolved index."
+            )
+        for i, obj in zip(sel.positions, objs):
             self._objects[i] = obj
 
     def _n_objects(self) -> int:
@@ -443,6 +345,7 @@ class MemoryObjectMixin(BaseObjectMixin):
 # MemoryFeatureMixin
 # ---------------------------------------------------------------------------
 
+
 class MemoryFeatureMixin(BaseFeatureMixin):
     """
     In-memory feature storage mixin utilizing a dictionary of NumPy arrays.
@@ -452,7 +355,7 @@ class MemoryFeatureMixin(BaseFeatureMixin):
     """
 
     def __init__(self, features: Optional[Dict[str, np.ndarray]] = None, **kwargs):
-        super().__init__(**kwargs)  # Passes leftovers down the chain
+        super().__init__(**kwargs)
         self._features = features if features is not None else {}
 
     def get_feature(self, name: str, idx: Optional[INDEX_LIKE] = None) -> np.ndarray:
@@ -473,19 +376,12 @@ class MemoryFeatureMixin(BaseFeatureMixin):
             The requested feature array subset.
         """
         arr = self._features[name]
-        resolved = _resolve_idx(idx, arr.shape[0])
-        
-        if resolved is None:
-            return arr.copy()
-            
-        if len(resolved) == 0:
-            return arr[0:0] 
-            
-        return arr[resolved]
+        sel = RowSelection.from_raw(idx, arr.shape[0])
+        return sel.apply_to(arr)
 
     def update_feature(
-        self, 
-        name: str, 
+        self,
+        name: str,
         array: np.ndarray,
         idx: Optional[INDEX_LIKE] = None,
         na: Any = None,
@@ -518,18 +414,19 @@ class MemoryFeatureMixin(BaseFeatureMixin):
                     )
                 self._features[name] = np.asarray(array).copy()
             else:
-                resolved = _resolve_idx(idx, self._n_feature_rows() or len(array))
-                n_rows = self._n_feature_rows() or (resolved.max() + 1 if len(resolved) > 0 else 0)
+                sel = RowSelection.from_raw(idx, self._n_feature_rows() or len(array))
+                n_rows = self._n_feature_rows() or (
+                    sel.positions.max() + 1 if len(sel.positions) > 0 else 0
+                )
                 shape = (n_rows, *np.asarray(array).shape[1:])
-                
-                # Default numeric 'na' to np.nan if not provided and dtype is float
+
                 if na is None and np.issubdtype(np.asarray(array).dtype, np.floating):
                     na = np.nan
                 elif na is None:
                     na = 0
-                    
+
                 full_arr = np.full(shape, na, dtype=np.asarray(array).dtype)
-                full_arr[resolved] = array
+                full_arr[sel.positions] = array
                 self._features[name] = full_arr
         else:
             if idx is None:
@@ -541,8 +438,8 @@ class MemoryFeatureMixin(BaseFeatureMixin):
                     )
                 self._features[name] = arr.copy()
             else:
-                resolved = _resolve_idx(idx, self._features[name].shape[0])
-                self._features[name][resolved] = array
+                sel = RowSelection.from_raw(idx, self._features[name].shape[0])
+                self._features[name][sel.positions] = array
 
     def drop_feature(self, name: str) -> None:
         """
@@ -587,6 +484,7 @@ class MemoryFeatureMixin(BaseFeatureMixin):
 # EagerMemoryBackend
 # ---------------------------------------------------------------------------
 
+
 class EagerMemoryBackend(
     MemoryMetadataMixin,
     MemoryObjectMixin,
@@ -617,28 +515,18 @@ class EagerMemoryBackend(
     def create_view(self, indices: Sequence[int]) -> "EagerMemoryBackend":
         """
         Return an independent, deep-copied view restricted to specific indices.
-
-        Used internally by table subsetting to ensure mutations in the child 
-        table do not affect the parent table's data in RAM.
-
-        Parameters
-        ----------
-        indices : Sequence[int]
-            The exact row numbers to extract into the new backend.
-
-        Returns
-        -------
-        EagerMemoryBackend
-            A completely new backend instance containing only the requested rows.
         """
-        idx_arr = _resolve_idx(indices, len(self))
+        sel = RowSelection.from_raw(
+            np.asarray(indices, dtype=np.intp) if indices else np.array([], dtype=np.intp),
+            len(self),
+        )
 
-        if idx_arr is None or len(idx_arr) == 0:
+        if sel.is_empty:
             return EagerMemoryBackend()
 
-        new_objects = [copy.deepcopy(self._objects[i]) for i in idx_arr]
-        new_metadata = self._metadata.iloc[idx_arr].reset_index(drop=True).copy()
-        new_features = {k: v[idx_arr].copy() for k, v in self._features.items()}
+        new_objects = [copy.deepcopy(self._objects[i]) for i in sel.positions]
+        new_metadata = self._metadata.iloc[sel.positions].reset_index(drop=True).copy()
+        new_features = {k: v[sel.positions].copy() for k, v in self._features.items()}
 
         return EagerMemoryBackend(
             objects=new_objects,
@@ -737,15 +625,15 @@ class EagerMemoryBackend(
         if obj_path.exists():
             with open(obj_path, "rb") as f:
                 raw_payload = pickle.load(f)
-                
-                # Support streamed object payloads while keeping backward compatibility with legacy list payloads
-                if isinstance(raw_payload, dict) and raw_payload.get("format") in {"stream_v1", "stream_v2"}:
+
+                if isinstance(raw_payload, dict) and raw_payload.get("format") in {
+                    "stream_v1", "stream_v2"
+                }:
                     count = int(raw_payload["count"])
                     raw_list = [pickle.load(f) for _ in range(count)]
-                    payload_is_serialized = (
-                        raw_payload.get("format") == "stream_v1"
-                        or bool(raw_payload.get("serialized", False))
-                    )
+                    payload_is_serialized = raw_payload.get(
+                        "format"
+                    ) == "stream_v1" or bool(raw_payload.get("serialized", False))
                 else:
                     raw_list = raw_payload
                     payload_is_serialized = deserializer is not None

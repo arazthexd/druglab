@@ -28,14 +28,19 @@ from druglab.db.backend.base import (
     BaseObjectMixin,
     BaseMetadataMixin,
     BaseFeatureMixin,
-    BaseStorageBackend, 
-    INDEX_LIKE
+    BaseStorageBackend,
+    INDEX_LIKE,
+    RowSelection,
+    normalize_row_index,
+    coerce_bool_mask,
+    validate_take_index,
 )
 from druglab.db.backend.memory import (
     MemoryMetadataMixin,
     MemoryObjectMixin,
     MemoryFeatureMixin,
     EagerMemoryBackend,
+    _resolve_idx,
 )
 
 __all__ = [
@@ -44,8 +49,13 @@ __all__ = [
     "BaseFeatureMixin",
     "BaseStorageBackend",
     "INDEX_LIKE",
+    "RowSelection",
+    "normalize_row_index",
+    "coerce_bool_mask",
+    "validate_take_index",
     "MemoryMetadataMixin",
     "MemoryObjectMixin",
     "MemoryFeatureMixin",
     "EagerMemoryBackend",
+    "_resolve_idx",
 ]
