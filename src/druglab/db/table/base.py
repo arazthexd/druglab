@@ -43,17 +43,17 @@ from typing import Any, Callable, Dict, Generic, List, Optional, Sequence, Tuple
 import numpy as np
 import pandas as pd
 
-# Updated imports based on standard project structure
-from ..backend import EagerMemoryBackend, BaseStorageBackend, INDEX_LIKE
+from ..backend import EagerMemoryBackend, BaseStorageBackend
+from ..indexing import INDEX_LIKE, RowSelection, normalize_row_index
 
 # ---------------------------------------------------------------------------
 # Type variables
 # ---------------------------------------------------------------------------
 
-OT = TypeVar("OT") # object type
-MT = TypeVar("MT", bound=pd.DataFrame) # metadata type (not used yet)
-FT = TypeVar("FT", bound=np.ndarray) # feature type (not used yet)
-BT = TypeVar("BT", bound=BaseStorageBackend) # backend type
+OT = TypeVar("OT")
+MT = TypeVar("MT", bound=pd.DataFrame)
+FT = TypeVar("FT", bound=np.ndarray)
+BT = TypeVar("BT", bound=BaseStorageBackend)
 
 # ---------------------------------------------------------------------------
 # Multi-axis index axis constants
@@ -118,13 +118,17 @@ class HistoryEntry:
 # BaseTable
 # ---------------------------------------------------------------------------
 
-class BaseTable(ABC, Generic[OT]): # TODO: add BT
+class BaseTable(ABC, Generic[OT]):
     """
     Abstract base class for all DrugLab table types.
 
     Data is delegated to a ``BaseStorageBackend`` (default: EagerMemoryBackend).
     All public properties proxy to the backend, maintaining backwards
     compatibility with the previous attribute-based API.
+
+    Row addressing uses the shared ``druglab.db.indexing`` module, which
+    provides ``normalize_row_index`` and ``RowSelection`` as the canonical
+    index-resolution primitives across all backends and the table layer.
 
     Invariant (always enforced):
         len(objects) == len(metadata)
@@ -135,8 +139,7 @@ class BaseTable(ABC, Generic[OT]): # TODO: add BT
         _deserialize_object(raw) -> OT
         _object_type_name()      -> str
 
-    Multi-axis indexing (strict query pushdown)::
-
+    Multi-axis indexing (strict query pushdown):
         table[0:5]                       # new 5-row table
         table[FEAT, 'fps', 0:10]         # ndarray (FT), only rows 0-9 loaded
         table[META, ['MolWt'], 0]        # single-row DataFrame (MT)
@@ -153,7 +156,7 @@ class BaseTable(ABC, Generic[OT]): # TODO: add BT
         metadata: Optional[pd.DataFrame] = None,
         features: Optional[Dict[str, np.ndarray]] = None,
         history: Optional[List[HistoryEntry]] = None,
-        *, 
+        *,
         _backend: Optional[BT] = None,
     ) -> None:
         # Allow callers to pass a pre-built backend (used internally by load())
