@@ -43,11 +43,70 @@ __all__ = [
     "BaseStorageBackend",
 ]
 
+# ===========================================================================
+# Life Cycle Hooks (Clean MRO)
+# ===========================================================================
 
-class BaseMetadataMixin(ABC):
+class _LifecycleBase:
     """
-    Mixin for metadata handling in backends.
+    Mixin base that defines the three cooperative lifecycle hooks.
+ 
+    All domain mixins and capability mixins inherit from this class so that
+    ``super()``-based cooperative calls propagate correctly through any MRO.
+ 
+    Hooks
+    -----
+    initialize_storage_context(**kwargs)
+        Called early in ``__init__`` after each mixin's own state is ready.
+        Use this to wire up storage-layer internals.  Must call
+        ``super().initialize_storage_context`` first so the full chain fires.
+ 
+    bind_capabilities()
+        Called once after the entire ``__init__`` MRO chain completes, before
+        ``post_initialize_validate``.  Must call ``super().bind_capabilities()``.
+ 
+    post_initialize_validate()
+        Called last, for cross-domain consistency assertions.  Must call
+        ``super().post_initialize_validate()`` first.
     """
+ 
+    def initialize_storage_context(self, **kwargs: Any) -> None:
+        """
+        Cooperative lifecycle hook: finalize mixin-level storage setup.
+ 
+        Implementors must call ``super().initialize_storage_context(**kwargs)``
+        before their own logic so the full cooperative chain fires.
+ 
+        Unknown kwargs are intentionally swallowed at the terminal node so
+        that cooperative chains don't break when different mixins consume
+        different subsets of kwargs.
+        """
+        # Terminal node -- absorbs remaining kwargs.
+ 
+    def bind_capabilities(self) -> None:
+        """
+        Cooperative lifecycle hook: wire up inter-mixin capability references.
+ 
+        Called once after the full ``__init__`` chain completes, before
+        ``post_initialize_validate``.  Must call ``super().bind_capabilities()``.
+        """
+        # Terminal node -- absorbs remaining kwargs.
+ 
+    def post_initialize_validate(self) -> None:
+        """
+        Cooperative lifecycle hook: cross-domain consistency validation.
+ 
+        Called last, after both prior hooks.  Raise ``ValueError`` to signal
+        an invalid initial state.  Must call ``super().post_initialize_validate()``.
+        """
+        # Terminal node -- absorbs remaining kwargs.
+
+# ===========================================================================
+# Base Mixins
+# ===========================================================================
+
+class BaseMetadataMixin(_LifecycleBase, ABC):
+    """Mixin for metadata handling in backends."""
 
     @abstractmethod
     def get_metadata(
@@ -193,9 +252,14 @@ class BaseMetadataMixin(ABC):
     def _validate_metadata(self) -> None:
         """Validate the backend's metadata schema."""
         return
+    
+    def post_initialize_validate(self) -> None:
+        """Validate metadata domain after full init; then propagate."""
+        self._validate_metadata()
+        super().post_initialize_validate()
 
 
-class BaseObjectMixin(ABC):
+class BaseObjectMixin(_LifecycleBase, ABC):
     """
     Mixin for object handling in backends.
     """
@@ -231,21 +295,22 @@ class BaseObjectMixin(ABC):
         **kwargs
     ) -> None:
         """
-        Perform a partial or full update of stored objects.
-
-        This method replaces the legacy `put_object` to enforce vector-first 
-        writes, eliminating N+1 query bottlenecks in out-of-core backends.
+        Perform an in-place partial or full update of stored objects.
 
         Parameters
         ----------
         objs : Union[Any, List[Any]]
-            The new object(s) to insert. If `idx` is an integer, this should be 
-            a single object. Otherwise, it must be a sequence of objects matching 
-            the length of the resolved index.
+            The object or sequence of objects to insert.
         idx : Optional[INDEX_LIKE], default None
-            Row selector. ``None`` → apply to all rows (length of objs must match 
-            length of the backend).
+            The specific index/indices to overwrite. If None, the entire 
+            internal list is replaced by `objs`.
+
+        Raises
+        ------
+        ValueError
+            If `idx` is a sequence but its length does not match `objs`.
         """
+        
 
     def set_objects(self, objs: List[Any], **kwargs) -> None:
         """
@@ -264,14 +329,26 @@ class BaseObjectMixin(ABC):
 
     @abstractmethod
     def _n_objects(self) -> int:
-        """Return the number of rows in the object table."""
+        """
+        Get the total number of stored objects.
+
+        Returns
+        -------
+        int
+            Length of the internal object list.
+        """
 
     def _validate_objects(self) -> None:
         """Validate the backend's object schema."""
         return
+    
+    def post_initialize_validate(self) -> None:
+        """Validate object domain after full init; then propagate."""
+        self._validate_objects()
+        super().post_initialize_validate()
 
 
-class BaseFeatureMixin(ABC):
+class BaseFeatureMixin(_LifecycleBase, ABC):
     """
     Mixin for feature handling in backends.
     """
@@ -378,7 +455,15 @@ class BaseFeatureMixin(ABC):
                     f"Feature '{name}' has {self.get_feature_shape(name)[0]} rows, "
                     f"expected {n}"
                 )
+            
+    def post_initialize_validate(self) -> None:
+        """Validate feature domain after full init; then propagate."""
+        self._validate_features()
+        super().post_initialize_validate()
 
+# ===========================================================================
+# Base Storage Backend
+# ===========================================================================
 
 class BaseStorageBackend(
     BaseMetadataMixin,
@@ -386,27 +471,60 @@ class BaseStorageBackend(
     BaseFeatureMixin
 ):
     """
-    The single unified interface for managing DrugLab table state.
+    Minimal unified interface for managing DrugLab table state.
+ 
+    Lifecycle orchestration
+    ------------------------
+    ``__init__`` fires three hooks in order after the cooperative MRO chain:
+ 
+    1. ``initialize_storage_context(**kwargs)`` -- domain setup
+    2. ``bind_capabilities()``                  -- inter-mixin wiring
+    3. ``post_initialize_validate()``            -- consistency checks
+ 
+    Concrete backends assembling multiple mixins do **not** need to override
+    ``__init__`` for boilerplate: each mixin handles its own state, and the
+    hooks handle the rest.
     """
+
+    def __init__(self, **kwargs: Any) -> None:
+        # This is the terminal node of the cooperative __init__ chain.
+        # Domain mixins above us (MemoryObjectMixin, MemoryMetadataMixin, etc.)
+        # each consume their own recognized kwarg (objects=, metadata=,
+        # features=) and forward the rest via super().__init__(**remaining).
+        # Any unrecognized kwargs that reach here are silently absorbed rather
+        # than forwarded to object.__init__ (which accepts none).
+        # This allows custom mixin __init__ methods to accept extra kwargs
+        # (e.g. connection_string=) without breaking the chain.
+        #
+        # NOTE: do NOT call super().__init__(**kwargs) here -- object.__init__
+        # rejects keyword arguments.
+        # super().__init__() is intentionally NOT called with kwargs.
+        # (object.__init__() takes no extra arguments.)
+ 
+        # Fire lifecycle hooks in declared order.
+        # Hooks receive the full original kwargs dict so specialized mixins
+        # can consume what they need in initialize_storage_context.
+        self.initialize_storage_context(**kwargs)
+        self.bind_capabilities()
+        self.post_initialize_validate()
 
     def validate(self) -> None:
         """
+        Validate backend-wide dimensional consistency.
+
         STRONGLY SUGGESTED: Validates the entire backend by checking
         individual domain integrity and ensuring dimension alignment.
+
+        Raises
+        ------
+        ValueError
+            If any dimension mismatch is detected.
         """
-        # 1. Get the global, official length (provided by the concrete backend)
         expected_len = len(self)
-
-        # 2. Run domain-specific validations and capture their lengths
-        self._validate_metadata()
-        self._validate_features()
-        self._validate_objects()
-
         meta_len = self._n_metadata_rows()
         feat_len = self._n_feature_rows()
         obj_len = self._n_objects()
-
-        # 3. Cross-validate lengths
+ 
         if not (expected_len == meta_len == feat_len == obj_len):
             raise ValueError(
                 f"Backend Dimension Mismatch!\n"
@@ -415,6 +533,3 @@ class BaseStorageBackend(
                 f"Feature Rows:  {feat_len}\n"
                 f"Object Count:  {obj_len}"
             )
-        
-        # 4. Any other global state validations can go here...
-        return

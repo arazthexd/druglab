@@ -39,27 +39,25 @@ import pandas as pd
 
 from .base import (
     BaseStorageBackend,
+    INDEX_LIKE,
     BaseMetadataMixin,
     BaseObjectMixin,
     BaseFeatureMixin,
 )
-from druglab.db.indexing import (
-    INDEX_LIKE,
-    RowSelection,
-    normalize_row_index,
-)
+from druglab.db.indexing import normalize_row_index, RowSelection
 
 # ---------------------------------------------------------------------------
-# Backward-compatibility shim
+# Backwards-compatibility shim
 # ---------------------------------------------------------------------------
+
 
 def _resolve_idx(idx: Optional[INDEX_LIKE], n: int) -> Optional[np.ndarray]:
     """
-    Thin compatibility shim that delegates to ``normalize_row_index``.
+    Backwards-compatible wrapper around the canonical index normalizer.
 
-    All new code should call ``normalize_row_index`` directly.  This shim
-    exists so that any internal callers that still reference ``_resolve_idx``
-    (e.g. existing tests) continue to work without modification.
+    .. deprecated::
+        Use ``druglab.db.indexing.normalize_row_index`` directly.
+        This shim will be removed in a future commits.
     """
     return normalize_row_index(idx, n)
 
@@ -78,9 +76,27 @@ class MemoryMetadataMixin(BaseMetadataMixin):
     avoid unnecessary DataFrame copies.
     """
 
-    def __init__(self, metadata: Optional[pd.DataFrame] = None, **kwargs):
-        super().__init__(**kwargs)
-        self._metadata = metadata if metadata is not None else pd.DataFrame(index=range(len(self)))
+    def initialize_storage_context(
+        self, 
+        metadata: Optional[pd.DataFrame] = None, 
+        **kwargs: Any
+    ) -> None:
+        """Initialize storage context via ``metadata`` kwarg.
+        
+        Parameters
+        ----------
+        metadata : pd.DataFrame, optional
+            The initial metadata DataFrame.
+        **kwargs
+            Additional keyword arguments. These are passed in the MRO chain.
+        """
+        self._metadata = metadata 
+        super().initialize_storage_context(**kwargs)
+
+    def bind_capabilities(self):
+        if self._metadata is None:
+            self._metadata = pd.DataFrame(index=range(len(self)))
+        return super().bind_capabilities()
 
     def get_metadata(
         self,
@@ -239,18 +255,31 @@ class MemoryObjectMixin(BaseObjectMixin):
     """
     In-memory object storage mixin utilizing a standard Python list.
 
-    Optimized for rapid, transactional point-lookups and vector updates 
-    for generic Python objects (e.g., RDKit Mol instances).
+    Accepts ``objects`` keyword and initializes ``self._objects`` 
+    via ``initialize_storage_context``.
     """
 
-    def __init__(self, objects: Optional[List[Any]] = None, **kwargs):
-        super().__init__(**kwargs)
-        self._objects = objects if objects is not None else []
+    def initialize_storage_context(
+        self, 
+        objects: Optional[List[Any]] = None, 
+        **kwargs: Any
+    ) -> None:
+        """Initialize storage context via ``objects`` kwarg.
+        
+        Parameters
+        ----------
+        objects : List[Any], optional
+            List of objects to initialize storage context with.
+        **kwargs
+            Additional keyword arguments. These are passed in the MRO chain.
+        """
+        self._objects = objects or []
+        super().initialize_storage_context(**kwargs)
 
     def get_objects(self, idx: Optional[INDEX_LIKE] = None) -> Union[Any, List[Any]]:
         """
-        Retrieve one or more objects from RAM.
-
+        Retrieve one or more objects from the table.
+        
         Parameters
         ----------
         idx : Optional[INDEX_LIKE], default None
@@ -262,12 +291,10 @@ class MemoryObjectMixin(BaseObjectMixin):
             Returns a single object if `idx` is an integer. Otherwise, returns 
             a list of objects.
         """
-
         if idx is None:
             return self._objects.copy()
 
-        # Scalar short-circuit: return a single object (not a list)
-        if isinstance(idx, (int, np.integer)):
+        if isinstance(idx, int):
             n = len(self._objects)
             i = int(idx)
             if i >= n or i < -n:
@@ -286,31 +313,14 @@ class MemoryObjectMixin(BaseObjectMixin):
         idx: Optional[INDEX_LIKE] = None,
         **kwargs
     ) -> None:
-        """
-        Perform an in-place update of stored objects.
-
-        Parameters
-        ----------
-        objs : Union[Any, List[Any]]
-            The object or sequence of objects to insert.
-        idx : Optional[INDEX_LIKE], default None
-            The specific index/indices to overwrite. If None, the entire 
-            internal list is replaced by `objs`.
-
-        Raises
-        ------
-        ValueError
-            If `idx` is a sequence but its length does not match `objs`.
-        """
-
+        
         if idx is None:
             self._objects = list(objs)
             return
 
-        if isinstance(idx, (int, np.integer)):
+        if isinstance(idx, int):
             n = len(self._objects)
-            i = int(idx)
-            index = n + i if i < 0 else i
+            index = n + idx if idx < 0 else idx
             self._objects[index] = objs
             return
 
@@ -323,26 +333,14 @@ class MemoryObjectMixin(BaseObjectMixin):
             self._objects[i] = obj
 
     def _n_objects(self) -> int:
-        """
-        Get the total number of stored objects.
-
-        Returns
-        -------
-        int
-            Length of the internal object list.
-        """
         return len(self._objects)
 
     def _validate_objects(self) -> None:
-        """
-        Validate internal object consistency.
-        (No-op for in-memory list storage).
-        """
         pass
 
 
 # ---------------------------------------------------------------------------
-# MemoryFeatureMixin
+# MemoryFeatureMixin  (Tasks 1, 7, 8)
 # ---------------------------------------------------------------------------
 
 
@@ -350,31 +348,33 @@ class MemoryFeatureMixin(BaseFeatureMixin):
     """
     In-memory feature storage mixin utilizing a dictionary of NumPy arrays.
 
-    Implements query pushdown via NumPy fancy indexing and slicing, returning 
-    zero-copy views where possible.
+    Lifecycle
+    ---------
+    ``initialize_storage_context`` sets up ``self._features`` from the stashed
+    init arg.  ``bind_capabilities`` builds the initial ``FeatureRegistry``
+    from whatever is in ``self._features`` at that point, so no manual
+    registry construction is needed in ``EagerMemoryBackend.__init__``.
     """
 
-    def __init__(self, features: Optional[Dict[str, np.ndarray]] = None, **kwargs):
-        super().__init__(**kwargs)
-        self._features = features if features is not None else {}
-
-    def get_feature(self, name: str, idx: Optional[INDEX_LIKE] = None) -> np.ndarray:
-        """
-        Fetch a feature array or a specific subset of it.
-
+    def initialize_storage_context(
+        self, 
+        features: Optional[Dict[str, np.ndarray]] = None, 
+        **kwargs: Any
+    ) -> None:
+        """Initialize storage context via ``features`` kwarg.
+        
         Parameters
         ----------
-        name : str
-            The name of the feature to retrieve.
-        idx : Optional[INDEX_LIKE], default None
-            Row selector. If None, returns the full array. If a slice is 
-            provided, attempts to return a memory view.
-
-        Returns
-        -------
-        np.ndarray
-            The requested feature array subset.
+        features : Dict[str, np.ndarray], optional
+            Dictionary of NumPy arrays to initialize storage context with.
+        **kwargs
+            Additional keyword arguments. These are passed in the MRO chain.
         """
+        self._features = features or {}
+        super().initialize_storage_context(**kwargs)
+
+    def get_feature(self, name: str, idx: Optional[INDEX_LIKE] = None) -> np.ndarray:
+
         arr = self._features[name]
         sel = RowSelection.from_raw(idx, arr.shape[0])
         return sel.apply_to(arr)
@@ -387,24 +387,7 @@ class MemoryFeatureMixin(BaseFeatureMixin):
         na: Any = None,
         **kwargs
     ) -> None:
-        """
-        Add or update a feature array in-place.
-
-        If the feature does not exist and `idx` is provided, a new array is 
-        initialized filled with `na` values, and the target indices are populated.
-
-        Parameters
-        ----------
-        name : str
-            The name of the feature to update/create.
-        array : np.ndarray
-            The incoming feature data.
-        idx : Optional[INDEX_LIKE], default None
-            Row selector targeting exactly where `array` should be written.
-        na : Any, default None
-            Fill value for un-targeted rows when creating a new partial array. 
-            Defaults to np.nan for floats, 0 for integers.
-        """
+        
         if name not in self._features:
             if idx is None:
                 if array.shape[0] != self._n_feature_rows():
@@ -433,8 +416,9 @@ class MemoryFeatureMixin(BaseFeatureMixin):
                 arr = np.asarray(array)
                 if arr.shape[0] != self._features[name].shape[0]:
                     raise ValueError(
-                        f"Cannot update feature '{name}': array has {arr.shape[0]} rows "
-                        f"but existing feature has {self._features[name].shape[0]} rows."
+                        f"Cannot update feature '{name}': array has {arr.shape[0]} "
+                        f"rows but existing feature has "
+                        f"{self._features[name].shape[0]} rows."
                     )
                 self._features[name] = arr.copy()
             else:
@@ -442,46 +426,17 @@ class MemoryFeatureMixin(BaseFeatureMixin):
                 self._features[name][sel.positions] = array
 
     def drop_feature(self, name: str) -> None:
-        """
-        Remove a feature array from memory.
-
-        Parameters
-        ----------
-        name : str
-            The name of the feature to delete.
-        """
         del self._features[name]
 
     def get_feature_names(self) -> List[str]:
-        """
-        List all stored feature names.
-
-        Returns
-        -------
-        List[str]
-            A list containing the dictionary keys of stored feature arrays.
-        """
         return list(self._features.keys())
 
     def get_feature_shape(self, name: str) -> tuple:
-        """
-        Quickly inspect the shape of a feature array.
-
-        Parameters
-        ----------
-        name : str
-            The target feature.
-
-        Returns
-        -------
-        tuple
-            The shape of the requested NumPy array.
-        """
         return self._features[name].shape
 
 
 # ---------------------------------------------------------------------------
-# EagerMemoryBackend
+# EagerMemoryBackend  (Tasks 1, 6, 7, 8)
 # ---------------------------------------------------------------------------
 
 
@@ -494,12 +449,22 @@ class EagerMemoryBackend(
     """
     Fully eager, in-memory unified storage backend.
 
-    Inherits and orchestrates Metadata (Pandas), Objects (Lists), and 
-    Features (NumPy). This is the default backend for small to medium 
-    cheminformatics datasets that fit comfortably in RAM.
+    Lifecycle
+    ---------
+    No custom ``__init__`` is needed.  The cooperative MRO chain propagates
+    ``objects=``, ``metadata=``, and ``features=`` kwargs to the appropriate
+    mixins.  ``BaseStorageBackend.__init__`` then fires the three lifecycle
+    hooks in order:
+
+    1. ``initialize_storage_context`` -- each mixin sets up its storage.
+    2. ``bind_capabilities``          -- ``MemoryFeatureMixin`` builds the
+                                         live ``FeatureRegistry``.
+    3. ``post_initialize_validate``   -- cross-domain dimension check.
     """
 
     BACKEND_NAME = "EagerMemoryBackend"
+
+    # No __init__ override needed -- cooperative chain handles everything.
 
     def __len__(self) -> int:
         """
@@ -557,6 +522,11 @@ class EagerMemoryBackend(
                 self._metadata.to_parquet(path / "metadata.parquet", index=False)
             except Exception:
                 self._metadata.to_csv(path / "metadata.csv", index=False)
+        else:
+            # Always write metadata so row count is preserved (even if no columns).
+            pd.DataFrame(index=range(len(self._objects))).to_csv(
+                path / "metadata.csv", index=True
+            )
 
         # --- objects ---
         obj_dir = path / "objects"
