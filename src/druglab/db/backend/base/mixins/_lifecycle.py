@@ -17,9 +17,19 @@ bind_capabilities()
  
 post_initialize_validate()
     Called last, for cross-domain consistency assertions.
+
+save_storage_context(path, **kwargs)
+    Cooperative save hook.  Each mixin persists its own data to ``path``
+    and forwards via ``super()``.
+ 
+load_storage_context(path, **kwargs) -> dict   [classmethod]
+    Cooperative load hook.  Each mixin reads its own data from ``path``
+    and merges its contribution into the returned kwargs dict.
+    The dict is passed directly to ``cls(**result)`` by the caller.
 """
 
-from typing import Any
+from typing import Any, Dict
+from pathlib import Path
 
 __all__ = ['_LifecycleBase']
 
@@ -34,6 +44,10 @@ class _LifecycleBase:
     kwargs without forwarding to ``object``, which accepts none.  Concrete
     subclasses must call their ``super()`` counterpart so the full chain fires.
     """
+
+    # ------------------------------------------------------------------
+    # Initialization
+    # ------------------------------------------------------------------
  
     def initialize_storage_context(self, **kwargs: Any) -> None:
         """
@@ -63,3 +77,59 @@ class _LifecycleBase:
         an invalid initial state.  Must call ``super().post_initialize_validate()``.
         """
         # Terminal node -- absorbs remaining kwargs.
+
+    # ------------------------------------------------------------------
+    # Persistence
+    # ------------------------------------------------------------------
+
+    def save_storage_context(self, path: Path, **kwargs: Any) -> None:
+        """
+        Cooperative lifecycle hook: serialize mixin-level state to *path*.
+ 
+        Each mixin writes its own data (features, metadata, objects) to the
+        bundle directory and then calls::
+ 
+            super().save_storage_context(path, **kwargs)
+ 
+        so the full cooperative chain fires.
+ 
+        Parameters
+        ----------
+        path : Path
+            The target ``.dlb`` bundle directory (already created by the caller).
+        **kwargs
+            Forwarded down the chain.  Recognised kwargs (e.g. ``object_writer``)
+            are consumed by the relevant mixin; all others reach the terminal
+            node and are silently absorbed.
+        """
+        # Terminal node – absorbs remaining kwargs.
+ 
+    @classmethod
+    def load_storage_context(cls, path: Path, **kwargs: Any) -> Dict[str, Any]:
+        """
+        Cooperative lifecycle hook: deserialize mixin-level state from *path*.
+ 
+        Each mixin reads its own data from the bundle directory, adds its
+        contribution to the dict returned by ``super()``, and returns the
+        merged result.  The caller passes the final dict directly to
+        ``cls(**result)``::
+ 
+            result = super().load_storage_context(path, **kwargs)
+            result["features"] = {...}
+            return result
+ 
+        Parameters
+        ----------
+        path : Path
+            The source ``.dlb`` bundle directory.
+        **kwargs
+            Forwarded down the chain.  Recognised kwargs (e.g. ``object_reader``,
+            ``mmap_features``) are consumed by the relevant mixin.
+ 
+        Returns
+        -------
+        dict
+            Merged kwargs dict suitable for passing to ``cls.__init__``.
+        """
+        # Terminal node – returns empty dict.
+        return {}
