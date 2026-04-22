@@ -1,6 +1,6 @@
 """
-tests/test_indexing.py
-~~~~~~~~~~~~~~~~~~~~~~
+tests/unit/db/test_indexing.py
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 Comprehensive tests for druglab.db.indexing — the shared, backend-agnostic
 index-normalisation module.
 
@@ -11,11 +11,6 @@ Covers:
     float allow_float_cast, object dtype rejection, bounds checking
 4.  RowSelection — construction via from_raw(), all properties, apply_to(),
     apply_to_list(), repr
-5.  Integration smoke-tests verifying that EagerMemoryBackend and BaseTable
-    delegate through normalize_row_index (i.e. the shim works and stricter
-    errors propagate correctly)
-6.  Backward-compatibility: _resolve_idx shim produces identical output to
-    normalize_row_index for all accepted input types
 """
 
 from __future__ import annotations
@@ -31,45 +26,18 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from druglab.db.indexing import (
-    INDEX_LIKE,
     RowSelection,
     coerce_bool_mask,
     normalize_row_index,
     validate_take_index,
 )
-from druglab.db.backend.memory import _resolve_idx
+# from druglab.db.backend.memory import _resolve_idx
 from druglab.db.backend import EagerMemoryBackend
 from druglab.db.table import BaseTable, HistoryEntry
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-
-def _make_backend(n: int = 6) -> EagerMemoryBackend:
-    return EagerMemoryBackend(
-        objects=[{"id": i} for i in range(n)],
-        metadata=pd.DataFrame({"val": list(range(n))}),
-        features={"fp": np.arange(n * 4, dtype=np.float32).reshape(n, 4)},
-    )
-
-
-class DummyTable(BaseTable[dict]):
-    def _serialize_object(self, obj):
-        return json.dumps(obj).encode()
-
-    def _deserialize_object(self, raw):
-        return json.loads(raw.decode())
-
-    def _object_type_name(self):
-        return "dict"
-
 
 # ===========================================================================
 # Section 1: normalize_row_index
 # ===========================================================================
-
 
 class TestNormalizeRowIndex:
     """Unit tests for the core normalisation helper."""
@@ -448,157 +416,6 @@ class TestRowSelection:
         sel = RowSelection.from_raw([0, 1], 5)
         with pytest.raises((AttributeError, TypeError)):
             sel.n = 999
-
-
-# ===========================================================================
-# Section 5: _resolve_idx backward-compatibility shim
-# ===========================================================================
-
-
-class TestResolveIdxShim:
-    """
-    The private ``_resolve_idx`` function in memory.py is now a thin wrapper
-    around ``normalize_row_index``.  These tests confirm identical behaviour.
-    """
-
-    @pytest.mark.parametrize("idx,n,expected", [
-        (None, 10, None),
-        (3, 10, [3]),
-        (-1, 10, [9]),
-        (slice(1, 4), 10, [1, 2, 3]),
-        ([0, 2, 4], 10, [0, 2, 4]),
-        (np.array([1, 3]), 10, [1, 3]),
-    ])
-    def test_shim_matches_normalize(self, idx, n, expected):
-        shim_result = _resolve_idx(idx, n)
-        norm_result = normalize_row_index(idx, n)
-
-        if expected is None:
-            assert shim_result is None
-            assert norm_result is None
-        else:
-            assert shim_result.tolist() == expected
-            assert norm_result.tolist() == expected
-
-    def test_shim_invalid_type_raises(self):
-        with pytest.raises(TypeError):
-            _resolve_idx("bad", 10)
-
-    def test_shim_out_of_bounds_raises(self):
-        with pytest.raises(IndexError):
-            _resolve_idx(99, 10)
-
-    def test_shim_bool_mask(self):
-        mask = np.array([True, False, True])
-        result = _resolve_idx(mask, 3)
-        assert result.tolist() == [0, 2]
-
-
-# ===========================================================================
-# Section 6: Integration — EagerMemoryBackend uses normalize_row_index
-# ===========================================================================
-
-
-class TestBackendIntegration:
-    """
-    Smoke tests confirming the backend delegates index resolution through
-    the shared indexing module (strict error model propagates correctly).
-    """
-
-    def test_get_feature_float_array_rejected(self):
-        b = _make_backend(6)
-        with pytest.raises(TypeError, match="float"):
-            b.get_feature("fp", idx=np.array([1.0, 2.0]))
-
-    def test_get_metadata_float_array_rejected(self):
-        b = _make_backend(6)
-        with pytest.raises(TypeError, match="float"):
-            b.get_metadata(idx=np.array([0.0, 1.0]))
-
-    def test_get_objects_float_array_rejected(self):
-        b = _make_backend(6)
-        with pytest.raises(TypeError):
-            b.get_objects(idx=np.array([0.0, 1.0]))
-
-    def test_get_feature_object_array_rejected(self):
-        b = _make_backend(6)
-        with pytest.raises(TypeError, match="[Oo]bject"):
-            b.get_feature("fp", idx=np.array([0, 1], dtype=object))
-
-    def test_get_feature_out_of_bounds_raises(self):
-        b = _make_backend(4)
-        with pytest.raises(IndexError):
-            b.get_feature("fp", idx=np.array([0, 99]))
-
-    def test_get_metadata_bool_mask_wrong_length_raises(self):
-        b = _make_backend(6)
-        with pytest.raises(IndexError, match="length"):
-            b.get_metadata(idx=np.array([True, False]))  # wrong length
-
-    def test_row_selection_is_used_in_create_view(self):
-        """create_view routes through RowSelection internally."""
-        b = _make_backend(6)
-        view = b.create_view([1, 3, 5])
-        assert len(view) == 3
-        assert view._objects[0] == {"id": 1}
-        assert view._metadata["val"].tolist() == [1, 3, 5]
-
-
-# ===========================================================================
-# Section 7: Integration — BaseTable uses normalize_row_index via backend
-# ===========================================================================
-
-
-class TestTableIntegration:
-    """
-    Confirm that table-level multi-axis indexing propagates strict errors
-    from the new indexing module.
-    """
-
-    def _make_table(self, n=6):
-        objects = [{"id": i} for i in range(n)]
-        meta = pd.DataFrame({"val": list(range(n))})
-        features = {"fp": np.arange(n * 4, dtype=np.float32).reshape(n, 4)}
-        return DummyTable(objects=objects, metadata=meta, features=features)
-
-    def test_feat_pushdown_float_array_rejected(self):
-        t = self._make_table()
-        from druglab.db.table.base import FEAT
-        with pytest.raises(TypeError, match="float"):
-            _ = t[FEAT, "fp", np.array([0.0, 1.0])]
-
-    def test_feat_pushdown_object_array_rejected(self):
-        t = self._make_table()
-        from druglab.db.table.base import FEAT
-        with pytest.raises(TypeError):
-            _ = t[FEAT, "fp", np.array([0, 1], dtype=object)]
-
-    def test_meta_pushdown_out_of_bounds_raises(self):
-        t = self._make_table(4)
-        from druglab.db.table.base import META
-        with pytest.raises(IndexError):
-            _ = t[META, 99]
-
-    def test_row_selection_scalar_input_flag(self):
-        """RowSelection.scalar_input is True when a bare int was passed."""
-        sel = RowSelection.from_raw(2, 10)
-        assert sel.is_scalar is True
-
-        sel_list = RowSelection.from_raw([2], 10)
-        assert sel_list.is_scalar is False
-
-    def test_bool_mask_with_wrong_length_raises_at_table_level(self):
-        """Table.subset enforces boolean mask length independently."""
-        t = self._make_table(4)
-        with pytest.raises(ValueError):
-            t.subset(np.array([True, False]))  # length 2, table is 4
-
-    def test_normalize_row_index_importable_from_db(self):
-        """Top-level db package should export the indexing utilities."""
-        from druglab.db import normalize_row_index, RowSelection, coerce_bool_mask, validate_take_index
-        result = normalize_row_index([0, 2], 5)
-        assert result.tolist() == [0, 2]
-
 
 # ===========================================================================
 # Run

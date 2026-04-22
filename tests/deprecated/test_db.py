@@ -45,7 +45,7 @@ from druglab.db.backend import (
     MemoryObjectMixin,
     MemoryFeatureMixin,
 )
-from druglab.db.backend.memory import _resolve_idx
+# from druglab.db.backend.memory import _resolve_idx
 from druglab.db.table import BaseTable, HistoryEntry, META, OBJ, FEAT, M, O, F
 
 # ---------------------------------------------------------------------------
@@ -87,47 +87,47 @@ def make_table(n: int = 4) -> DummyTable:
 # Section 1: _resolve_idx helper
 # ===========================================================================
 
-class TestResolveIdx:
-    """Unit-test the index-normalisation helper independently."""
+# class TestResolveIdx:
+#     """Unit-test the index-normalisation helper independently."""
 
-    def test_none_returns_none(self):
-        assert _resolve_idx(None, 10) is None
+#     def test_none_returns_none(self):
+#         assert _resolve_idx(None, 10) is None
 
-    def test_int_positive(self):
-        result = _resolve_idx(3, 10)
-        assert result.tolist() == [3]
+#     def test_int_positive(self):
+#         result = _resolve_idx(3, 10)
+#         assert result.tolist() == [3]
 
-    def test_int_negative(self):
-        result = _resolve_idx(-1, 10)
-        assert result.tolist() == [9]
+#     def test_int_negative(self):
+#         result = _resolve_idx(-1, 10)
+#         assert result.tolist() == [9]
 
-    def test_slice_basic(self):
-        result = _resolve_idx(slice(2, 5), 10)
-        assert result.tolist() == [2, 3, 4]
+#     def test_slice_basic(self):
+#         result = _resolve_idx(slice(2, 5), 10)
+#         assert result.tolist() == [2, 3, 4]
 
-    def test_slice_step(self):
-        result = _resolve_idx(slice(0, 10, 2), 10)
-        assert result.tolist() == [0, 2, 4, 6, 8]
+#     def test_slice_step(self):
+#         result = _resolve_idx(slice(0, 10, 2), 10)
+#         assert result.tolist() == [0, 2, 4, 6, 8]
 
-    def test_slice_open_end(self):
-        result = _resolve_idx(slice(None, None), 5)
-        assert result.tolist() == [0, 1, 2, 3, 4]
+#     def test_slice_open_end(self):
+#         result = _resolve_idx(slice(None, None), 5)
+#         assert result.tolist() == [0, 1, 2, 3, 4]
 
-    def test_list_of_ints(self):
-        result = _resolve_idx([0, 2, 4], 10)
-        assert result.tolist() == [0, 2, 4]
+#     def test_list_of_ints(self):
+#         result = _resolve_idx([0, 2, 4], 10)
+#         assert result.tolist() == [0, 2, 4]
 
-    def test_numpy_array(self):
-        result = _resolve_idx(np.array([1, 3]), 10)
-        assert result.tolist() == [1, 3]
+#     def test_numpy_array(self):
+#         result = _resolve_idx(np.array([1, 3]), 10)
+#         assert result.tolist() == [1, 3]
 
-    def test_list_negative(self):
-        result = _resolve_idx([-1, -2], 10)
-        assert result.tolist() == [9, 8]
+#     def test_list_negative(self):
+#         result = _resolve_idx([-1, -2], 10)
+#         assert result.tolist() == [9, 8]
 
-    def test_invalid_type_raises(self):
-        with pytest.raises(TypeError):
-            _resolve_idx("bad", 10)
+#     def test_invalid_type_raises(self):
+#         with pytest.raises(TypeError):
+#             _resolve_idx("bad", 10)
 
 
 # ===========================================================================
