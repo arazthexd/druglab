@@ -1,5 +1,5 @@
 """
-druglab.db.base
+druglab.db.table.base
 ~~~~~~~~~~~~~~~
 BaseTable: abstract orchestrator enforcing the four-property contract.
 HistoryEntry: immutable record written by pipe blocks.
@@ -44,6 +44,7 @@ import numpy as np
 import pandas as pd
 
 from ..backend import EagerMemoryBackend, BaseStorageBackend
+from ..backend.overlay import OverlayBackend
 from ..indexing import INDEX_LIKE, RowSelection, normalize_row_index
 
 # ---------------------------------------------------------------------------
@@ -275,8 +276,9 @@ class BaseTable(ABC, Generic[OT]):
     # ------------------------------------------------------------------
 
     def _validate(self) -> None:
-        # Backend natively orchestrates all dimensional checks now!
-        self._backend.validate()
+        # OverlayBackend skips the full validate() (no-op), which is fine.
+        if not isinstance(self._backend, OverlayBackend):
+            self._backend.validate()
 
     def _run_post_mutation_validation(
         self,
@@ -291,7 +293,7 @@ class BaseTable(ABC, Generic[OT]):
         introduced the mismatch for easier debugging.
         """
         try:
-            self._backend.validate()
+            self._validate()            
         except Exception as exc:
             raise ValueError(
                 f"Post-mutation validation failed in domain='{domain}', method='{method}': {exc}"
@@ -582,6 +584,36 @@ class BaseTable(ABC, Generic[OT]):
         self._history.append(entry)
 
     # ------------------------------------------------------------------
+    # Overlay state management
+    # ------------------------------------------------------------------
+
+    def materialize(self) -> "BaseTable[OT]":
+        """
+        Collapse the backend proxy tree into a concrete EagerMemoryBackend.
+
+        If the current backend is an OverlayBackend, merges all local deltas
+        with base data and returns a new table backed by EagerMemoryBackend.
+        If the backend is already concrete, returns a copy.
+        """
+        if isinstance(self._backend, OverlayBackend):
+            concrete_backend = self._backend.materialize()
+        else:
+            concrete_backend = self._backend.create_view(list(range(len(self._backend))))
+        return self._new_instance_from_backend(concrete_backend, list(self._history))
+
+    def commit(self) -> None:
+        """
+        Flush all local deltas from an OverlayBackend down to the base backend.
+
+        Raises TypeError if the backend is not an OverlayBackend.
+        """
+        if not isinstance(self._backend, OverlayBackend):
+            raise TypeError(
+                "commit() is only available on tables backed by OverlayBackend."
+            )
+        self._backend.commit()
+
+    # ------------------------------------------------------------------
     # Advanced multi-axis indexing with strict query pushdown
     # ------------------------------------------------------------------
 
@@ -665,17 +697,15 @@ class BaseTable(ABC, Generic[OT]):
         """
         Return a new table containing only the rows at ``indices``.
 
-        The backend's ``create_view`` method is called to synchronise
-        all three data stores at the storage layer.
+        Uses OverlayBackend for zero-copy row filtering — the base backend's
+        data is NOT duplicated in memory.
 
         Parameters
         ----------
         indices
             Integer indices, boolean mask, slice, or single int.
         copy_objects
-            Whether to deep-copy objects (default True).
-            ``create_view`` always copies; set False only for internal
-            in-place operations where a view is acceptable.
+            Kept for API compatibility; ignored (OverlayBackend is zero-copy).
         """
         n = self.n
 
@@ -694,8 +724,8 @@ class BaseTable(ABC, Generic[OT]):
 
         idx = idx.astype(np.intp)
 
-        # Push selection down to the backend
-        new_backend = self._backend.create_view(idx.tolist())
+        # Zero-copy: wrap in OverlayBackend instead of deep-copying
+        new_backend = OverlayBackend(self._backend, idx)
 
         hist = list(self._history) + [
             HistoryEntry.now(
@@ -713,7 +743,10 @@ class BaseTable(ABC, Generic[OT]):
 
     def copy(self) -> "BaseTable[OT]":
         """Return a fully independent deep copy of this table."""
-        new_backend = self._backend.create_view(list(range(len(self._backend))))
+        if isinstance(self._backend, OverlayBackend):
+            new_backend = self._backend.materialize()
+        else:
+            new_backend = self._backend.create_view(list(range(len(self._backend))))
         return self._new_instance_from_backend(new_backend, list(self._history))
 
     # ------------------------------------------------------------------
@@ -823,6 +856,9 @@ class BaseTable(ABC, Generic[OT]):
         """
         Save the table to a ``.dlb`` directory bundle.
 
+        If the backend is an OverlayBackend, it is materialized first so the
+        saved bundle represents the clean, unified state.
+
         Parameters
         ----------
         path
@@ -865,33 +901,34 @@ class BaseTable(ABC, Generic[OT]):
 
         try:
             # 2. Delegate data writing to the backend into the temporary directory
+            #    OverlayBackend.save() internally calls materialize().save()
             self._backend.save(
                 temp_dir,
                 serializer=self._serialize_object,
             )
 
             # 3. Write config.json manifest
+            # Use the materialized length for config
+            n = len(self._backend)
             history_data = [e.to_dict() for e in self._history]
             config = {
                 "table_class": self.__class__.__name__,
                 "object_type": self._object_type_name(),
-                "backend_class": type(self._backend).__name__,
+                "backend_class": "EagerMemoryBackend",  # always save as concrete
                 "schema_version": 2,
-                "n": self.n,
+                "n": n,
                 "history": history_data,
             }
             (temp_dir / "config.json").write_text(
                 json.dumps(config, indent=2), encoding="utf-8"
             )
 
-            # 4. Atomic Swap: Remove the old bundle (if overwriting) and move the new one into place
+            # 4. Atomic Swap
             if root.exists():
                 shutil.rmtree(root)
             temp_dir.replace(root)
 
         except Exception:
-            # If ANYTHING fails during the save, clean up the temp directory 
-            # and leave the original bundle (if it existed) completely untouched.
             if temp_dir.exists():
                 shutil.rmtree(temp_dir)
             raise
@@ -907,16 +944,6 @@ class BaseTable(ABC, Generic[OT]):
     ) -> "BaseTable[OT]":
         """
         Load a table saved with ``save()``.
-
-        Reads the ``config.json`` manifest to reconstruct the exact backend
-        type and history, then delegates data loading to the backend.
-
-        Parameters
-        ----------
-        path
-            Bundle directory written by ``save()``.
-        mmap_features
-            If True, load feature arrays as ``numpy.memmap``.
         """
         root = Path(path)
         if not root.is_dir():
@@ -924,28 +951,24 @@ class BaseTable(ABC, Generic[OT]):
 
         config_path = root / "config.json"
         if not config_path.exists():
-            # Fallback: attempt to load legacy format (schema_version 1)
             return cls._load_legacy(root, mmap_features=mmap_features)
 
         config = json.loads(config_path.read_text(encoding="utf-8"))
 
-        # Reconstruct history
         history = [HistoryEntry.from_dict(e) for e in config.get("history", [])]
 
-        # --- THE FIX: Allocate the instance early so we can use its instance methods! ---
         instance = object.__new__(cls)
 
         backend_class_name = config.get("backend_class", "EagerMemoryBackend")
         if backend_class_name == "EagerMemoryBackend":
             backend = EagerMemoryBackend.load(
                 root,
-                deserializer=instance._deserialize_object,  # <-- Using the abstract instance contract!
+                deserializer=instance._deserialize_object,
                 mmap_features=mmap_features,
             )
         else:
             raise ValueError(f"Unknown backend class '{backend_class_name}'.")
 
-        # Now properly initialize the instance
         BaseTable.__init__(
             instance,
             _backend=backend,
@@ -962,24 +985,21 @@ class BaseTable(ABC, Generic[OT]):
     ) -> "BaseTable[OT]":
         """
         Fallback loader for tables saved with the old per-object-pickle format
-        (schema_version 1).  Reads ``_meta.json`` instead of ``config.json``.
+        (schema_version 1).
         """
         import pickle as _pickle
 
         meta_info = json.loads((root / "_meta.json").read_text())
         n = meta_info["n"]
 
-        # FIX: Allocate instance early
         instance = object.__new__(cls)
 
-        # objects (one file per object)
         obj_dir = root / "objects"
         objects = []
         for i in range(n):
             raw = (obj_dir / f"{i:07d}.pkl").read_bytes()
             objects.append(instance._deserialize_object(raw))
 
-        # metadata
         parquet_path = root / "metadata.parquet"
         csv_path = root / "metadata.csv"
         if parquet_path.exists():
@@ -989,7 +1009,6 @@ class BaseTable(ABC, Generic[OT]):
         else:
             metadata = pd.DataFrame(index=range(n))
 
-        # features
         feat_dir = root / "features"
         features: Dict[str, np.ndarray] = {}
         if feat_dir.exists():
@@ -1000,7 +1019,6 @@ class BaseTable(ABC, Generic[OT]):
                 else:
                     features[feat_name] = np.load(str(npy_path), allow_pickle=False)
 
-        # history
         history_path = root / "history.json"
         history = []
         if history_path.exists():
@@ -1013,7 +1031,6 @@ class BaseTable(ABC, Generic[OT]):
             features=features,
         )
         
-        # Initialize
         BaseTable.__init__(
             instance,
             _backend=backend,
@@ -1034,7 +1051,6 @@ class BaseTable(ABC, Generic[OT]):
     ) -> "BaseTable[OT]":
         """
         Create a new instance of *this* subclass with raw data.
-        Used by legacy internal callers (conformer/reaction modules).
         """
         backend = EagerMemoryBackend(
             objects=objects,
@@ -1050,7 +1066,6 @@ class BaseTable(ABC, Generic[OT]):
     ) -> "BaseTable[OT]":
         """
         Create a new instance of *this* subclass with a pre-built backend.
-        This is the canonical internal factory used by subset, copy, concat.
         """
         instance = object.__new__(self.__class__)
         BaseTable.__init__(

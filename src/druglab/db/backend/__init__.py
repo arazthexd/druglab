@@ -22,40 +22,28 @@ MemoryFeatureMixin
 
 EagerMemoryBackend
     Fully in-memory concrete backend combining all memory mixins.
+
+OverlayBackend
+    Zero-copy proxy backend with Copy-on-Write semantics.
 """
 
-from druglab.db.backend.base import (
-    BaseObjectMixin,
-    BaseMetadataMixin,
-    BaseFeatureMixin,
-    BaseStorageBackend,
-    INDEX_LIKE,
-    RowSelection,
-    normalize_row_index,
-    coerce_bool_mask,
-    validate_take_index,
-)
-from druglab.db.backend.memory import (
-    MemoryMetadataMixin,
-    MemoryObjectMixin,
-    MemoryFeatureMixin,
-    EagerMemoryBackend,
-    _resolve_idx,
-)
+from .base import *
+from .memory import *
+from .overlay import *
 
 __all__ = [
-    "BaseObjectMixin",
-    "BaseMetadataMixin",
-    "BaseFeatureMixin",
+    # Base
     "BaseStorageBackend",
-    "INDEX_LIKE",
-    "RowSelection",
-    "normalize_row_index",
-    "coerce_bool_mask",
-    "validate_take_index",
+    "BaseMetadataMixin",
+    "BaseObjectMixin",
+    "BaseFeatureMixin",
+
+    # Memory
     "MemoryMetadataMixin",
     "MemoryObjectMixin",
     "MemoryFeatureMixin",
     "EagerMemoryBackend",
-    "_resolve_idx",
+
+    # Overlay
+    "OverlayBackend",
 ]
