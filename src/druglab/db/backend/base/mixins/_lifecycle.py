@@ -5,6 +5,18 @@ Cooperative lifecycle hooks for domain mixins and capability mixins.
 
 Intented for clean MRO chains during initialization of storage backend
 subclasses.
+
+Hooks (in rough call-order per operation)
+------------------------------------------
+initialize_storage_context(**kwargs)
+    Called early in ``__init__``.  Each mixin wires up its own storage and
+    forwards remaining kwargs via ``super()``.
+ 
+bind_capabilities()
+    Called after the full ``__init__`` MRO chain.  Used for inter-mixin wiring.
+ 
+post_initialize_validate()
+    Called last, for cross-domain consistency assertions.
 """
 
 from typing import Any
@@ -17,21 +29,10 @@ class _LifecycleBase:
  
     All domain mixins and capability mixins inherit from this class so that
     ``super()``-based cooperative calls propagate correctly through any MRO.
- 
-    Hooks
-    -----
-    initialize_storage_context(**kwargs)
-        Called early in ``__init__`` after each mixin's own state is ready.
-        Use this to wire up storage-layer internals.  Must call
-        ``super().initialize_storage_context`` first so the full chain fires.
- 
-    bind_capabilities()
-        Called once after the entire ``__init__`` MRO chain completes, before
-        ``post_initialize_validate``.  Must call ``super().bind_capabilities()``.
- 
-    post_initialize_validate()
-        Called last, for cross-domain consistency assertions.  Must call
-        ``super().post_initialize_validate()`` first.
+
+    Every hook listed below is a **terminal node**: it absorbs remaining
+    kwargs without forwarding to ``object``, which accepts none.  Concrete
+    subclasses must call their ``super()`` counterpart so the full chain fires.
     """
  
     def initialize_storage_context(self, **kwargs: Any) -> None:
@@ -39,11 +40,9 @@ class _LifecycleBase:
         Cooperative lifecycle hook: finalize mixin-level storage setup.
  
         Implementors must call ``super().initialize_storage_context(**kwargs)``
-        before their own logic so the full cooperative chain fires.
+        *after* their own logic so the full cooperative chain fires.
  
-        Unknown kwargs are intentionally swallowed at the terminal node so
-        that cooperative chains don't break when different mixins consume
-        different subsets of kwargs.
+        Unknown kwargs are swallowed at the terminal node.
         """
         # Terminal node -- absorbs remaining kwargs.
  
