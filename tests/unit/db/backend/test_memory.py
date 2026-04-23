@@ -1,12 +1,16 @@
 """
-tests/test_db.py
-~~~~~~~~~~~~~~~~~~~~~~~~~
-Comprehensive test suite for the refactored druglab.db storage architecture.
+tests/unit/db/backend/test_memory.py
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Comprehensive test suite for the refactored druglab.db in-memory storage.
 
 Tests cover:
-1. Memory Metadata
-2. Memory Objects
-3. Memory Features
+1. Memory Metadata — read/write API
+2. Memory Objects — read/write API
+3. Memory Features — read/write API
+4. Cooperative save_storage_context
+5. Cooperative load_storage_context (object_writer / object_reader)
+6. _gather_materialized_state
+7. EagerMemoryBackend.save() / load() round-trip
 """
 
 from __future__ import annotations
@@ -15,9 +19,7 @@ import json
 import pickle
 import tempfile
 from pathlib import Path
-from unittest.mock import MagicMock, patch, call
-import sys
-import warnings
+from typing import Any, List
 
 import numpy as np
 import pandas as pd
@@ -32,9 +34,12 @@ from druglab.db.backend import (
 )
 from druglab.db.table import BaseTable, HistoryEntry, META, OBJ, FEAT, M, O, F
 from tests.shared.make_dummy_db import (
-    _make_dummy_dict_memory_backend_context, 
-    BackendContext, TableContext,
-    _make_metadata, _make_dict_objects, _make_features
+    _make_dummy_dict_memory_backend_context,
+    BackendContext,
+    TableContext,
+    _make_metadata,
+    _make_dict_objects,
+    _make_features,
 )
 
 # ===========================================================================
@@ -286,3 +291,233 @@ class TestMemoryFeatureMixin:
     def test_drop_feature_missing_raises(self, bctx: BackendContext):
         with pytest.raises(KeyError):
             bctx.backend.drop_feature("nonexistent_feature_key")
+
+
+# ===========================================================================
+# Section 4: save_storage_context
+# ===========================================================================
+
+class TestSaveStorageContext:
+    """Unit-test each mixin's cooperative save hook in isolation."""
+
+    def _make_backend(self, n=4):
+        return EagerMemoryBackend(
+            objects=[{"id": i} for i in range(n)],
+            metadata=pd.DataFrame({"val": list(range(n))}),
+            features={"fp": np.eye(n, dtype=np.float32)},
+        )
+
+    def test_metadata_mixin_saves_parquet(self, tmp_path):
+        backend = self._make_backend()
+        backend.save_storage_context(tmp_path)
+        assert (tmp_path / "metadata.parquet").exists() or (
+            tmp_path / "metadata.csv"
+        ).exists()
+
+    def test_feature_mixin_saves_npy(self, tmp_path):
+        backend = self._make_backend()
+        backend.save_storage_context(tmp_path)
+        feat_dir = tmp_path / "features"
+        assert feat_dir.exists()
+        npy_files = list(feat_dir.glob("*.npy"))
+        assert any(f.stem == "fp" for f in npy_files)
+
+    def test_object_mixin_saves_pickle(self, tmp_path):
+        backend = self._make_backend()
+        backend.save_storage_context(tmp_path)
+        obj_pkl = tmp_path / "objects" / "objects.pkl"
+        assert obj_pkl.exists()
+
+    def test_object_mixin_custom_writer(self, tmp_path):
+        """object_writer overrides default pickle behaviour."""
+        backend = self._make_backend(n=3)
+        written: List[Any] = []
+
+        def my_writer(objects, dir_path):
+            written.extend(objects)
+            (dir_path / "custom.bin").write_bytes(b"custom")
+
+        backend.save_storage_context(tmp_path, object_writer=my_writer)
+        assert written == [{"id": 0}, {"id": 1}, {"id": 2}]
+        assert (tmp_path / "objects" / "custom.bin").exists()
+
+    def test_mro_chain_fires_all_three_domains(self, tmp_path):
+        """A single save_storage_context call should produce all three domain artefacts."""
+        backend = self._make_backend()
+        backend.save_storage_context(tmp_path)
+        assert (tmp_path / "objects" / "objects.pkl").exists()
+        assert any((tmp_path / "features").glob("*.npy"))
+        assert (tmp_path / "metadata.parquet").exists() or (
+            tmp_path / "metadata.csv"
+        ).exists()
+
+
+# ===========================================================================
+# Section 5: load_storage_context
+# ===========================================================================
+
+class TestLoadStorageContext:
+    """Unit-test each mixin's cooperative load hook in isolation."""
+
+    def _make_bundle(self, tmp_path, n=4):
+        backend = EagerMemoryBackend(
+            objects=[{"id": i} for i in range(n)],
+            metadata=pd.DataFrame({"val": list(range(n))}),
+            features={"fp": np.eye(n, dtype=np.float32)},
+        )
+        backend.save(tmp_path)
+        return tmp_path
+
+    def test_load_roundtrip_default(self, tmp_path):
+        bundle = self._make_bundle(tmp_path / "bundle")
+        loaded = EagerMemoryBackend.load(bundle)
+        # Objects round-trip (no serializer → raw dicts via default pickle)
+        assert loaded.get_objects() == [{"id": i} for i in range(4)]
+
+    def test_load_features_roundtrip(self, tmp_path):
+        bundle = self._make_bundle(tmp_path / "bundle")
+        loaded = EagerMemoryBackend.load(bundle)
+        np.testing.assert_array_almost_equal(
+            loaded.get_feature("fp"), np.eye(4, dtype=np.float32)
+        )
+
+    def test_load_metadata_roundtrip(self, tmp_path):
+        bundle = self._make_bundle(tmp_path / "bundle")
+        loaded = EagerMemoryBackend.load(bundle)
+        assert loaded.get_metadata()["val"].tolist() == list(range(4))
+
+    def test_load_with_custom_object_reader(self, tmp_path):
+        """Custom object_reader completely replaces the default pickle loader."""
+        bundle = self._make_bundle(tmp_path / "bundle")
+
+        custom_objects = [{"custom": True, "row": i} for i in range(4)]
+
+        def my_reader(dir_path: Path):
+            return custom_objects
+
+        loaded = EagerMemoryBackend.load(bundle, object_reader=my_reader)
+        assert loaded.get_objects() == custom_objects
+
+    def test_load_storage_context_classmethod_returns_dict(self, tmp_path):
+        """load_storage_context should return a dict with 'objects','metadata','features'."""
+        bundle = self._make_bundle(tmp_path / "bundle")
+        kwargs = EagerMemoryBackend.load_storage_context(bundle)
+        assert "objects" in kwargs
+        assert "metadata" in kwargs
+        assert "features" in kwargs
+
+    def test_load_mmap_features(self, tmp_path):
+        bundle = self._make_bundle(tmp_path / "bundle")
+        loaded = EagerMemoryBackend.load(bundle, mmap_features=True)
+        fp = loaded.get_feature("fp")
+        assert fp.shape == (4, 4)
+
+
+# ===========================================================================
+# Section 6: _gather_materialized_state
+# ===========================================================================
+
+class TestGatherMaterializedState:
+
+    def _make_backend(self, n=6):
+        return EagerMemoryBackend(
+            objects=[{"id": i} for i in range(n)],
+            metadata=pd.DataFrame({"val": list(range(n)), "label": [f"L{i}" for i in range(n)]}),
+            features={"fp": np.arange(n * 3).reshape(n, 3).astype(np.float32)},
+        )
+
+    def test_gather_full_state_no_index_map(self):
+        backend = self._make_backend(4)
+        result = backend._gather_materialized_state()
+        assert "objects" in result
+        assert "metadata" in result
+        assert "features" in result
+        assert len(result["objects"]) == 4
+        assert result["metadata"].shape[0] == 4
+        assert result["features"]["fp"].shape[0] == 4
+
+    def test_gather_sliced_state_with_index_map(self):
+        backend = self._make_backend(6)
+        index_map = np.array([0, 2, 4], dtype=np.intp)
+        result = backend._gather_materialized_state(index_map=index_map)
+        assert len(result["objects"]) == 3
+        assert result["objects"] == [{"id": 0}, {"id": 2}, {"id": 4}]
+        assert result["metadata"].shape[0] == 3
+        assert result["metadata"]["val"].tolist() == [0, 2, 4]
+        assert result["features"]["fp"].shape == (3, 3)
+        expected_fp = np.arange(6 * 3).reshape(6, 3)[index_map].astype(np.float32)
+        np.testing.assert_array_equal(result["features"]["fp"], expected_fp)
+
+    def test_gather_returns_copy_of_metadata(self):
+        """Gathered metadata must not share memory with the original."""
+        backend = self._make_backend(3)
+        result = backend._gather_materialized_state()
+        result["metadata"]["val"] = [-1, -2, -3]
+        assert backend.get_metadata()["val"].tolist() != [-1, -2, -3]
+
+    def test_gather_returns_copy_of_features(self):
+        """Gathered features must not share memory with the original."""
+        backend = self._make_backend(3)
+        result = backend._gather_materialized_state()
+        result["features"]["fp"][:] = 0
+        assert not np.all(backend.get_feature("fp") == 0)
+
+
+# ===========================================================================
+# Section 7: EagerMemoryBackend.save() / load() round-trip
+# ===========================================================================
+
+class TestEagerMemoryRoundtrip:
+    """End-to-end save/load tests using the new object_writer/object_reader API."""
+
+    def test_save_creates_bundle_directory(self, tmp_path):
+        backend = EagerMemoryBackend(objects=[1, 2, 3])
+        backend.save(tmp_path / "bundle")
+        assert (tmp_path / "bundle").is_dir()
+
+    def test_save_load_objects_with_writer_reader(self, tmp_path):
+        """Custom writer serialises bytes; custom reader deserialises them."""
+        bundle = tmp_path / "bundle"
+        objects = [{"payload": i} for i in range(5)]
+
+        backend = EagerMemoryBackend(objects=objects)
+
+        def writer(objs, dir_path):
+            with open(dir_path / "objects.pkl", "wb") as f:
+                pickle.dump(
+                    {"format": "stream_v2", "count": len(objs), "serialized": True}, f
+                )
+                for obj in objs:
+                    pickle.dump(json.dumps(obj).encode(), f)
+
+        def reader(dir_path):
+            with open(dir_path / "objects.pkl", "rb") as f:
+                hdr = pickle.load(f)
+                count = hdr["count"]
+                return [json.loads(pickle.load(f).decode()) for _ in range(count)]
+
+        backend.save(bundle, object_writer=writer)
+        loaded = EagerMemoryBackend.load(bundle, object_reader=reader)
+        assert loaded.get_objects() == objects
+
+    def test_save_no_writer_plain_objects_round_trip(self, tmp_path):
+        bundle = tmp_path / "bundle"
+        objects = [{"id": i} for i in range(4)]
+        backend = EagerMemoryBackend(objects=objects)
+        backend.save(bundle)
+        loaded = EagerMemoryBackend.load(bundle)
+        assert loaded.get_objects() == objects
+
+    def test_load_returns_eager_memory_backend(self, tmp_path):
+        bundle = tmp_path / "bundle"
+        EagerMemoryBackend(objects=[1, 2]).save(bundle)
+        loaded = EagerMemoryBackend.load(bundle)
+        assert isinstance(loaded, EagerMemoryBackend)
+
+
+# ===========================================================================
+# Run
+# ===========================================================================
+
+if __name__ == "__main__":
+    pytest.main([__file__, "-v", "--tb=short"])
