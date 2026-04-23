@@ -79,27 +79,27 @@ class EagerMemoryBackend(
         """
         return self._n_objects()
 
-    def create_view(self, indices: Sequence[int]) -> "EagerMemoryBackend":
-        """
-        Return an independent, deep-copied view restricted to specific indices.
-        """
-        sel = RowSelection.from_raw(
-            np.asarray(indices, dtype=np.intp) if indices else np.array([], dtype=np.intp),
-            len(self),
-        )
+    # def create_view(self, indices: Sequence[int]) -> "EagerMemoryBackend":
+    #     """
+    #     Return an independent, deep-copied view restricted to specific indices.
+    #     """
+    #     sel = RowSelection.from_raw(
+    #         np.asarray(indices, dtype=np.intp) if indices else np.array([], dtype=np.intp),
+    #         len(self),
+    #     )
 
-        if sel.is_empty:
-            return EagerMemoryBackend()
+    #     if sel.is_empty:
+    #         return EagerMemoryBackend()
 
-        new_objects = [copy.deepcopy(self._objects[i]) for i in sel.positions]
-        new_metadata = self._metadata.iloc[sel.positions].reset_index(drop=True).copy()
-        new_features = {k: v[sel.positions].copy() for k, v in self._features.items()}
+    #     new_objects = [copy.deepcopy(self._objects[i]) for i in sel.positions]
+    #     new_metadata = self._metadata.iloc[sel.positions].reset_index(drop=True).copy()
+    #     new_features = {k: v[sel.positions].copy() for k, v in self._features.items()}
 
-        return EagerMemoryBackend(
-            objects=new_objects,
-            metadata=new_metadata,
-            features=new_features,
-        )
+    #     return EagerMemoryBackend(
+    #         objects=new_objects,
+    #         metadata=new_metadata,
+    #         features=new_features,
+    #     )
 
     # def save(self, path: Path, serializer: Optional[Callable] = None) -> None:
     #     """
