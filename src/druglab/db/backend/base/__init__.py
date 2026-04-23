@@ -14,7 +14,9 @@ single source of truth for all row-addressing in DrugLab.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Callable, Optional
+from typing_extensions import Self
+from pathlib import Path
 
 from .mixins import (
     BaseObjectMixin,
@@ -43,6 +45,10 @@ class BaseStorageBackend(
     hooks handle the rest.
     """
 
+    # ------------------------------------------------------------------
+    # Initialization
+    # ------------------------------------------------------------------
+
     def __init__(self, **kwargs: Any) -> None:
         # This is the terminal node of the cooperative __init__ chain.
         # Domain mixins above us (MemoryObjectMixin, MemoryMetadataMixin, etc.)
@@ -64,6 +70,77 @@ class BaseStorageBackend(
         self.initialize_storage_context(**kwargs)
         self.bind_capabilities()
         self.post_initialize_validate()
+
+    # ------------------------------------------------------------------
+    # Persistence
+    # ------------------------------------------------------------------
+
+    def save(
+        self,
+        path: Path | str,
+        serializer: Callable[[Any], bytes] | None = None
+    ) -> None:
+        """
+        Persist backend state into a ``.dlb`` bundle directory.
+        
+        Delegates to the cooperative ``save_storage_context`` MRO chain so
+        that each mixin (metadata, objects, features) handles its own domain.
+        
+        Parameters
+        ----------
+        path : Path
+            The target ``.dlb`` directory (pre-created by the caller).
+        serializer : Optional[Callable], default None
+            An optional function `(obj) -> bytes` to serialize generic objects.
+            Usually provided by the caller table.
+        """
+        path = Path(path).with_suffix(".dlb")
+        if path.exists() and not path.is_dir():
+            raise FileExistsError(f"File already exists: {path}")
+        if path.exists():
+            print("WARNING: A .dlb bundle already exists. Overwriting.")
+        path.mkdir(parents=True, exist_ok=True)
+        self.save_storage_context(
+            path=path, 
+            serializer=serializer
+        )
+
+    @classmethod
+    def load(
+        cls,
+        path: Path,
+        deserializer: Callable[[bytes], Any] | None = None
+    ) -> Self:
+        """
+        Reconstruct the backend from a ``.dlb`` bundle directory.
+ 
+        Delegates to the cooperative ``load_storage_context`` MRO chain so
+        that each mixin reads its own domain.  The accumulated kwargs dict is
+        then passed directly to ``cls()``.
+ 
+        Parameters
+        ----------
+        path : Path
+            The location of the ``.dlb`` bundle.
+        deserializer : Optional[Callable], default None
+            An optional function `(bytes) -> obj` to reconstruct stored objects.
+            Usually provided by the caller table.
+ 
+        Returns
+        -------
+        BaseStorageBackend
+            A fully populated instance of the backend.
+        """
+        path = Path(path)
+        kwargs = cls.load_storage_context(
+            path=path,
+            deserializer=deserializer
+        )
+        return cls(**kwargs)
+
+    # ------------------------------------------------------------------
+    # Validation
+    # ------------------------------------------------------------------
 
     def validate(self) -> None:
         """
