@@ -174,9 +174,6 @@ class BaseStorageBackend(
             are consumed by the relevant mixin; all others reach the terminal
             node and are silently absorbed.
         """
-        path = Path(path).with_suffix(".dlb")
-        if path.exists() and not path.is_dir():
-            raise FileExistsError(f"File already exists: {path}")
         if path.exists():
             print("WARNING: A .dlb bundle already exists. Overwriting.")
         path.mkdir(parents=True, exist_ok=True)
@@ -218,6 +215,12 @@ class BaseStorageBackend(
             **kwargs
         )
         return cls(**cls_kwargs)
+    
+    def get_name(self) -> str:
+        return self.__class__.__name__
+    
+    def get_module(self) -> str:
+        return self.__class__.__module__
 
     # ------------------------------------------------------------------
     # Validation

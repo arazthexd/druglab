@@ -574,9 +574,20 @@ class OverlayBackend(BaseStorageBackend):
         self._deleted_features.clear()
         self._deleted_metadata_cols.clear()
 
-    def save(self, path: Path, serializer: Optional[Callable] = None) -> None:
+    def save(
+        self,
+        path: Path,
+        object_writer: Optional[Callable[[List[Any], Path], None]] = None,
+        **kwargs
+    ) -> None:
         """
-        Save as a .dlb bundle by materializing first, then delegating to
-        EagerMemoryBackend.save(). This ensures a clean, unified state.
+        Save as a .dlb bundle by materialising first, then delegating to
+        the concrete backend's save().  This ensures a clean, unified state.
         """
-        self.materialize().save(path, serializer=serializer)
+        self.materialize().save(path, object_writer=object_writer, **kwargs)
+    
+    def get_name(self) -> str:
+        return self._base.__class__.__name__
+    
+    def get_module(self) -> str:
+        return self._base.__class__.__module__

@@ -51,7 +51,8 @@ class DummyTable(BaseTable[dict]):
     def _serialize_object(self, obj):
         return json.dumps(obj).encode()
 
-    def _deserialize_object(self, raw):
+    @classmethod
+    def _deserialize_object(cls, raw):
         return json.loads(raw.decode())
 
     def _object_type_name(self):
@@ -318,7 +319,9 @@ class TestMaterializeAndSave:
 
         with tempfile.TemporaryDirectory() as tmp:
             bundle_path = Path(tmp) / "test_obj.dlb"
-            sub.save(bundle_path)
+            print(bundle_path)
+            bundle_path = sub.save(bundle_path)
+            print(bundle_path)
             loaded = DummyTable.load(bundle_path)
 
         assert loaded.get_objects(idx=0) == {"id": 999}

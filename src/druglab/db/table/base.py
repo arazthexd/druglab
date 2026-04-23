@@ -38,7 +38,7 @@ from abc import ABC, abstractmethod
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Dict, Generic, List, Optional, Sequence, Tuple, TypeVar, Union
+from typing import Any, Callable, Dict, Generic, List, Optional, Sequence, Tuple, TypeVar, Union, Type
 
 import numpy as np
 import pandas as pd
@@ -135,10 +135,16 @@ class BaseTable(ABC, Generic[OT]):
         len(objects) == len(metadata)
         features[k].shape[0] == len(objects)  for every key k
 
-    Subclasses must implement:
-        _serialize_object(obj)   -> bytes
-        _deserialize_object(raw) -> OT
-        _object_type_name()      -> str
+    Subclasses must implement either:
+        1) Single object versions: 
+        
+            A) ``_serialize_object(obj) -> bytes``
+            B) ``_deserialize_object(raw) -> Any``
+
+        2) Batched, more generalized versions (RECOMMENDED):
+
+            A) ``_make_object_writer() -> Callable[[List[Any], Path], None]``
+            B) ``_make_object_reader() -> Callable[[Path], List[Any]]``
 
     Multi-axis indexing (strict query pushdown):
         table[0:5]                       # new 5-row table
@@ -159,6 +165,7 @@ class BaseTable(ABC, Generic[OT]):
         history: Optional[List[HistoryEntry]] = None,
         *,
         _backend: Optional[BT] = None,
+        **kwargs: Any
     ) -> None:
         # Allow callers to pass a pre-built backend (used internally by load())
         if _backend is not None:
@@ -184,7 +191,7 @@ class BaseTable(ABC, Generic[OT]):
         self._validate()
 
     # ------------------------------------------------------------------
-    # Property wrappers
+    # Property wrappers (TODO: SERIOUS CHECKS REQUIRED)
     # ------------------------------------------------------------------
 
     @property
@@ -319,20 +326,190 @@ class BaseTable(ABC, Generic[OT]):
         self._run_post_mutation_validation(domain=domain, method=method)
 
     # ------------------------------------------------------------------
-    # Abstract interface (subclasses implement object serialisation)
+    # Persistence
     # ------------------------------------------------------------------
 
-    @abstractmethod
     def _serialize_object(self, obj: OT) -> bytes:
         """Serialise a single object to bytes for disk storage."""
+        raise NotImplementedError()
 
-    @abstractmethod
-    def _deserialize_object(self, raw: bytes) -> OT:
+    @classmethod
+    def _deserialize_object(cls, raw: bytes) -> OT:
         """Deserialise bytes back to an object."""
+        raise NotImplementedError()
 
-    @abstractmethod
-    def _object_type_name(self) -> str:
-        """Short human-readable name for the object type (e.g. 'Mol')."""
+    # @abstractmethod
+    # def _object_type_name(self) -> str:
+    #     """Short human-readable name for the object type (e.g. 'Mol')."""
+
+    def _make_object_writer(self) -> Callable[[List[Any], Path], None]:
+        """
+        Build a bulk ``object_writer`` callable from ``_serialize_object``.
+ 
+        The writer streams each serialised object into a ``stream_v2`` pickle
+        bundle under ``<dir_path>/objects.pkl``, marking ``serialized=True``
+        so the reader knows to call ``_deserialize_object`` on load.
+ 
+        Subclasses may override this to supply an entirely custom bulk format
+        (e.g. a RDKit SDF writer that writes all molecules in one pass).
+        """
+        serialize = self._serialize_object
+ 
+        def _writer(objects: List[Any], dir_path: Path) -> None:
+            with open(dir_path / "objects.pkl", "wb") as f:
+                pickle.dump(
+                    {
+                        "format": "stream_v2",
+                        "count": len(objects),
+                        "serialized": True,
+                    },
+                    f,
+                )
+                for obj in objects:
+                    pickle.dump(serialize(obj), f)
+ 
+        return _writer
+ 
+    @classmethod
+    def _make_object_reader(cls) -> Callable[[Path], List[Any]]:
+        """
+        Build a bulk ``object_reader`` callable from ``_deserialize_object``.
+ 
+        Reads a ``stream_v2`` pickle bundle from ``<dir_path>/objects.pkl``.
+        When the bundle header says ``serialized=True``, applies
+        ``_deserialize_object`` to each raw payload; otherwise returns
+        the payloads as-is (for bundles written without a serialiser).
+ 
+        Subclasses may override this to supply a matching bulk format reader.
+        """
+        deserialize = cls._deserialize_object
+ 
+        def _reader(dir_path: Path) -> List[Any]:
+            obj_path = dir_path / "objects.pkl"
+            if not obj_path.exists():
+                return []
+            with open(obj_path, "rb") as f:
+                raw_payload = pickle.load(f)
+ 
+                count = int(raw_payload["count"])
+                is_serialized = raw_payload.get("serialized", False)
+                print(is_serialized)
+                raw_list = [pickle.load(f) for _ in range(count)]
+ 
+            if is_serialized:
+                return [deserialize(r) for r in raw_list]
+            return raw_list
+ 
+        return _reader
+    
+    def save(self, path: Union[str, Path], overwrite: bool = False) -> Path:
+        """
+        Save the table to a ``.dlb`` directory bundle.
+ 
+        Phase 1 change: delegates object writing via a batch ``object_writer``
+        callable built from ``_make_object_writer()`` rather than the old
+        per-object ``serializer`` kwarg.
+ 
+        Parameters
+        ----------
+        path
+            The destination path for the ``.dlb`` bundle.
+        overwrite
+            If False (default), raises a FileExistsError if the target
+            path already exists.  If True, atomically replaces it.
+        """
+        import tempfile
+ 
+        root = Path(path)
+ 
+        if root.exists():
+            if not overwrite:
+                raise FileExistsError(
+                    f"A bundle already exists at '{root}'. "
+                    "Pass `overwrite=True` to explicitly replace it."
+                )
+ 
+        root.parent.mkdir(parents=True, exist_ok=True)
+ 
+        # Build the batch writer from per-object _serialize_object hook.
+        object_writer = self._make_object_writer()
+ 
+        temp_dir = Path(tempfile.mkdtemp(dir=root.parent, prefix=".tmp_dlb_"))
+ 
+        try:
+            # Delegate data writing to the backend (or overlay → materialize).
+            self._backend.save(temp_dir, object_writer=object_writer)
+ 
+            n = len(self._backend)
+            history_data = [e.to_dict() for e in self._history]
+            config = {
+                "table_class": self.__class__.__name__,
+                "table_module": self.__class__.__module__,
+                # "object_type": self._object_type_name(),
+                "backend_class": self._backend.get_name(),
+                "backend_module": self._backend.get_module(),
+                "schema_version": 2,
+                "n": n,
+                "history": history_data,
+            }
+            (temp_dir / "config.json").write_text(
+                json.dumps(config, indent=2), encoding="utf-8"
+            )
+
+            import os
+            print(os.listdir(temp_dir))
+ 
+            if root.exists():
+                shutil.rmtree(root)
+            temp_dir.replace(root)
+ 
+        except Exception as e:
+            if temp_dir.exists():
+                shutil.rmtree(temp_dir)
+            raise e
+ 
+        return root
+ 
+    @classmethod
+    def load(
+        cls,
+        path: Union[str, Path],
+        **kwargs: Any
+    ) -> "BaseTable[OT]":
+        """
+        Load a table saved with ``save()``.
+ 
+        Phase 1 change: builds a batch ``object_reader`` from
+        ``_make_object_reader()`` and passes it to ``EagerMemoryBackend.load``
+        instead of the old per-object ``deserializer``.
+        """
+        root = Path(path)
+        if not root.is_dir():
+            raise FileNotFoundError(f"No table found at '{root}'.")
+ 
+        config_path = root / "config.json" 
+        config: dict = json.loads(config_path.read_text(encoding="utf-8"))
+        history = [HistoryEntry.from_dict(e) for e in config.pop("history", [])]
+ 
+        backend_name = config.pop("backend_class", "EagerMemoryBackend")
+        backed_module = config.pop("backend_module", "druglab.db.backend")
+        table_name = config.pop("table_class", "BaseTable")
+        table_module = config.pop("table_module", "druglab.db.table")
+
+        import importlib
+        backend_class: Type[BaseStorageBackend] = getattr(
+            importlib.import_module(backed_module), 
+            backend_name
+        )
+        table_class: Type[BaseTable] = getattr(
+            importlib.import_module(table_module), 
+            table_name
+        )
+
+        object_reader = cls._make_object_reader()
+        backend = backend_class.load(root, object_reader=object_reader, **kwargs)
+        table = table_class(_backend=backend, history=history, **config)
+        return table
 
     # ------------------------------------------------------------------
     # Backend Delegation API
@@ -584,27 +761,44 @@ class BaseTable(ABC, Generic[OT]):
         self._history.append(entry)
 
     # ------------------------------------------------------------------
-    # Overlay state management
+    # Materialization
     # ------------------------------------------------------------------
 
-    def materialize(self) -> "BaseTable[OT]":
+    def materialize(
+        self,
+        target_path: Optional[Path] = None,
+    ) -> "BaseTable[OT]":
         """
-        Collapse the backend proxy tree into a concrete EagerMemoryBackend.
-
-        If the current backend is an OverlayBackend, merges all local deltas
-        with base data and returns a new table backed by EagerMemoryBackend.
-        If the backend is already concrete, returns a copy.
+        Collapse the backend proxy tree into a concrete backend of the same
+        class as the underlying base.
+ 
+        If the current backend is an ``OverlayBackend``, delegates to
+        ``OverlayBackend.materialize(target_path)`` which runs the Director
+        pattern (Phase A clone + Phase B delta application).
+ 
+        If the backend is already concrete, delegates to
+        ``backend.clone_concrete()`` for a full deep copy.
+ 
+        Parameters
+        ----------
+        target_path : Path, optional
+            Forwarded to the backend's materialise call.  Reserved for future
+            out-of-core backends.
         """
         if isinstance(self._backend, OverlayBackend):
-            concrete_backend = self._backend.materialize()
+            concrete_backend = self._backend.materialize(target_path=target_path)
         else:
-            concrete_backend = self._backend.create_view(list(range(len(self._backend))))
+            concrete_backend = self._backend.clone_concrete()
         return self._new_instance_from_backend(concrete_backend, list(self._history))
+    
+    # ------------------------------------------------------------------
+    # Commit
+    # ------------------------------------------------------------------
 
     def commit(self) -> None:
         """
         Flush all local deltas from an OverlayBackend down to the base backend.
-
+ 
         Raises TypeError if the backend is not an OverlayBackend.
         """
         if not isinstance(self._backend, OverlayBackend):
@@ -696,10 +890,10 @@ class BaseTable(ABC, Generic[OT]):
     ) -> "BaseTable[OT]":
         """
         Return a new table containing only the rows at ``indices``.
-
-        Uses OverlayBackend for zero-copy row filtering — the base backend's
-        data is NOT duplicated in memory.
-
+ 
+        Uses ``self._backend.view(index_array)`` (Phase 2) for zero-copy row
+        filtering via ``OverlayBackend``.  No data is copied from the base.
+ 
         Parameters
         ----------
         indices
@@ -708,12 +902,12 @@ class BaseTable(ABC, Generic[OT]):
             Kept for API compatibility; ignored (OverlayBackend is zero-copy).
         """
         n = self.n
-
+ 
         if isinstance(indices, int):
             indices = [indices]
         elif isinstance(indices, slice):
             indices = list(range(*indices.indices(n)))
-
+ 
         idx = np.asarray(indices)
         if idx.dtype == bool:
             if len(idx) != n:
@@ -721,12 +915,13 @@ class BaseTable(ABC, Generic[OT]):
                     f"Boolean mask length {len(idx)} must match table length {n}."
                 )
             idx = np.where(idx)[0]
-
+ 
         idx = idx.astype(np.intp)
-
-        # Zero-copy: wrap in OverlayBackend instead of deep-copying
-        new_backend = OverlayBackend(self._backend, idx)
-
+ 
+        # Phase 2: delegate to backend.view() instead of constructing
+        # OverlayBackend directly.
+        new_backend = self._backend.view(idx)
+ 
         hist = list(self._history) + [
             HistoryEntry.now(
                 block_name="BaseTable.subset",
@@ -852,191 +1047,191 @@ class BaseTable(ABC, Generic[OT]):
     # Persistence — "Directory as a Bundle" (.dlb)
     # ------------------------------------------------------------------
 
-    def save(self, path: Union[str, Path], overwrite: bool = False) -> Path:
-        """
-        Save the table to a ``.dlb`` directory bundle.
+    # def save(self, path: Union[str, Path], overwrite: bool = False) -> Path:
+    #     """
+    #     Save the table to a ``.dlb`` directory bundle.
 
-        If the backend is an OverlayBackend, it is materialized first so the
-        saved bundle represents the clean, unified state.
+    #     If the backend is an OverlayBackend, it is materialized first so the
+    #     saved bundle represents the clean, unified state.
 
-        Parameters
-        ----------
-        path
-            The destination path for the ``.dlb`` bundle.
-        overwrite
-            If False (default), raises a FileExistsError if the target 
-            path already exists. If True, atomically replaces the existing bundle.
+    #     Parameters
+    #     ----------
+    #     path
+    #         The destination path for the ``.dlb`` bundle.
+    #     overwrite
+    #         If False (default), raises a FileExistsError if the target 
+    #         path already exists. If True, atomically replaces the existing bundle.
 
-        Layout
-        ------
-        ::
+    #     Layout
+    #     ------
+    #     ::
 
-            <path>/
-                config.json          (manifest: class, backend, history, schema)
-                metadata.parquet     (or metadata.csv)
-                objects/
-                    objects.pkl
-                features/
-                    <name>.npy
-        """
-        import tempfile
-        import shutil
-        import json
+    #         <path>/
+    #             config.json          (manifest: class, backend, history, schema)
+    #             metadata.parquet     (or metadata.csv)
+    #             objects/
+    #                 objects.pkl
+    #             features/
+    #                 <name>.npy
+    #     """
+    #     import tempfile
+    #     import shutil
+    #     import json
         
-        root = Path(path)
+    #     root = Path(path)
         
-        # --- Safety Check: Prevent accidental overwrites ---
-        if root.exists():
-            if not overwrite:
-                raise FileExistsError(
-                    f"A bundle already exists at '{root}'. "
-                    "Pass `overwrite=True` to explicitly replace it."
-                )
+    #     # --- Safety Check: Prevent accidental overwrites ---
+    #     if root.exists():
+    #         if not overwrite:
+    #             raise FileExistsError(
+    #                 f"A bundle already exists at '{root}'. "
+    #                 "Pass `overwrite=True` to explicitly replace it."
+    #             )
         
-        # Ensure the parent directory exists so we can create a temp dir next to it
-        root.parent.mkdir(parents=True, exist_ok=True)
+    #     # Ensure the parent directory exists so we can create a temp dir next to it
+    #     root.parent.mkdir(parents=True, exist_ok=True)
         
-        # 1. Create a secure temporary directory on the same filesystem
-        temp_dir = Path(tempfile.mkdtemp(dir=root.parent, prefix=".tmp_dlb_"))
+    #     # 1. Create a secure temporary directory on the same filesystem
+    #     temp_dir = Path(tempfile.mkdtemp(dir=root.parent, prefix=".tmp_dlb_"))
 
-        try:
-            # 2. Delegate data writing to the backend into the temporary directory
-            #    OverlayBackend.save() internally calls materialize().save()
-            self._backend.save(
-                temp_dir,
-                serializer=self._serialize_object,
-            )
+    #     try:
+    #         # 2. Delegate data writing to the backend into the temporary directory
+    #         #    OverlayBackend.save() internally calls materialize().save()
+    #         self._backend.save(
+    #             temp_dir,
+    #             serializer=self._serialize_object,
+    #         )
 
-            # 3. Write config.json manifest
-            # Use the materialized length for config
-            n = len(self._backend)
-            history_data = [e.to_dict() for e in self._history]
-            config = {
-                "table_class": self.__class__.__name__,
-                "object_type": self._object_type_name(),
-                "backend_class": "EagerMemoryBackend",  # always save as concrete
-                "schema_version": 2,
-                "n": n,
-                "history": history_data,
-            }
-            (temp_dir / "config.json").write_text(
-                json.dumps(config, indent=2), encoding="utf-8"
-            )
+    #         # 3. Write config.json manifest
+    #         # Use the materialized length for config
+    #         n = len(self._backend)
+    #         history_data = [e.to_dict() for e in self._history]
+    #         config = {
+    #             "table_class": self.__class__.__name__,
+    #             "object_type": self._object_type_name(),
+    #             "backend_class": "EagerMemoryBackend",  # always save as concrete
+    #             "schema_version": 2,
+    #             "n": n,
+    #             "history": history_data,
+    #         }
+    #         (temp_dir / "config.json").write_text(
+    #             json.dumps(config, indent=2), encoding="utf-8"
+    #         )
 
-            # 4. Atomic Swap
-            if root.exists():
-                shutil.rmtree(root)
-            temp_dir.replace(root)
+    #         # 4. Atomic Swap
+    #         if root.exists():
+    #             shutil.rmtree(root)
+    #         temp_dir.replace(root)
 
-        except Exception:
-            if temp_dir.exists():
-                shutil.rmtree(temp_dir)
-            raise
+    #     except Exception:
+    #         if temp_dir.exists():
+    #             shutil.rmtree(temp_dir)
+    #         raise
 
-        return root
+    #     return root
 
-    @classmethod
-    def load(
-        cls,
-        path: Union[str, Path],
-        *,
-        mmap_features: bool = False,
-    ) -> "BaseTable[OT]":
-        """
-        Load a table saved with ``save()``.
-        """
-        root = Path(path)
-        if not root.is_dir():
-            raise FileNotFoundError(f"No table found at '{root}'.")
+    # @classmethod
+    # def load(
+    #     cls,
+    #     path: Union[str, Path],
+    #     *,
+    #     mmap_features: bool = False,
+    # ) -> "BaseTable[OT]":
+    #     """
+    #     Load a table saved with ``save()``.
+    #     """
+    #     root = Path(path)
+    #     if not root.is_dir():
+    #         raise FileNotFoundError(f"No table found at '{root}'.")
 
-        config_path = root / "config.json"
-        if not config_path.exists():
-            return cls._load_legacy(root, mmap_features=mmap_features)
+    #     config_path = root / "config.json"
+    #     if not config_path.exists():
+    #         return cls._load_legacy(root, mmap_features=mmap_features)
 
-        config = json.loads(config_path.read_text(encoding="utf-8"))
+    #     config = json.loads(config_path.read_text(encoding="utf-8"))
 
-        history = [HistoryEntry.from_dict(e) for e in config.get("history", [])]
+    #     history = [HistoryEntry.from_dict(e) for e in config.get("history", [])]
 
-        instance = object.__new__(cls)
+    #     instance = object.__new__(cls)
 
-        backend_class_name = config.get("backend_class", "EagerMemoryBackend")
-        if backend_class_name == "EagerMemoryBackend":
-            backend = EagerMemoryBackend.load(
-                root,
-                deserializer=instance._deserialize_object,
-                mmap_features=mmap_features,
-            )
-        else:
-            raise ValueError(f"Unknown backend class '{backend_class_name}'.")
+    #     backend_class_name = config.get("backend_class", "EagerMemoryBackend")
+    #     if backend_class_name == "EagerMemoryBackend":
+    #         backend = EagerMemoryBackend.load(
+    #             root,
+    #             deserializer=instance._deserialize_object,
+    #             mmap_features=mmap_features,
+    #         )
+    #     else:
+    #         raise ValueError(f"Unknown backend class '{backend_class_name}'.")
 
-        BaseTable.__init__(
-            instance,
-            _backend=backend,
-            history=history,
-        )
-        return instance
+    #     BaseTable.__init__(
+    #         instance,
+    #         _backend=backend,
+    #         history=history,
+    #     )
+    #     return instance
 
-    @classmethod
-    def _load_legacy(
-        cls,
-        root: Path,
-        *,
-        mmap_features: bool = False,
-    ) -> "BaseTable[OT]":
-        """
-        Fallback loader for tables saved with the old per-object-pickle format
-        (schema_version 1).
-        """
-        import pickle as _pickle
+    # @classmethod
+    # def _load_legacy(
+    #     cls,
+    #     root: Path,
+    #     *,
+    #     mmap_features: bool = False,
+    # ) -> "BaseTable[OT]":
+    #     """
+    #     Fallback loader for tables saved with the old per-object-pickle format
+    #     (schema_version 1).
+    #     """
+    #     import pickle as _pickle
 
-        meta_info = json.loads((root / "_meta.json").read_text())
-        n = meta_info["n"]
+    #     meta_info = json.loads((root / "_meta.json").read_text())
+    #     n = meta_info["n"]
 
-        instance = object.__new__(cls)
+    #     instance = object.__new__(cls)
 
-        obj_dir = root / "objects"
-        objects = []
-        for i in range(n):
-            raw = (obj_dir / f"{i:07d}.pkl").read_bytes()
-            objects.append(instance._deserialize_object(raw))
+    #     obj_dir = root / "objects"
+    #     objects = []
+    #     for i in range(n):
+    #         raw = (obj_dir / f"{i:07d}.pkl").read_bytes()
+    #         objects.append(instance._deserialize_object(raw))
 
-        parquet_path = root / "metadata.parquet"
-        csv_path = root / "metadata.csv"
-        if parquet_path.exists():
-            metadata = pd.read_parquet(parquet_path)
-        elif csv_path.exists():
-            metadata = pd.read_csv(csv_path)
-        else:
-            metadata = pd.DataFrame(index=range(n))
+    #     parquet_path = root / "metadata.parquet"
+    #     csv_path = root / "metadata.csv"
+    #     if parquet_path.exists():
+    #         metadata = pd.read_parquet(parquet_path)
+    #     elif csv_path.exists():
+    #         metadata = pd.read_csv(csv_path)
+    #     else:
+    #         metadata = pd.DataFrame(index=range(n))
 
-        feat_dir = root / "features"
-        features: Dict[str, np.ndarray] = {}
-        if feat_dir.exists():
-            for npy_path in sorted(feat_dir.glob("*.npy")):
-                feat_name = npy_path.stem
-                if mmap_features:
-                    features[feat_name] = np.load(str(npy_path), mmap_mode="r")
-                else:
-                    features[feat_name] = np.load(str(npy_path), allow_pickle=False)
+    #     feat_dir = root / "features"
+    #     features: Dict[str, np.ndarray] = {}
+    #     if feat_dir.exists():
+    #         for npy_path in sorted(feat_dir.glob("*.npy")):
+    #             feat_name = npy_path.stem
+    #             if mmap_features:
+    #                 features[feat_name] = np.load(str(npy_path), mmap_mode="r")
+    #             else:
+    #                 features[feat_name] = np.load(str(npy_path), allow_pickle=False)
 
-        history_path = root / "history.json"
-        history = []
-        if history_path.exists():
-            raw_history = json.loads(history_path.read_text())
-            history = [HistoryEntry.from_dict(e) for e in raw_history]
+    #     history_path = root / "history.json"
+    #     history = []
+    #     if history_path.exists():
+    #         raw_history = json.loads(history_path.read_text())
+    #         history = [HistoryEntry.from_dict(e) for e in raw_history]
 
-        backend = EagerMemoryBackend(
-            objects=objects,
-            metadata=metadata,
-            features=features,
-        )
+    #     backend = EagerMemoryBackend(
+    #         objects=objects,
+    #         metadata=metadata,
+    #         features=features,
+    #     )
         
-        BaseTable.__init__(
-            instance,
-            _backend=backend,
-            history=history,
-        )
-        return instance
+    #     BaseTable.__init__(
+    #         instance,
+    #         _backend=backend,
+    #         history=history,
+    #     )
+    #     return instance
 
     # ------------------------------------------------------------------
     # Internal helpers
