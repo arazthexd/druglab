@@ -101,130 +101,130 @@ class EagerMemoryBackend(
             features=new_features,
         )
 
-    def save(self, path: Path, serializer: Optional[Callable] = None) -> None:
-        """
-        Persist backend state into a '.dlb' bundle directory.
+    # def save(self, path: Path, serializer: Optional[Callable] = None) -> None:
+    #     """
+    #     Persist backend state into a '.dlb' bundle directory.
 
-        Writes metadata as Parquet (or CSV), serializes the entire object 
-        list into a single pickle file, and saves feature arrays natively 
-        as `.npy` files.
+    #     Writes metadata as Parquet (or CSV), serializes the entire object 
+    #     list into a single pickle file, and saves feature arrays natively 
+    #     as `.npy` files.
 
-        Parameters
-        ----------
-        path : Path
-            The target `.dlb` directory path (pre-created by the Orchestrator).
-        serializer : Optional[Callable], default None
-            An optional function `(obj) -> bytes` to serialize generic objects.
-        """
-        path = Path(path)
+    #     Parameters
+    #     ----------
+    #     path : Path
+    #         The target `.dlb` directory path (pre-created by the Orchestrator).
+    #     serializer : Optional[Callable], default None
+    #         An optional function `(obj) -> bytes` to serialize generic objects.
+    #     """
+    #     path = Path(path)
 
-        # --- metadata ---
-        if not self._metadata.empty:
-            try:
-                self._metadata.to_parquet(path / "metadata.parquet", index=False)
-            except Exception:
-                self._metadata.to_csv(path / "metadata.csv", index=False)
-        else:
-            # Always write metadata so row count is preserved (even if no columns).
-            pd.DataFrame(index=range(len(self._objects))).to_csv(
-                path / "metadata.csv", index=True
-            )
+    #     # --- metadata ---
+    #     if not self._metadata.empty:
+    #         try:
+    #             self._metadata.to_parquet(path / "metadata.parquet", index=False)
+    #         except Exception:
+    #             self._metadata.to_csv(path / "metadata.csv", index=False)
+    #     else:
+    #         # Always write metadata so row count is preserved (even if no columns).
+    #         pd.DataFrame(index=range(len(self._objects))).to_csv(
+    #             path / "metadata.csv", index=True
+    #         )
 
-        # --- objects ---
-        obj_dir = path / "objects"
-        obj_dir.mkdir(exist_ok=True)
+    #     # --- objects ---
+    #     obj_dir = path / "objects"
+    #     obj_dir.mkdir(exist_ok=True)
 
-        # stream_v2: Stream all object payloads (serialized or raw) to prevent list-level pickle OOM spikes.
-        with open(obj_dir / "objects.pkl", "wb") as f:
-            pickle.dump(
-                {
-                    "format": "stream_v2",
-                    "count": len(self._objects),
-                    "serialized": serializer is not None,
-                },
-                f,
-            )
-            for obj in self._objects:
-                payload = serializer(obj) if serializer is not None else obj
-                pickle.dump(payload, f)
+    #     # stream_v2: Stream all object payloads (serialized or raw) to prevent list-level pickle OOM spikes.
+    #     with open(obj_dir / "objects.pkl", "wb") as f:
+    #         pickle.dump(
+    #             {
+    #                 "format": "stream_v2",
+    #                 "count": len(self._objects),
+    #                 "serialized": serializer is not None,
+    #             },
+    #             f,
+    #         )
+    #         for obj in self._objects:
+    #             payload = serializer(obj) if serializer is not None else obj
+    #             pickle.dump(payload, f)
 
-        # --- features ---
-        feat_dir = path / "features"
-        feat_dir.mkdir(exist_ok=True)
-        for name, arr in self._features.items():
-            safe_name = name.replace("/", "_").replace("\\", "_")
-            np.save(str(feat_dir / f"{safe_name}.npy"), arr)
+    #     # --- features ---
+    #     feat_dir = path / "features"
+    #     feat_dir.mkdir(exist_ok=True)
+    #     for name, arr in self._features.items():
+    #         safe_name = name.replace("/", "_").replace("\\", "_")
+    #         np.save(str(feat_dir / f"{safe_name}.npy"), arr)
 
-    @classmethod
-    def load(
-        cls,
-        path: Path,
-        deserializer: Optional[Callable] = None,
-        mmap_features: bool = False,
-    ) -> "EagerMemoryBackend":
-        """
-        Reconstruct the backend from a '.dlb' bundle directory.
+    # @classmethod
+    # def load(
+    #     cls,
+    #     path: Path,
+    #     deserializer: Optional[Callable] = None,
+    #     mmap_features: bool = False,
+    # ) -> "EagerMemoryBackend":
+    #     """
+    #     Reconstruct the backend from a '.dlb' bundle directory.
 
-        Parameters
-        ----------
-        path : Path
-            The location of the `.dlb` bundle.
-        deserializer : Optional[Callable], default None
-            An optional function `(bytes) -> obj` to reconstruct stored objects.
-        mmap_features : bool, default False
-            If True, loads `.npy` feature files as memory-mapped arrays rather 
-            than fully pulling them into RAM.
+    #     Parameters
+    #     ----------
+    #     path : Path
+    #         The location of the `.dlb` bundle.
+    #     deserializer : Optional[Callable], default None
+    #         An optional function `(bytes) -> obj` to reconstruct stored objects.
+    #     mmap_features : bool, default False
+    #         If True, loads `.npy` feature files as memory-mapped arrays rather 
+    #         than fully pulling them into RAM.
 
-        Returns
-        -------
-        EagerMemoryBackend
-            A fully populated instance of the in-memory backend.
-        """
-        path = Path(path)
+    #     Returns
+    #     -------
+    #     EagerMemoryBackend
+    #         A fully populated instance of the in-memory backend.
+    #     """
+    #     path = Path(path)
 
-        # --- metadata ---
-        parquet_path = path / "metadata.parquet"
-        csv_path = path / "metadata.csv"
-        if parquet_path.exists():
-            metadata = pd.read_parquet(parquet_path)
-        elif csv_path.exists():
-            metadata = pd.read_csv(csv_path)
-        else:
-            metadata = pd.DataFrame()
+    #     # --- metadata ---
+    #     parquet_path = path / "metadata.parquet"
+    #     csv_path = path / "metadata.csv"
+    #     if parquet_path.exists():
+    #         metadata = pd.read_parquet(parquet_path)
+    #     elif csv_path.exists():
+    #         metadata = pd.read_csv(csv_path)
+    #     else:
+    #         metadata = pd.DataFrame()
 
-        # --- objects ---
-        obj_path = path / "objects" / "objects.pkl"
-        if obj_path.exists():
-            with open(obj_path, "rb") as f:
-                raw_payload = pickle.load(f)
+    #     # --- objects ---
+    #     obj_path = path / "objects" / "objects.pkl"
+    #     if obj_path.exists():
+    #         with open(obj_path, "rb") as f:
+    #             raw_payload = pickle.load(f)
 
-                if isinstance(raw_payload, dict) and raw_payload.get("format") in {
-                    "stream_v1", "stream_v2"
-                }:
-                    count = int(raw_payload["count"])
-                    raw_list = [pickle.load(f) for _ in range(count)]
-                    payload_is_serialized = raw_payload.get(
-                        "format"
-                    ) == "stream_v1" or bool(raw_payload.get("serialized", False))
-                else:
-                    raw_list = raw_payload
-                    payload_is_serialized = deserializer is not None
-                if deserializer is not None and payload_is_serialized:
-                    objects = [deserializer(r) for r in raw_list]
-                else:
-                    objects = raw_list
-        else:
-            objects = []
+    #             if isinstance(raw_payload, dict) and raw_payload.get("format") in {
+    #                 "stream_v1", "stream_v2"
+    #             }:
+    #                 count = int(raw_payload["count"])
+    #                 raw_list = [pickle.load(f) for _ in range(count)]
+    #                 payload_is_serialized = raw_payload.get(
+    #                     "format"
+    #                 ) == "stream_v1" or bool(raw_payload.get("serialized", False))
+    #             else:
+    #                 raw_list = raw_payload
+    #                 payload_is_serialized = deserializer is not None
+    #             if deserializer is not None and payload_is_serialized:
+    #                 objects = [deserializer(r) for r in raw_list]
+    #             else:
+    #                 objects = raw_list
+    #     else:
+    #         objects = []
 
-        # --- features ---
-        feat_dir = path / "features"
-        features: Dict[str, np.ndarray] = {}
-        if feat_dir.exists():
-            for npy_path in sorted(feat_dir.glob("*.npy")):
-                name = npy_path.stem
-                if mmap_features:
-                    features[name] = np.load(str(npy_path), mmap_mode="r")
-                else:
-                    features[name] = np.load(str(npy_path), allow_pickle=False)
+    #     # --- features ---
+    #     feat_dir = path / "features"
+    #     features: Dict[str, np.ndarray] = {}
+    #     if feat_dir.exists():
+    #         for npy_path in sorted(feat_dir.glob("*.npy")):
+    #             name = npy_path.stem
+    #             if mmap_features:
+    #                 features[name] = np.load(str(npy_path), mmap_mode="r")
+    #             else:
+    #                 features[name] = np.load(str(npy_path), allow_pickle=False)
 
-        return cls(objects=objects, metadata=metadata, features=features)
+    #     return cls(objects=objects, metadata=metadata, features=features)

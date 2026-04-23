@@ -33,6 +33,10 @@ class MemoryObjectMixin(BaseObjectMixin):
     via ``initialize_storage_context``.
     """
 
+    # ------------------------------------------------------------------
+    # Initialization Hooks
+    # ------------------------------------------------------------------
+
     def initialize_storage_context(
         self, 
         objects: Optional[List[Any]] = None, 
@@ -49,6 +53,10 @@ class MemoryObjectMixin(BaseObjectMixin):
         """
         self._objects = objects or []
         super().initialize_storage_context(**kwargs)
+
+    # ------------------------------------------------------------------
+    # Object Mixin API
+    # ------------------------------------------------------------------
 
     def get_objects(self, idx: Optional[INDEX_LIKE] = None) -> Union[Any, List[Any]]:
         """
@@ -111,3 +119,106 @@ class MemoryObjectMixin(BaseObjectMixin):
 
     def _validate_objects(self) -> None:
         pass
+
+    # ------------------------------------------------------------------
+    # Persistence Hooks
+    # ------------------------------------------------------------------
+
+    def save_storage_context(
+        self,
+        path: Path,
+        object_writer: Optional[Callable[[List[Any], Path], None]] = None,
+        **kwargs: Any,
+    ) -> None:
+        """
+        Persist objects to ``<path>/objects/``.
+ 
+        Parameters
+        ----------
+        object_writer : Callable[[List[Any], Path], None], optional
+            Bulk writer with signature ``(objects, dir_path) -> None``.
+            When provided, the mixin delegates all writing to it - enabling
+            domain-specific formats (e.g. RDKit ``SDWriter``).  When ``None``,
+            falls back to streaming pickle (``stream_v2`` format, one
+            ``pickle.dump`` per object to prevent list-level OOM).
+        """
+        obj_dir = path / "objects"
+        obj_dir.mkdir(exist_ok=True)
+ 
+        if object_writer is not None:
+            object_writer(self._objects, obj_dir)
+        else:
+            # Default: stream each object via pickle without per-object
+            # serialisation (serialized=False).  Objects that are not
+            # picklable must supply a custom object_writer.
+            with open(obj_dir / "objects.pkl", "wb") as f:
+                pickle.dump(
+                    {
+                        "format": "stream_v2",
+                        "count": len(self._objects),
+                        "serialized": False,
+                    },
+                    f,
+                )
+                for obj in self._objects:
+                    pickle.dump(obj, f)
+ 
+        super().save_storage_context(path, object_writer=object_writer, **kwargs)
+ 
+    @classmethod
+    def load_storage_context(
+        cls,
+        path: Path,
+        object_reader: Optional[Callable[[Path], List[Any]]] = None,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        """
+        Read objects from ``<path>/objects/`` and add them to the accumulated
+        kwargs under the key ``"objects"``.
+ 
+        Parameters
+        ----------
+        object_reader : Callable[[Path], List[Any]], optional
+            Bulk reader with signature ``(dir_path) -> List[Any]``.
+            When provided, the mixin delegates entirely to it (enabling
+            domain-specific deserialisers, e.g. an RDKit SDF reader).
+            When ``None``, reads the default ``stream_v2`` pickle bundle.
+ 
+            **Backward-compat note:** The old ``deserializer`` parameter (a
+            per-object ``bytes -> obj`` callable) is no longer supported at
+            the backend level.  ``BaseTable._make_object_reader()`` wraps
+            ``_deserialize_object`` into a bulk reader for you automatically.
+        """
+        objects: List[Any] = []
+ 
+        if object_reader is not None:
+            objects = object_reader(path / "objects")
+        else:
+            obj_path = path / "objects" / "objects.pkl"
+            if obj_path.exists():
+                with open(obj_path, "rb") as f:
+                    raw_payload = pickle.load(f)
+ 
+                    if isinstance(raw_payload, dict) and raw_payload.get(
+                        "format"
+                    ) in {"stream_v1", "stream_v2"}:
+                        count = int(raw_payload["count"])
+                        is_serialized = raw_payload.get("serialized", False)
+                        raw_list = [pickle.load(f) for _ in range(count)]
+                    else:
+                        # Legacy: entire list was pickled in one call.
+                        raw_list = raw_payload
+                        is_serialized = False
+ 
+                    # Without a reader, we cannot deserialise serialized bytes;
+                    # return as raw bytes.  The caller (BaseTable.load) always
+                    # supplies an object_reader so this branch is only hit
+                    # when EagerMemoryBackend.load is called directly with no
+                    # reader (e.g. in unit tests storing plain Python objects).
+                    objects = raw_list
+ 
+        result = super().load_storage_context(
+            path, object_reader=object_reader, **kwargs
+        )
+        result["objects"] = objects
+        return result

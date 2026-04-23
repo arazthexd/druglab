@@ -78,7 +78,7 @@ class BaseStorageBackend(
     def save(
         self,
         path: Path | str,
-        serializer: Callable[[Any], bytes] | None = None
+        **kwargs: Any
     ) -> None:
         """
         Persist backend state into a ``.dlb`` bundle directory.
@@ -90,9 +90,10 @@ class BaseStorageBackend(
         ----------
         path : Path
             The target ``.dlb`` directory (pre-created by the caller).
-        serializer : Optional[Callable], default None
-            An optional function `(obj) -> bytes` to serialize generic objects.
-            Usually provided by the caller table.
+        **kwargs
+            Forwarded down the chain.  Recognised kwargs (e.g. ``object_writer``)
+            are consumed by the relevant mixin; all others reach the terminal
+            node and are silently absorbed.
         """
         path = Path(path).with_suffix(".dlb")
         if path.exists() and not path.is_dir():
@@ -102,14 +103,14 @@ class BaseStorageBackend(
         path.mkdir(parents=True, exist_ok=True)
         self.save_storage_context(
             path=path, 
-            serializer=serializer
+            **kwargs
         )
 
     @classmethod
     def load(
         cls,
         path: Path,
-        deserializer: Callable[[bytes], Any] | None = None
+        **kwargs: Any
     ) -> Self:
         """
         Reconstruct the backend from a ``.dlb`` bundle directory.
@@ -122,9 +123,10 @@ class BaseStorageBackend(
         ----------
         path : Path
             The location of the ``.dlb`` bundle.
-        deserializer : Optional[Callable], default None
-            An optional function `(bytes) -> obj` to reconstruct stored objects.
-            Usually provided by the caller table.
+        **kwargs
+            Forwarded down the chain.  Recognised kwargs (e.g. ``object_reader``)
+            are consumed by the relevant mixin; all others reach the terminal
+            node and are silently absorbed.
  
         Returns
         -------
@@ -132,11 +134,11 @@ class BaseStorageBackend(
             A fully populated instance of the backend.
         """
         path = Path(path)
-        kwargs = cls.load_storage_context(
+        cls_kwargs = cls.load_storage_context(
             path=path,
-            deserializer=deserializer
+            **kwargs
         )
-        return cls(**kwargs)
+        return cls(**cls_kwargs)
 
     # ------------------------------------------------------------------
     # Validation

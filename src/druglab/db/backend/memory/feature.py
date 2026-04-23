@@ -23,19 +23,16 @@ from ..base.mixins import BaseFeatureMixin
 if TYPE_CHECKING:
     from druglab.db.indexing import INDEX_LIKE
 
-
+__all__ = ['MemoryFeatureMixin']
 
 class MemoryFeatureMixin(BaseFeatureMixin):
     """
     In-memory feature storage mixin utilizing a dictionary of NumPy arrays.
-
-    Lifecycle
-    ---------
-    ``initialize_storage_context`` sets up ``self._features`` from the stashed
-    init arg.  ``bind_capabilities`` builds the initial ``FeatureRegistry``
-    from whatever is in ``self._features`` at that point, so no manual
-    registry construction is needed in ``EagerMemoryBackend.__init__``.
     """
+
+    # ------------------------------------------------------------------
+    # Initialization Hooks
+    # ------------------------------------------------------------------
 
     def initialize_storage_context(
         self, 
@@ -53,6 +50,10 @@ class MemoryFeatureMixin(BaseFeatureMixin):
         """
         self._features = features or {}
         super().initialize_storage_context(**kwargs)
+
+    # ------------------------------------------------------------------
+    # Feature Mixin API
+    # ------------------------------------------------------------------
 
     def get_feature(self, name: str, idx: Optional[INDEX_LIKE] = None) -> np.ndarray:
 
@@ -114,3 +115,47 @@ class MemoryFeatureMixin(BaseFeatureMixin):
 
     def get_feature_shape(self, name: str) -> tuple:
         return self._features[name].shape
+
+    # ------------------------------------------------------------------
+    # Persistence Hooks
+    # ------------------------------------------------------------------
+
+    def save_storage_context(self, path: Path, **kwargs: Any) -> None:
+        """
+        Persist feature arrays to ``<path>/features/<name>.npy``.
+ 
+        The feature name is sanitised (``/`` and ``\\`` replaced with ``_``)
+        before being used as a filename stem.
+        """
+        feat_dir = path / "features"
+        feat_dir.mkdir(exist_ok=True)
+        for name, arr in self._features.items():
+            safe_name = name.replace("/", "_").replace("\\", "_")
+            np.save(str(feat_dir / f"{safe_name}.npy"), arr)
+        super().save_storage_context(path, **kwargs)
+
+    @classmethod
+    def load_storage_context(
+        cls,
+        path: Path,
+        mmap_features: bool = False,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        """
+        Read feature arrays from ``<path>/features/`` and add them to the
+        accumulated kwargs under the key ``"features"``.
+        """
+        feat_dir = path / "features"
+        features: Dict[str, np.ndarray] = {}
+        if feat_dir.exists():
+            for npy_path in sorted(feat_dir.glob("*.npy")):
+                name = npy_path.stem
+                if mmap_features:
+                    features[name] = np.load(str(npy_path), mmap_mode="r")
+                else:
+                    features[name] = np.load(str(npy_path), allow_pickle=False)
+        result = super().load_storage_context(
+            path, mmap_features=mmap_features, **kwargs
+        )
+        result["features"] = features
+        return result

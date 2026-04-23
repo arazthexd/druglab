@@ -34,6 +34,10 @@ class MemoryMetadataMixin(BaseMetadataMixin):
     avoid unnecessary DataFrame copies.
     """
 
+    # ------------------------------------------------------------------
+    # Initialization Hooks
+    # ------------------------------------------------------------------
+
     def initialize_storage_context(
         self, 
         metadata: Optional[pd.DataFrame] = None, 
@@ -55,6 +59,10 @@ class MemoryMetadataMixin(BaseMetadataMixin):
         if self._metadata is None:
             self._metadata = pd.DataFrame(index=range(len(self)))
         return super().bind_capabilities()
+    
+    # ------------------------------------------------------------------
+    # Metadata Mixin API
+    # ------------------------------------------------------------------
 
     def get_metadata(
         self,
@@ -178,6 +186,55 @@ class MemoryMetadataMixin(BaseMetadataMixin):
         """
         # In-memory pandas dataframes inherently enforce structural integrity
         pass
+
+    # ------------------------------------------------------------------
+    # Persistence Hooks
+    # ------------------------------------------------------------------
+
+    def save_storage_context(self, path: Path, **kwargs: Any) -> None:
+        """
+        Persist metadata to ``<path>/metadata.parquet`` (or ``.csv`` fallback).
+ 
+        An empty (0-row, 0-col) DataFrame still writes a row-count stub as CSV
+        so that the bundle preserves the number of objects.
+        """
+        if not self._metadata.empty:
+            try:
+                self._metadata.to_parquet(path / "metadata.parquet", index=False)
+            except Exception:
+                self._metadata.to_csv(path / "metadata.csv", index=False)
+        else:
+            # Row-count stub so the loader knows how many objects exist.
+            pd.DataFrame(index=range(len(self))).to_csv(
+                path / "metadata.csv", index=True
+            )
+        super().save_storage_context(path, **kwargs)
+ 
+    @classmethod
+    def load_storage_context(
+        cls,
+        path: Path,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        """
+        Read metadata from ``<path>/metadata.parquet`` or ``metadata.csv``
+        and add it to the accumulated kwargs under the key ``"metadata"``.
+        """
+        parquet_path = path / "metadata.parquet"
+        csv_path = path / "metadata.csv"
+        if parquet_path.exists():
+            metadata = pd.read_parquet(parquet_path)
+        elif csv_path.exists():
+            metadata = pd.read_csv(csv_path)
+        else:
+            metadata = pd.DataFrame()
+        result = super().load_storage_context(path, **kwargs)
+        result["metadata"] = metadata
+        return result
+
+    # ------------------------------------------------------------------
+    # Other Utilities
+    # ------------------------------------------------------------------
 
     def try_numerize_metadata(self, columns: Optional[List[str]] = None) -> None:
         """
