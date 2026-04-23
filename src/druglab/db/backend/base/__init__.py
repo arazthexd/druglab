@@ -113,6 +113,42 @@ class BaseStorageBackend(
             index_map = resolved.astype(np.intp)
  
         return OverlayBackend(self, index_map)
+    
+    # ------------------------------------------------------------------
+    # Clones (Partial/Full Deep Copies)
+    # ------------------------------------------------------------------
+
+    def clone_concrete(
+        self,
+        target_path: Optional[Path] = None,
+        index_map: Optional[np.ndarray] = None,
+    ) -> "BaseStorageBackend":
+        """
+        Build a new concrete instance of *this* class with (optionally sliced)
+        state gathered via the cooperative ``_gather_materialized_state`` hook.
+ 
+        This is the single point where ``OverlayBackend.materialize()`` creates
+        its Phase-A clone.  Because ``_gather_materialized_state`` is MRO-
+        cooperative, any custom mixin that stores additional state only needs
+        to implement that one hook; no changes to ``clone_concrete`` are needed.
+ 
+        Parameters
+        ----------
+        target_path : Path, optional
+            Reserved for future out-of-core backends.
+        index_map : np.ndarray of dtype np.intp, optional
+            Absolute row positions to include.  ``None`` → all rows.
+ 
+        Returns
+        -------
+        BaseStorageBackend
+            A new instance of ``type(self)`` with state matching *index_map*.
+        """
+        gathered = self._gather_materialized_state(
+            target_path=target_path,
+            index_map=index_map,
+        )
+        return self.__class__(**gathered)
 
     # ------------------------------------------------------------------
     # Persistence

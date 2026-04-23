@@ -28,8 +28,10 @@ load_storage_context(path, **kwargs) -> dict   [classmethod]
     The dict is passed directly to ``cls(**result)`` by the caller.
 """
 
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 from pathlib import Path
+
+import numpy as np
 
 __all__ = ['_LifecycleBase']
 
@@ -77,6 +79,47 @@ class _LifecycleBase:
         an invalid initial state.  Must call ``super().post_initialize_validate()``.
         """
         # Terminal node -- absorbs remaining kwargs.
+
+    # ------------------------------------------------------------------
+    # Materialization
+    # ------------------------------------------------------------------
+
+    def _gather_materialized_state(
+        self,
+        target_path: Optional[Path] = None,
+        index_map: Optional[np.ndarray] = None,
+    ) -> Dict[str, Any]:
+        """
+        Cooperative hook: collect (optionally sliced) domain state as init kwargs.
+ 
+        Used by ``BaseStorageBackend.clone_concrete()`` to produce a new
+        concrete backend of the same class, optionally restricted to the rows
+        in *index_map*.
+ 
+        Each mixin slices its own structures when ``index_map`` is provided::
+ 
+            result = super()._gather_materialized_state(target_path, index_map)
+            if index_map is not None:
+                result["features"] = {k: v[index_map].copy() ...}
+            else:
+                result["features"] = {k: v.copy() ...}
+            return result
+ 
+        Parameters
+        ----------
+        target_path : Path, optional
+            Reserved for out-of-core backends that write slices to disk rather 
+            than returning in-memory structures.
+        index_map : np.ndarray of dtype np.intp, optional
+            1-D array of absolute positions to include.  ``None`` means all rows.
+ 
+        Returns
+        -------
+        dict
+            Merged kwargs dict suitable for passing to ``self.__class__.__init__``.
+        """
+        # Terminal node – returns empty dict.
+        return {}
 
     # ------------------------------------------------------------------
     # Persistence
