@@ -117,6 +117,27 @@ class MemoryFeatureMixin(BaseFeatureMixin):
         return self._features[name].shape
 
     # ------------------------------------------------------------------
+    # Materialization Hooks
+    # ------------------------------------------------------------------
+
+    def _gather_materialized_state(
+        self,
+        target_path: Optional[Path] = None,
+        index_map: Optional[np.ndarray] = None,
+    ) -> Dict[str, Any]:
+        """Return ``{"features": sliced_or_full_copy}`` for ``clone_concrete``."""
+        result = super()._gather_materialized_state(
+            target_path=target_path, index_map=index_map
+        )
+        if index_map is not None:
+            result["features"] = {
+                k: v[index_map].copy() for k, v in self._features.items()
+            }
+        else:
+            result["features"] = {k: v.copy() for k, v in self._features.items()}
+        return result
+
+    # ------------------------------------------------------------------
     # Persistence Hooks
     # ------------------------------------------------------------------
 

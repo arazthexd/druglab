@@ -121,6 +121,25 @@ class MemoryObjectMixin(BaseObjectMixin):
         pass
 
     # ------------------------------------------------------------------
+    # Materialization Hooks
+    # ------------------------------------------------------------------
+
+    def _gather_materialized_state(
+        self,
+        target_path: Optional[Path] = None,
+        index_map: Optional[np.ndarray] = None,
+    ) -> Dict[str, Any]:
+        """Return ``{"objects": sliced_copy}`` for ``clone_concrete``."""
+        result = super()._gather_materialized_state(
+            target_path=target_path, index_map=index_map
+        )
+        if index_map is not None:
+            result["objects"] = [copy.deepcopy(self._objects[i]) for i in index_map]
+        else:
+            result["objects"] = list(self._objects)
+        return result
+
+    # ------------------------------------------------------------------
     # Persistence Hooks
     # ------------------------------------------------------------------
 

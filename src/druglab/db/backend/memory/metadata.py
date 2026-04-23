@@ -186,6 +186,27 @@ class MemoryMetadataMixin(BaseMetadataMixin):
         """
         # In-memory pandas dataframes inherently enforce structural integrity
         pass
+    
+    # ------------------------------------------------------------------
+    # Materialization Hooks
+    # ------------------------------------------------------------------
+    
+    def _gather_materialized_state(
+        self,
+        target_path: Optional[Path] = None,
+        index_map: Optional[np.ndarray] = None,
+    ) -> Dict[str, Any]:
+        """Return ``{"metadata": sliced_or_full_copy}`` for ``clone_concrete``."""
+        result = super()._gather_materialized_state(
+            target_path=target_path, index_map=index_map
+        )
+        if index_map is not None:
+            result["metadata"] = (
+                self._metadata.iloc[index_map].reset_index(drop=True).copy()
+            )
+        else:
+            result["metadata"] = self._metadata.copy()
+        return result
 
     # ------------------------------------------------------------------
     # Persistence Hooks
