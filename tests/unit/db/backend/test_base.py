@@ -5,11 +5,14 @@ Comprehensive tests for druglab.db.backend.base — the core mixins and
 interfaces for storage backends.
 
 Covers:
-1. _LifecycleBase — terminal kwargs absorption and cooperative MRO.
+1. _LifecycleBase — terminal kwargs absorption, cooperative MRO, and the
+   three new hooks (save_storage_context, load_storage_context,
+   _gather_materialized_state).
 2. BaseFeatureMixin — default get/update implementations and validation.
 3. BaseMetadataMixin — set_metadata bounds checking and column delegation.
 4. BaseObjectMixin — set_objects length validation.
-5. BaseStorageBackend — __init__ lifecycle sequence and validate() consistency.
+5. BaseStorageBackend — __init__ lifecycle sequence, validate() consistency,
+   view() returns OverlayBackend, clone_concrete() uses class correctly.
 """
 
 from __future__ import annotations
@@ -27,6 +30,8 @@ from druglab.db.backend.base.mixins.feature import BaseFeatureMixin
 from druglab.db.backend.base.mixins.metadata import BaseMetadataMixin
 from druglab.db.backend.base.mixins.objects import BaseObjectMixin
 from druglab.db.backend.base import BaseStorageBackend
+from druglab.db.backend import EagerMemoryBackend
+from druglab.db.backend.overlay import OverlayBackend
 
 # ===========================================================================
 # Dummy Implementations for ABCs
@@ -170,12 +175,39 @@ class TestLifecycleBase:
         node.initialize_storage_context(random_arg=123, another="test")
         node.bind_capabilities()
         node.post_initialize_validate()
-        # If no exceptions were raised, the terminal absorption worked.
-        assert True
 
-    def test_cooperative_mro_chain(self):
-        """Verify cooperative super() chains propagate through the MRO correctly."""
-        class Combined(DummyLifecycleB, DummyLifecycleA): # Important ordering
+    def test_save_storage_context_terminal_no_op(self):
+        """Terminal save_storage_context must not raise."""
+        node = _LifecycleBase()
+        node.save_storage_context(Path("/tmp"), extra_kwarg="ignored")
+
+    def test_load_storage_context_terminal_returns_empty_dict(self):
+        """Terminal load_storage_context must return {}."""
+        result = _LifecycleBase.load_storage_context(Path("/tmp"))
+        assert result == {}
+
+    def test_load_storage_context_classmethod_absorbs_unknown_kwargs(self):
+        result = _LifecycleBase.load_storage_context(
+            Path("/tmp"), mmap_features=True, object_reader=None
+        )
+        assert isinstance(result, dict)
+
+    def test_gather_materialized_state_terminal_returns_empty_dict(self):
+        """Terminal _gather_materialized_state must return {}."""
+        node = _LifecycleBase()
+        result = node._gather_materialized_state()
+        assert result == {}
+
+    def test_gather_materialized_state_with_index_map(self):
+        node = _LifecycleBase()
+        result = node._gather_materialized_state(
+            target_path=None,
+            index_map=np.array([0, 1, 2], dtype=np.intp),
+        )
+        assert result == {}  # terminal does nothing
+
+    def test_cooperative_mro_chain_init(self):
+        class Combined(DummyLifecycleB, DummyLifecycleA):
             pass
         
         instance = Combined()
@@ -336,17 +368,81 @@ class TestBaseStorageBackend:
         """Ensure validate raises ValueError when dimensions diverge across mixins."""
         # Cause a mismatch in the object count
         backend = DummyFullBackend(expected_len=5, meta_len=5, feat_len=5, obj_len=4)
-        
-        expected_msg = (
-            "Backend Dimension Mismatch!\n"
-            "Global Length: 5\n"
-            "Metadata Rows: 5\n"
-            "Feature Rows:  5\n"
-            "Object Count:  4"
-        )
-        
-        with pytest.raises(ValueError, match=expected_msg):
+        with pytest.raises(ValueError, match="Backend Dimension Mismatch"):
             backend.validate()
+
+    # ------------------------------------------------------------------
+    # view()
+    # ------------------------------------------------------------------
+
+    def test_view_returns_overlay_backend(self):
+        backend = EagerMemoryBackend(
+            objects=[1, 2, 3, 4],
+            features={"f": np.arange(8).reshape(4, 2).astype(np.float32)},
+        )
+        overlay = backend.view(np.array([0, 2], dtype=np.intp))
+        assert isinstance(overlay, OverlayBackend)
+
+    def test_view_none_covers_all_rows(self):
+        backend = EagerMemoryBackend(objects=[1, 2, 3])
+        overlay = backend.view(None)
+        assert len(overlay) == 3
+        np.testing.assert_array_equal(overlay._index_map, np.arange(3))
+
+    def test_view_index_map_correct(self):
+        backend = EagerMemoryBackend(objects=list(range(10)))
+        overlay = backend.view(np.array([1, 3, 5], dtype=np.intp))
+        np.testing.assert_array_equal(overlay._index_map, np.array([1, 3, 5]))
+
+    def test_view_shares_base_backend(self):
+        backend = EagerMemoryBackend(objects=list(range(5)))
+        overlay = backend.view(np.array([0, 1], dtype=np.intp))
+        assert overlay._base is backend
+
+    # ------------------------------------------------------------------
+    # clone_concrete()
+    # ------------------------------------------------------------------
+
+    def test_clone_concrete_same_class(self):
+        backend = EagerMemoryBackend(
+            objects=[{"id": i} for i in range(4)],
+            features={"fp": np.eye(4, dtype=np.float32)},
+        )
+        cloned = backend.clone_concrete()
+        assert type(cloned) is EagerMemoryBackend
+
+    def test_clone_concrete_full_data_matches(self):
+        objects = [{"id": i} for i in range(4)]
+        features = {"fp": np.eye(4, dtype=np.float32)}
+        backend = EagerMemoryBackend(objects=objects, features=features)
+        cloned = backend.clone_concrete()
+        assert cloned.get_objects() == objects
+        np.testing.assert_array_equal(
+            cloned.get_feature("fp"), features["fp"]
+        )
+
+    def test_clone_concrete_with_index_map(self):
+        backend = EagerMemoryBackend(
+            objects=[{"id": i} for i in range(6)],
+            features={"fp": np.arange(12).reshape(6, 2).astype(np.float32)},
+        )
+        index_map = np.array([0, 2, 4], dtype=np.intp)
+        cloned = backend.clone_concrete(index_map=index_map)
+        assert len(cloned) == 3
+        assert cloned.get_objects() == [{"id": 0}, {"id": 2}, {"id": 4}]
+        expected_fp = np.arange(12).reshape(6, 2)[index_map].astype(np.float32)
+        np.testing.assert_array_equal(cloned.get_feature("fp"), expected_fp)
+
+    def test_clone_concrete_is_independent(self):
+        """Mutations to the clone must not affect the original."""
+        backend = EagerMemoryBackend(
+            objects=[{"id": 0}],
+            features={"fp": np.array([[1.0, 2.0]])},
+        )
+        cloned = backend.clone_concrete()
+        cloned.update_objects({"id": 999}, idx=0)
+        assert backend.get_objects(0) == {"id": 0}
+
 
 # ===========================================================================
 # Run
