@@ -2,14 +2,32 @@
 druglab.db.backend.overlay
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~
 OverlayBackend: a zero-copy proxy wrapper around any BaseStorageBackend.
-
+ 
 Implements:
 - Zero-copy row filtering via index mapping
 - Copy-on-Write (CoW) semantics for mutations (deltas stored locally)
 - Tombstones for deletions (never touches the base backend)
-- .materialize() -> EagerMemoryBackend (collapse into concrete backend)
-- .commit() -> None (flush deltas to base backend)
-- .save(path) -> delegates to materialize().save(path)
+- ``.materialize(target_path)`` → concrete backend 
+- ``.commit()`` → flush deltas to base backend
+- ``.save(path)`` → delegates to materialize().save(path)
+
+Materialization Note
+--------------------
+``materialize(target_path=None)`` operates in two clean phases:
+ 
+Phase A - Clone the base
+    ``concrete = self._base.clone_concrete(target_path, index_map)``
+    This calls the cooperative ``_gather_materialized_state`` MRO chain on
+    the *base* backend to build a new instance of the **same concrete class**
+    (e.g. ``EagerMemoryBackend``).  No hardcoding of ``EagerMemoryBackend``.
+ 
+Phase B - Apply local deltas
+    Iterate over the CoW state (local features, metadata, objects, tombstones)
+    and apply them to *concrete* via the public backend API.
+ 
+This design means that future out-of-core backends (e.g. ``ZarrBackend``)
+can materialise correctly just by implementing ``_gather_materialized_state``,
+without any changes to ``OverlayBackend``.
 """
 
 from __future__ import annotations
@@ -426,36 +444,94 @@ class OverlayBackend(BaseStorageBackend):
         pass
 
     # ------------------------------------------------------------------
-    # State management
+    # Materialization
     # ------------------------------------------------------------------
 
-    def materialize(self) -> EagerMemoryBackend:
+    def materialize(
+        self,
+        target_path: Optional[Path] = None,
+    ) -> BaseStorageBackend:
         """
-        Collapse the overlay proxy tree into a concrete EagerMemoryBackend.
-        Local deltas are merged with base data; tombstoned keys are excluded.
+        Collapse the overlay proxy tree into a concrete backend of the same
+        class as ``self._base``.
+ 
+        The Director operates in two phases:
+ 
+        **Phase A - Clone the base**
+            ``concrete = self._base.clone_concrete(target_path, self._index_map)``
+            This calls the cooperative ``_gather_materialized_state`` MRO chain
+            on the *actual base backend*, building a new instance of the **same
+            concrete type** (e.g. ``EagerMemoryBackend``).  No class is hardcoded.
+ 
+        **Phase B - Apply local deltas**
+            Iterate over ``_deleted_features``, ``_local_features``,
+            ``_deleted_metadata_cols``, ``_local_metadata``, and
+            ``_local_objects``, applying each to *concrete* via its public API.
+ 
+        Parameters
+        ----------
+        target_path : Path, optional
+            Forwarded to ``clone_concrete``.  Reserved for future out-of-core
+            backends that stream sliced state to disk in Phase A.
+ 
+        Returns
+        -------
+        BaseStorageBackend
+            A new concrete backend of type ``type(self._base)`` with the
+            overlay's logical state fully materialised.
         """
-        from .memory import EagerMemoryBackend
-
-        n = self._n_rows()
-        all_positions = np.arange(n, dtype=np.intp)
-
-        # Objects
-        objects = self.get_objects(idx=None)
-
-        # Metadata
-        metadata = self.get_metadata(idx=None)
-
-        # Features
-        feature_names = self.get_feature_names()
-        features: Dict[str, np.ndarray] = {}
-        for name in feature_names:
-            features[name] = self.get_feature(name, idx=None)
-
-        return EagerMemoryBackend(
-            objects=objects,
-            metadata=metadata.reset_index(drop=True),
-            features=features,
+        # ---- Phase A: Clone the base, restricted to our index_map ----
+        concrete: BaseStorageBackend = self._base.clone_concrete(
+            target_path=target_path,
+            index_map=self._index_map,
         )
+ 
+        # ---- Phase B: Apply CoW deltas --------------------------------
+ 
+        # 1. Tombstoned features (delete from the cloned backend)
+        for name in self._deleted_features:
+            if name in concrete.get_feature_names():
+                concrete.drop_feature(name)
+ 
+        # 2. Local feature overrides (add or update)
+        for name, arr in self._local_features.items():
+            if name in self._deleted_features:
+                continue  # re-tombstoned after re-add, skip
+            if name in concrete.get_feature_names():
+                concrete.update_feature(name, arr)
+            else:
+                concrete.update_feature(name, arr)  # add new feature
+ 
+        # 3. Tombstoned metadata columns
+        if self._deleted_metadata_cols:
+            existing_cols = set(concrete.get_metadata().columns)
+            to_drop = list(self._deleted_metadata_cols & existing_cols)
+            if to_drop:
+                concrete.drop_metadata_columns(to_drop)
+ 
+        # 4. Local metadata overrides
+        if self._local_metadata is not None and not self._local_metadata.empty:
+            existing_cols = set(concrete.get_metadata().columns)
+            for col in self._local_metadata.columns:
+                if col in self._deleted_metadata_cols:
+                    continue  # tombstoned
+                val = self._local_metadata[col].values
+                if col in existing_cols:
+                    concrete.update_metadata({col: val})
+                else:
+                    concrete.add_metadata_column(col, val)
+ 
+        # 5. Local object overrides
+        #    _local_objects keys are overlay-local indices (0..n-1), which
+        #    correspond directly to rows in the cloned concrete backend.
+        for oi, obj in self._local_objects.items():
+            concrete.update_objects(obj, idx=int(oi))
+ 
+        return concrete
+    
+    # ------------------------------------------------------------------
+    # Commit
+    # ------------------------------------------------------------------
 
     def commit(self) -> None:
         """
