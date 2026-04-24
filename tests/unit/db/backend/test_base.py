@@ -12,7 +12,7 @@ Covers:
 3. BaseMetadataMixin — set_metadata bounds checking and column delegation.
 4. BaseObjectMixin — set_objects length validation.
 5. BaseStorageBackend — __init__ lifecycle sequence, validate() consistency,
-   view() returns OverlayBackend, clone_concrete() uses class correctly.
+   clone_concrete() uses class correctly.
 """
 
 from __future__ import annotations
@@ -31,7 +31,6 @@ from druglab.db.backend.base.mixins.metadata import BaseMetadataMixin
 from druglab.db.backend.base.mixins.objects import BaseObjectMixin
 from druglab.db.backend.base import BaseStorageBackend
 from druglab.db.backend import EagerMemoryBackend
-from druglab.db.backend.overlay import OverlayBackend
 
 # ===========================================================================
 # Dummy Implementations for ABCs
@@ -370,34 +369,6 @@ class TestBaseStorageBackend:
         backend = DummyFullBackend(expected_len=5, meta_len=5, feat_len=5, obj_len=4)
         with pytest.raises(ValueError, match="Backend Dimension Mismatch"):
             backend.validate()
-
-    # ------------------------------------------------------------------
-    # view()
-    # ------------------------------------------------------------------
-
-    def test_view_returns_overlay_backend(self):
-        backend = EagerMemoryBackend(
-            objects=[1, 2, 3, 4],
-            features={"f": np.arange(8).reshape(4, 2).astype(np.float32)},
-        )
-        overlay = backend.view(np.array([0, 2], dtype=np.intp))
-        assert isinstance(overlay, OverlayBackend)
-
-    def test_view_none_covers_all_rows(self):
-        backend = EagerMemoryBackend(objects=[1, 2, 3])
-        overlay = backend.view(None)
-        assert len(overlay) == 3
-        np.testing.assert_array_equal(overlay._index_map, np.arange(3))
-
-    def test_view_index_map_correct(self):
-        backend = EagerMemoryBackend(objects=list(range(10)))
-        overlay = backend.view(np.array([1, 3, 5], dtype=np.intp))
-        np.testing.assert_array_equal(overlay._index_map, np.array([1, 3, 5]))
-
-    def test_view_shares_base_backend(self):
-        backend = EagerMemoryBackend(objects=list(range(5)))
-        overlay = backend.view(np.array([0, 1], dtype=np.intp))
-        assert overlay._base is backend
 
     # ------------------------------------------------------------------
     # clone_concrete()

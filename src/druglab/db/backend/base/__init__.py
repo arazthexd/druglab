@@ -14,21 +14,17 @@ single source of truth for all row-addressing in DrugLab.
 
 from __future__ import annotations
 
-from typing import Any, Optional, TYPE_CHECKING
+from typing import Any, Optional
 from typing_extensions import Self
 from pathlib import Path
 
 import numpy as np
 
-from ...indexing import INDEX_LIKE, RowSelection, normalize_row_index
 from .mixins import (
     BaseObjectMixin,
     BaseFeatureMixin,
     BaseMetadataMixin
 )
-
-if TYPE_CHECKING:
-    from druglab.db.backend.overlay import OverlayBackend
 
 class BaseStorageBackend(
     BaseObjectMixin,
@@ -76,43 +72,6 @@ class BaseStorageBackend(
         self.initialize_storage_context(**kwargs)
         self.bind_capabilities()
         self.post_initialize_validate()
-
-    # ------------------------------------------------------------------
-    # Views (Zero Copy Subsetting)
-    # ------------------------------------------------------------------
-
-    def view(
-        self,
-        indices: Optional["INDEX_LIKE"] = None,
-    ) -> "OverlayBackend":
-        """
-        Return a zero-copy ``OverlayBackend`` restricted to *indices*.
- 
-        Replaces the deprecated ``create_view`` method.  No data is copied;
-        the overlay shares the base backend's storage and applies CoW
-        semantics on write.
- 
-        Parameters
-        ----------
-        indices : INDEX_LIKE or None
-            Row selector (int, slice, list, ndarray, or None for all rows).
-            Passed through ``normalize_row_index`` before use.
- 
-        Returns
-        -------
-        OverlayBackend
-            A proxy wrapper around *self*.
-        """
-        from druglab.db.backend.overlay import OverlayBackend
- 
-        n = len(self)
-        resolved = normalize_row_index(indices, n)
-        if resolved is None:
-            index_map = np.arange(n, dtype=np.intp)
-        else:
-            index_map = resolved.astype(np.intp)
- 
-        return OverlayBackend(self, index_map)
     
     # ------------------------------------------------------------------
     # Clones (Partial/Full Deep Copies)

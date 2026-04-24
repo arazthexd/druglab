@@ -891,8 +891,8 @@ class BaseTable(ABC, Generic[OT]):
         """
         Return a new table containing only the rows at ``indices``.
  
-        Uses ``self._backend.view(index_array)`` (Phase 2) for zero-copy row
-        filtering via ``OverlayBackend``.  No data is copied from the base.
+        Creates an ``OverlayBackend`` proxy over the current backend using the
+        resolved index map. This preserves zero-copy subset behavior.
  
         Parameters
         ----------
@@ -918,9 +918,7 @@ class BaseTable(ABC, Generic[OT]):
  
         idx = idx.astype(np.intp)
  
-        # Phase 2: delegate to backend.view() instead of constructing
-        # OverlayBackend directly.
-        new_backend = self._backend.view(idx)
+        new_backend = OverlayBackend(self._backend, idx)
  
         hist = list(self._history) + [
             HistoryEntry.now(
