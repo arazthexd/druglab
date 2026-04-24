@@ -92,7 +92,7 @@ class _LifecycleBase:
         """
         Cooperative hook: collect (optionally sliced) domain state as init kwargs.
  
-        Used by ``BaseStorageBackend.clone_concrete()`` to produce a new
+        Used by ``BaseStorageBackend.clone()`` to produce a new
         concrete backend of the same class, optionally restricted to the rows
         in *index_map*.
  

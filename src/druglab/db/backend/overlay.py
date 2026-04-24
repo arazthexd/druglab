@@ -16,7 +16,7 @@ Materialization Note
 ``materialize(target_path=None)`` operates in two clean phases:
  
 Phase A - Clone the base
-    ``concrete = self._base.clone_concrete(target_path, index_map)``
+    ``concrete = self._base.clone(target_path, index_map)``
     This calls the cooperative ``_gather_materialized_state`` MRO chain on
     the *base* backend to build a new instance of the **same concrete class**
     (e.g. ``EagerMemoryBackend``).  No hardcoding of ``EagerMemoryBackend``.
@@ -444,6 +444,33 @@ class OverlayBackend(BaseStorageBackend):
         pass
 
     # ------------------------------------------------------------------
+    # Clones
+    # ------------------------------------------------------------------
+
+    def clone(
+        self,
+        target_path: Optional[Path] = None,
+        index_map: Optional[np.ndarray] = None,
+    ) -> BaseStorageBackend:
+        """
+        Return an independent overlay proxy copy.
+
+        The clone preserves this overlay's absolute base pointer and carries
+        forward local CoW/tombstone state, but deep-copies all local delta
+        containers so the two overlays can diverge safely after cloning.
+        """
+        clone_index_map = self._index_map.copy() if index_map is None else np.asarray(index_map, dtype=np.intp)
+        cloned = self.__class__(self._base, clone_index_map)
+        cloned._local_features = copy.deepcopy(self._local_features)
+        cloned._local_metadata = (
+            None if self._local_metadata is None else self._local_metadata.copy(deep=True)
+        )
+        cloned._local_objects = copy.deepcopy(self._local_objects)
+        cloned._deleted_features = copy.deepcopy(self._deleted_features)
+        cloned._deleted_metadata_cols = copy.deepcopy(self._deleted_metadata_cols)
+        return cloned
+
+    # ------------------------------------------------------------------
     # Materialization
     # ------------------------------------------------------------------
 
@@ -458,7 +485,7 @@ class OverlayBackend(BaseStorageBackend):
         The Director operates in two phases:
  
         **Phase A - Clone the base**
-            ``concrete = self._base.clone_concrete(target_path, self._index_map)``
+            ``concrete = self._base.clone(target_path, self._index_map)``
             This calls the cooperative ``_gather_materialized_state`` MRO chain
             on the *actual base backend*, building a new instance of the **same
             concrete type** (e.g. ``EagerMemoryBackend``).  No class is hardcoded.
@@ -471,7 +498,7 @@ class OverlayBackend(BaseStorageBackend):
         Parameters
         ----------
         target_path : Path, optional
-            Forwarded to ``clone_concrete``.  Reserved for future out-of-core
+            Forwarded to ``clone``.  Reserved for future out-of-core
             backends that stream sliced state to disk in Phase A.
  
         Returns
@@ -481,7 +508,7 @@ class OverlayBackend(BaseStorageBackend):
             overlay's logical state fully materialised.
         """
         # ---- Phase A: Clone the base, restricted to our index_map ----
-        concrete: BaseStorageBackend = self._base.clone_concrete(
+        concrete: BaseStorageBackend = self._base.clone(
             target_path=target_path,
             index_map=self._index_map,
         )

@@ -462,6 +462,27 @@ class TestGatherMaterializedState:
         result["features"]["fp"][:] = 0
         assert not np.all(backend.get_feature("fp") == 0)
 
+class TestCloneAndMaterialize:
+
+    def test_materialize_returns_independent_copy(self):
+        backend = EagerMemoryBackend(
+            objects=[{"id": 0}, {"id": 1}],
+            metadata=pd.DataFrame({"val": [1, 2]}),
+            features={"fp": np.array([[1.0], [2.0]], dtype=np.float32)},
+        )
+
+        materialized = backend.materialize()
+
+        materialized.update_objects({"id": 999}, idx=0)
+        materialized.update_metadata(pd.Series([77], name="val"), idx=[0])
+        materialized.update_feature("fp", np.array([[9.0]], dtype=np.float32), idx=[0])
+
+        assert backend.get_objects(idx=0) == {"id": 0}
+        assert backend.get_metadata()["val"].tolist() == [1, 2]
+        np.testing.assert_array_equal(
+            backend.get_feature("fp"),
+            np.array([[1.0], [2.0]], dtype=np.float32),
+        )
 
 # ===========================================================================
 # Section 7: EagerMemoryBackend.save() / load() round-trip

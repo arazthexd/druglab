@@ -772,12 +772,9 @@ class BaseTable(ABC, Generic[OT]):
         Collapse the backend proxy tree into a concrete backend of the same
         class as the underlying base.
  
-        If the current backend is an ``OverlayBackend``, delegates to
-        ``OverlayBackend.materialize(target_path)`` which runs the Director
-        pattern (Phase A clone + Phase B delta application).
- 
-        If the backend is already concrete, delegates to
-        ``backend.clone_concrete()`` for a full deep copy.
+        Delegates to ``backend.materialize(target_path)`` for both concrete and
+        proxy backends. Concrete backends deep-copy themselves, while proxies
+        can collapse deferred state into concrete backends.
  
         Parameters
         ----------
@@ -785,10 +782,7 @@ class BaseTable(ABC, Generic[OT]):
             Forwarded to the backend's materialise call.  Reserved for future
             out-of-core backends.
         """
-        if isinstance(self._backend, OverlayBackend):
-            concrete_backend = self._backend.materialize(target_path=target_path)
-        else:
-            concrete_backend = self._backend.clone_concrete()
+        concrete_backend = self._backend.materialize(target_path=target_path)
         return self._new_instance_from_backend(concrete_backend, list(self._history))
     
     # ------------------------------------------------------------------

@@ -325,6 +325,46 @@ class TestCommit:
         assert full_base_meta[2:5] == update_vals
         assert full_base_meta[5:] == generated_meta[first_col].iloc[5:].tolist()
 
+class TestOverlayClone:
+
+    def test_clone_copies_local_state_without_touching_base(self, bctx: BackendContext):
+        base = bctx.backend
+        overlay = OverlayBackend(base, np.array([0, 1, 2], dtype=np.intp))
+
+        overlay.update_feature("new_feat", np.array([[1.0], [2.0], [3.0]], dtype=np.float32))
+        overlay.add_metadata_column("local_val", np.array([10, 20, 30]))
+        overlay.update_objects({"id": 123}, idx=0)
+        overlay.drop_feature(bctx.feat_names[0])
+        overlay.drop_metadata_columns(bctx.meta_cols[0])
+
+        cloned = overlay.clone()
+
+        assert isinstance(cloned, OverlayBackend)
+        assert cloned._base is base
+        assert "new_feat" not in base.get_feature_names()
+
+        np.testing.assert_array_equal(
+            cloned._local_features["new_feat"],
+            overlay._local_features["new_feat"],
+        )
+        assert cloned._local_objects == overlay._local_objects
+        assert cloned._deleted_features == overlay._deleted_features
+        assert cloned._deleted_metadata_cols == overlay._deleted_metadata_cols
+
+    def test_clone_is_independent_from_source_overlay(self, bctx: BackendContext):
+        overlay = OverlayBackend(bctx.backend, np.array([0, 1, 2], dtype=np.intp))
+        overlay.update_feature("new_feat", np.array([[1.0], [2.0], [3.0]], dtype=np.float32))
+
+        cloned = overlay.clone()
+        cloned.update_feature("new_feat", np.array([[7.0], [8.0], [9.0]], dtype=np.float32))
+        cloned.update_objects({"id": 999}, idx=1)
+
+        np.testing.assert_array_equal(
+            overlay.get_feature("new_feat"),
+            np.array([[1.0], [2.0], [3.0]], dtype=np.float32),
+        )
+        assert 1 not in overlay._local_objects
+
 ######################## BELOW IS INCOMING  #################################
 
 # ...

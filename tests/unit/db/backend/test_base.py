@@ -12,7 +12,7 @@ Covers:
 3. BaseMetadataMixin — set_metadata bounds checking and column delegation.
 4. BaseObjectMixin — set_objects length validation.
 5. BaseStorageBackend — __init__ lifecycle sequence, validate() consistency,
-   clone_concrete() uses class correctly.
+   clone() uses class correctly.
 """
 
 from __future__ import annotations
@@ -371,46 +371,46 @@ class TestBaseStorageBackend:
             backend.validate()
 
     # ------------------------------------------------------------------
-    # clone_concrete()
+    # clone()
     # ------------------------------------------------------------------
 
-    def test_clone_concrete_same_class(self):
+    def test_clone_same_class(self):
         backend = EagerMemoryBackend(
             objects=[{"id": i} for i in range(4)],
             features={"fp": np.eye(4, dtype=np.float32)},
         )
-        cloned = backend.clone_concrete()
+        cloned = backend.clone()
         assert type(cloned) is EagerMemoryBackend
 
-    def test_clone_concrete_full_data_matches(self):
+    def test_clone_full_data_matches(self):
         objects = [{"id": i} for i in range(4)]
         features = {"fp": np.eye(4, dtype=np.float32)}
         backend = EagerMemoryBackend(objects=objects, features=features)
-        cloned = backend.clone_concrete()
+        cloned = backend.clone()
         assert cloned.get_objects() == objects
         np.testing.assert_array_equal(
             cloned.get_feature("fp"), features["fp"]
         )
 
-    def test_clone_concrete_with_index_map(self):
+    def test_clone_with_index_map(self):
         backend = EagerMemoryBackend(
             objects=[{"id": i} for i in range(6)],
             features={"fp": np.arange(12).reshape(6, 2).astype(np.float32)},
         )
         index_map = np.array([0, 2, 4], dtype=np.intp)
-        cloned = backend.clone_concrete(index_map=index_map)
+        cloned = backend.clone(index_map=index_map)
         assert len(cloned) == 3
         assert cloned.get_objects() == [{"id": 0}, {"id": 2}, {"id": 4}]
         expected_fp = np.arange(12).reshape(6, 2)[index_map].astype(np.float32)
         np.testing.assert_array_equal(cloned.get_feature("fp"), expected_fp)
 
-    def test_clone_concrete_is_independent(self):
+    def test_clone_is_independent(self):
         """Mutations to the clone must not affect the original."""
         backend = EagerMemoryBackend(
             objects=[{"id": 0}],
             features={"fp": np.array([[1.0, 2.0]])},
         )
-        cloned = backend.clone_concrete()
+        cloned = backend.clone()
         cloned.update_objects({"id": 999}, idx=0)
         assert backend.get_objects(0) == {"id": 0}
 

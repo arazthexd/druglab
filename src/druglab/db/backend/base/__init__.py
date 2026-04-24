@@ -72,24 +72,24 @@ class BaseStorageBackend(
         self.initialize_storage_context(**kwargs)
         self.bind_capabilities()
         self.post_initialize_validate()
-    
+
     # ------------------------------------------------------------------
     # Clones (Partial/Full Deep Copies)
     # ------------------------------------------------------------------
 
-    def clone_concrete(
+    def clone(
         self,
         target_path: Optional[Path] = None,
         index_map: Optional[np.ndarray] = None,
     ) -> "BaseStorageBackend":
         """
-        Build a new concrete instance of *this* class with (optionally sliced)
+        Build a new backend instance of *this* class with (optionally sliced)
         state gathered via the cooperative ``_gather_materialized_state`` hook.
  
         This is the single point where ``OverlayBackend.materialize()`` creates
         its Phase-A clone.  Because ``_gather_materialized_state`` is MRO-
         cooperative, any custom mixin that stores additional state only needs
-        to implement that one hook; no changes to ``clone_concrete`` are needed.
+        to implement that one hook; no changes to ``clone`` are needed.
  
         Parameters
         ----------
@@ -108,6 +108,21 @@ class BaseStorageBackend(
             index_map=index_map,
         )
         return self.__class__(**gathered)
+    
+    def materialize(
+        self,
+        target_path: Optional[Path] = None,
+    ) -> "BaseStorageBackend":
+        """
+        Return a disconnected backend instance representing this backend's
+        current logical state.
+
+        Concrete backends are already materialized, so their safe behavior is
+        to return a deep copy via ``clone()``. Proxy backends (for example
+        ``OverlayBackend``) may override this method to collapse deferred
+        deltas into a concrete backend.
+        """
+        return self.clone(target_path=target_path)
 
     # ------------------------------------------------------------------
     # Persistence

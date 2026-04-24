@@ -125,7 +125,7 @@ class MemoryFeatureMixin(BaseFeatureMixin):
         target_path: Optional[Path] = None,
         index_map: Optional[np.ndarray] = None,
     ) -> Dict[str, Any]:
-        """Return ``{"features": sliced_or_full_copy}`` for ``clone_concrete``."""
+        """Return ``{"features": sliced_or_full_copy}`` for ``clone``."""
         result = super()._gather_materialized_state(
             target_path=target_path, index_map=index_map
         )

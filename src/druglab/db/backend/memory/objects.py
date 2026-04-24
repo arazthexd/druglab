@@ -129,7 +129,7 @@ class MemoryObjectMixin(BaseObjectMixin):
         target_path: Optional[Path] = None,
         index_map: Optional[np.ndarray] = None,
     ) -> Dict[str, Any]:
-        """Return ``{"objects": sliced_copy}`` for ``clone_concrete``."""
+        """Return ``{"objects": sliced_copy}`` for ``clone``."""
         result = super()._gather_materialized_state(
             target_path=target_path, index_map=index_map
         )
