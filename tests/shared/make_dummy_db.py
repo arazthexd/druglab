@@ -1,6 +1,7 @@
 from __future__ import annotations
-from typing import NamedTuple, TypeVar, Generic
+from typing import TypeVar, Generic
 import json
+from dataclasses import dataclass
 
 import numpy as np
 import pandas as pd
@@ -12,7 +13,8 @@ from druglab.db.table import BaseTable
 # Context Classes
 # ===========================================================================
 
-class TableContext(NamedTuple):
+@dataclass
+class TableContext:
     table: BaseTable
     num_rows: int
     meta_cols: tuple[str]
@@ -22,7 +24,8 @@ class TableContext(NamedTuple):
 
 BCT = TypeVar("BCT")
 
-class BackendContext(NamedTuple, Generic[BCT]):
+@dataclass
+class BackendContext(Generic[BCT]):
     backend: BaseStorageBackend | BCT
     num_rows: int
     meta_cols: tuple[str]
