@@ -319,9 +319,7 @@ class TestMaterializeAndSave:
 
         with tempfile.TemporaryDirectory() as tmp:
             bundle_path = Path(tmp) / "test_obj.dlb"
-            print(bundle_path)
             bundle_path = sub.save(bundle_path)
-            print(bundle_path)
             loaded = DummyTable.load(bundle_path)
 
         assert loaded.get_objects(idx=0) == {"id": 999}

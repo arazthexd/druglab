@@ -393,7 +393,6 @@ class BaseTable(ABC, Generic[OT]):
  
                 count = int(raw_payload["count"])
                 is_serialized = raw_payload.get("serialized", False)
-                print(is_serialized)
                 raw_list = [pickle.load(f) for _ in range(count)]
  
             if is_serialized:
@@ -455,9 +454,6 @@ class BaseTable(ABC, Generic[OT]):
             (temp_dir / "config.json").write_text(
                 json.dumps(config, indent=2), encoding="utf-8"
             )
-
-            import os
-            print(os.listdir(temp_dir))
  
             if root.exists():
                 shutil.rmtree(root)
