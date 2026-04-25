@@ -926,11 +926,10 @@ class BaseTable(ABC, Generic[OT]):
 
     def copy(self) -> "BaseTable[OT]":
         """Return a fully independent deep copy of this table."""
-        if isinstance(self._backend, OverlayBackend):
-            new_backend = self._backend.materialize()
-        else:
-            new_backend = self._backend.create_view(list(range(len(self._backend))))
-        return self._new_instance_from_backend(new_backend, list(self._history))
+        return self._new_instance_from_backend(
+            backend=self._backend.clone(), 
+            history=list(self._history)
+        )
 
     # ------------------------------------------------------------------
     # Concatenation
