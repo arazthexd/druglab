@@ -29,6 +29,9 @@ class _OverlayLifecycleBase:
 
 
 class OverlayFeatureMixin(BaseFeatureMixin, _OverlayLifecycleBase):
+
+    _base: BaseStorageBackend
+
     def _initialize_overlay_context(self, **kwargs: Any) -> None:
         self._local_features: Dict[str, np.ndarray] = {}
         self._deleted_features: Set[str] = set()
@@ -134,6 +137,9 @@ class OverlayFeatureMixin(BaseFeatureMixin, _OverlayLifecycleBase):
 
 
 class OverlayMetadataMixin(BaseMetadataMixin, _OverlayLifecycleBase):
+
+    _base: BaseStorageBackend
+
     def _initialize_overlay_context(self, **kwargs: Any) -> None:
         self._local_metadata: Optional[pd.DataFrame] = None
         self._deleted_metadata_cols: Set[str] = set()
@@ -250,10 +256,13 @@ class OverlayMetadataMixin(BaseMetadataMixin, _OverlayLifecycleBase):
                 self._local_metadata.drop(columns=[col], inplace=True)
 
     def _visible_metadata_columns(self) -> List[str]:
-        base_cols = set(self._base.get_metadata().columns) - self._deleted_metadata_cols
+        base_cols = set(self._base.get_metadata_columns()) - self._deleted_metadata_cols
         local_cols = set(self._local_metadata.columns) if self._local_metadata is not None else set()
         return list(base_cols | local_cols)
 
+    def get_metadata_columns(self) -> List[str]:
+        return self._visible_metadata_columns()
+    
     def _validate_metadata(self) -> None:
         return
 
@@ -299,6 +308,9 @@ class OverlayMetadataMixin(BaseMetadataMixin, _OverlayLifecycleBase):
 
 
 class OverlayObjectMixin(BaseObjectMixin, _OverlayLifecycleBase):
+
+    _base: BaseStorageBackend
+
     def _initialize_overlay_context(self, **kwargs: Any) -> None:
         self._local_objects: Dict[int, Any] = {}
         super()._initialize_overlay_context(**kwargs)

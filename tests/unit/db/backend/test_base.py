@@ -94,6 +94,9 @@ class DummyMetadataMixin(BaseMetadataMixin):
         if cols is None:
             self.dropped_all = True
 
+    def get_metadata_columns(self)-> List[str]:
+        return list(self.get_metadata().columns)
+
     def _n_metadata_rows(self) -> int:
         return self.n_rows
 
@@ -146,6 +149,7 @@ class DummyFullBackend(BaseStorageBackend):
     def add_metadata_column(self, *args, **kwargs): pass
     def update_metadata(self, *args, **kwargs): pass
     def drop_metadata_columns(self, *args, **kwargs): pass
+    def get_metadata_columns(self): return []
     def get_objects(self, *args, **kwargs): return []
     def update_objects(self, *args, **kwargs): pass
 

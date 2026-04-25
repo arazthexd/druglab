@@ -156,6 +156,9 @@ class MemoryMetadataMixin(BaseMetadataMixin):
                 cols = [cols]
             self._metadata = self._metadata.drop(columns=cols)
 
+    def get_metadata_columns(self) -> List[str]:
+        return list(self._metadata.columns)
+
     def _n_metadata_rows(self) -> int:
         """
         Get the total number of rows in the metadata DataFrame.

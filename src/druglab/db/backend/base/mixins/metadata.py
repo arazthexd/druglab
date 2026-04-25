@@ -137,6 +137,14 @@ class BaseMetadataMixin(_LifecycleBase, ABC):
             effectively resetting the metadata schema.
         """
 
+    @abstractmethod
+    def get_metadata_columns(self) -> List[str]:
+        """
+        Return the list of metadata column names without materialising row data.
+
+        This is the lightweight counterpart to ``get_metadata().columns``.
+        """
+
     def set_metadata(self, df: pd.DataFrame) -> None:
         """
         Replace the entire metadata store with *df*.
