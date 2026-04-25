@@ -107,6 +107,8 @@ class ConformerTable(MoleculeTable):
             k: [] for k in self.feature_names
         }
 
+        all_feats = {k: self.get_feature(k) for k in self.feature_names}
+
         for key in sorted(groups.keys(), key=lambda x: (isinstance(x, float), x)):
             row_indices = groups[key]
 
@@ -143,7 +145,7 @@ class ConformerTable(MoleculeTable):
             new_meta_rows.append(row_dict)
 
             for feat_name in self.feature_names:
-                feat_array = self.get_feature(feat_name)
+                feat_array = all_feats[feat_name]
                 agg_fn = feat_agg.get(feat_name, "mean")
                 group_feats = feat_array[row_indices]
                 if agg_fn == "mean":    new_features[feat_name].append(group_feats.mean(axis=0))
