@@ -32,6 +32,7 @@ from __future__ import annotations
 import re
 import copy
 import json
+import inspect
 import pickle
 import shutil
 from abc import ABC, abstractmethod
@@ -383,6 +384,7 @@ class BaseTable(ABC, Generic[OT]):
         Subclasses may override this to supply a matching bulk format reader.
         """
         deserialize = cls._deserialize_object
+        deserialize_param_count = len(inspect.signature(deserialize).parameters)
  
         def _reader(dir_path: Path) -> List[Any]:
             obj_path = dir_path / "objects.pkl"
@@ -396,6 +398,9 @@ class BaseTable(ABC, Generic[OT]):
                 raw_list = [pickle.load(f) for _ in range(count)]
  
             if is_serialized:
+                if deserialize_param_count == 2:
+                    bound_deserialize = cls()._deserialize_object
+                    return [bound_deserialize(r) for r in raw_list]
                 return [deserialize(r) for r in raw_list]
             return raw_list
  
@@ -491,6 +496,8 @@ class BaseTable(ABC, Generic[OT]):
         backed_module = config.pop("backend_module", "druglab.db.backend")
         table_name = config.pop("table_class", "BaseTable")
         table_module = config.pop("table_module", "druglab.db.table")
+        config.pop("schema_version", None)
+        config.pop("n", None)
 
         import importlib
         backend_class: Type[BaseStorageBackend] = getattr(
