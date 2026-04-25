@@ -252,32 +252,3 @@ class MemoryMetadataMixin(BaseMetadataMixin):
         result = super().load_storage_context(path, **kwargs)
         result["metadata"] = metadata
         return result
-
-    # ------------------------------------------------------------------
-    # Other Utilities
-    # ------------------------------------------------------------------
-
-    def try_numerize_metadata(self, columns: Optional[List[str]] = None) -> None:
-        """
-        Attempt to numerize columns in the metadata DataFrame.
-
-        NOTE: This is just a utility function for in-memory metadata saved as pandas dataframes.
-        It is not a general utility for any storage backend.
-
-        Parameters
-        ----------
-        columns : Optional[List[str]], default None
-            The column(s) to numerize. If None, numerize all columns.
-        """
-        if columns is None:
-            columns = self._metadata.columns.tolist()
-        else:
-            if isinstance(columns, str):
-                columns = [columns]
-
-        for col in columns:
-            if col in self._metadata.columns:
-                try:
-                    self._metadata[col] = pd.to_numeric(self._metadata[col])
-                except (ValueError, TypeError):
-                    pass
