@@ -124,6 +124,8 @@ def validate_take_index(
     IndexError
         If any resolved index is out of bounds for ``n``.
     """
+    intp_info = np.iinfo(np.intp)
+
     if np.issubdtype(arr.dtype, np.bool_):
         raise TypeError(
             "Received a boolean array in validate_take_index(). "
@@ -144,6 +146,10 @@ def validate_take_index(
                 f"Float array contains non-integer values and cannot be safely "
                 f"cast to a positional index (e.g. {arr[arr != rounded][0]!r})."
             )
+        if rounded.size and ((rounded > intp_info.max).any() or (rounded < intp_info.min).any()):
+            raise OverflowError(
+                "Float index values exceed platform pointer-size integer bounds."
+            )
         arr = rounded.astype(np.intp)
 
     elif arr.dtype == object:
@@ -157,7 +163,11 @@ def validate_take_index(
             f"Positional index array must have an integer dtype; got {arr.dtype}."
         )
     else:
-        arr = arr.astype(np.intp)
+        if arr.size and ((arr > intp_info.max).any() or (arr < intp_info.min).any()):
+            raise OverflowError(
+                "Index values exceed platform pointer-size integer bounds."
+            )
+        arr = arr.astype(np.intp, copy=False)
 
     # Resolve negatives
     neg_mask = arr < 0
@@ -309,6 +319,9 @@ class RowSelection:
     positions: Optional[np.ndarray]
     n: int
     scalar_input: bool = field(default=False)
+    _positions_cache: Optional[np.ndarray] = field(
+        default=None, init=False, repr=False, compare=False
+    )
 
     # ------------------------------------------------------------------
     # Factory
@@ -370,6 +383,15 @@ class RowSelection:
         if self.positions is None:
             return self.n
         return len(self.positions)
+
+    @property
+    def positions_or_all(self) -> np.ndarray:
+        """Explicit positions, cached for repeated all-row access."""
+        if self.positions is not None:
+            return self.positions
+        if self._positions_cache is None:
+            object.__setattr__(self, "_positions_cache", np.arange(self.n, dtype=np.intp))
+        return self._positions_cache
 
     def apply_to(self, arr: np.ndarray) -> np.ndarray:
         """
