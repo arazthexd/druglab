@@ -32,6 +32,10 @@ from druglab.db.backend import (
     MemoryObjectMixin,
     MemoryFeatureMixin,
 )
+from druglab.db.backend.memory import (
+    MemoryMetadataStore,
+    MemoryFeatureStore,
+)
 from druglab.db.table import BaseTable, HistoryEntry, META, OBJ, FEAT, M, O, F
 from tests.shared.make_dummy_db import (
     _make_dummy_dict_memory_backend_context,
@@ -292,6 +296,26 @@ class TestMemoryFeatureMixin:
         with pytest.raises(KeyError):
             bctx.backend.drop_feature("nonexistent_feature_key")
 
+class TestStandaloneStores:
+    def test_memory_feature_store_in_isolation(self):
+        store = MemoryFeatureStore(features={"f": np.ones((3, 2), dtype=np.float32)})
+        np.testing.assert_array_equal(store.get_feature("f"), np.ones((3, 2), dtype=np.float32))
+
+    def test_memory_metadata_store_in_isolation(self):
+        store = MemoryMetadataStore(pd.DataFrame({"a": [1, 2, 3]}))
+        out = store.get_metadata(idx=[0, 2])
+        assert out["a"].tolist() == [1, 3]
+
+    def test_backend_feature_update_does_not_mutate_metadata_store(self):
+        backend = EagerMemoryBackend(
+            objects=[{"id": 0}, {"id": 1}],
+            metadata=pd.DataFrame({"m": [10, 20]}),
+            features={"f": np.zeros((2, 1), dtype=np.float32)},
+        )
+        before = backend.get_metadata().copy(deep=True)
+        backend.update_feature("f", np.ones((2, 1), dtype=np.float32))
+        after = backend.get_metadata()
+        pd.testing.assert_frame_equal(before, after)
 
 # ===========================================================================
 # Section 4: save_storage_context
