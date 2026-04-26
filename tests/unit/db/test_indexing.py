@@ -269,6 +269,15 @@ class TestValidateTakeIndex:
         result = validate_take_index(np.array([], dtype=np.int64), 0)
         assert len(result) == 0
 
+    def test_rejects_uint64_values_above_intp(self):
+        big = np.array([np.iinfo(np.intp).max], dtype=np.uint64) + np.uint64(1)
+        with pytest.raises(OverflowError):
+            validate_take_index(big, n=10)
+
+    def test_rejects_float_cast_values_above_intp(self):
+        big = np.array([float(np.iinfo(np.intp).max) * 2.0], dtype=np.float64)
+        with pytest.raises(OverflowError):
+            validate_take_index(big, n=10, allow_float_cast=True)
 
 # ===========================================================================
 # Section 4: RowSelection
@@ -316,6 +325,13 @@ class TestRowSelection:
     def test_from_raw_float_allowed_with_flag(self):
         sel = RowSelection.from_raw(np.array([1.0, 2.0]), 10, allow_float_cast=True)
         assert sel.positions.tolist() == [1, 2]
+
+    def test_positions_or_all_caches_for_full_selection(self):
+        sel = RowSelection.from_raw(None, 4)
+        first = sel.positions_or_all
+        second = sel.positions_or_all
+        assert first.tolist() == [0, 1, 2, 3]
+        assert first is second
 
     # --- Properties ---
     def test_is_full_true(self):
