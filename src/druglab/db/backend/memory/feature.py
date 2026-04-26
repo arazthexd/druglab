@@ -1,111 +1,64 @@
-"""
-druglab.db.backend.memory.feature
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-In-memory storage mixin for features.
-
-Currently, the only supported mixin is ``MemoryFeatureMixin`` which manages features
-in RAM as a dictionary of NumPy arrays. However, other mixins may be supported in the future.
-"""
+"""In-memory feature store."""
 
 from __future__ import annotations
 
-import copy
-import pickle
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Sequence, Union, TYPE_CHECKING
+from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
 import numpy as np
-import pandas as pd
 
 from ...indexing import RowSelection
-from ..base.mixins import BaseFeatureMixin
 
 if TYPE_CHECKING:
     from druglab.db.indexing import INDEX_LIKE
 
-__all__ = ['MemoryFeatureMixin']
 
-class MemoryFeatureMixin(BaseFeatureMixin):
-    """
-    In-memory feature storage mixin utilizing a dictionary of NumPy arrays.
-    """
+__all__ = ["MemoryFeatureStore", "MemoryFeatureMixin"]
 
-    # ------------------------------------------------------------------
-    # Initialization Hooks
-    # ------------------------------------------------------------------
 
-    def initialize_storage_context(
-        self, 
-        features: Optional[Dict[str, np.ndarray]] = None, 
-        **kwargs: Any
-    ) -> None:
-        """Initialize storage context via ``features`` kwarg.
-        
-        Parameters
-        ----------
-        features : Dict[str, np.ndarray], optional
-            Dictionary of NumPy arrays to initialize storage context with.
-        **kwargs
-            Additional keyword arguments. These are passed in the MRO chain.
-        """
-        self._features = features or {}
-        super().initialize_storage_context(**kwargs)
+class MemoryFeatureStore:
+    def __init__(self, features: Optional[Dict[str, np.ndarray]] = None, *, n_rows_hint: int = 0) -> None:
+        self._features = dict(features) if features is not None else {}
+        self._n_rows_hint = int(n_rows_hint)
 
-    # ------------------------------------------------------------------
-    # Feature Mixin API
-    # ------------------------------------------------------------------
-
-    def get_feature(self, name: str, idx: Optional[INDEX_LIKE] = None) -> np.ndarray:
-
+    def get_feature(self, name: str, idx: Optional["INDEX_LIKE"] = None) -> np.ndarray:
         arr = self._features[name]
         sel = RowSelection.from_raw(idx, arr.shape[0])
         return sel.apply_to(arr)
 
-    def update_feature(
-        self,
-        name: str,
-        array: np.ndarray,
-        idx: Optional[INDEX_LIKE] = None,
-        na: Any = None,
-        **kwargs
-    ) -> None:
-        
+    def update_feature(self, name: str, array: np.ndarray, idx: Optional["INDEX_LIKE"] = None, na: Any = None) -> None:
         if name not in self._features:
             if idx is None:
-                if array.shape[0] != self._n_feature_rows():
+                if array.shape[0] != self.n_rows():
                     raise ValueError(
-                        f"Length of array's first dimension ({array.shape[0]}) must "
-                        f"match number of feature rows ({self._n_feature_rows()})."
+                        f"Length of array's first dimension ({array.shape[0]}) must match number of feature rows ({self.n_rows()})."
                     )
                 self._features[name] = np.asarray(array).copy()
-            else:
-                sel = RowSelection.from_raw(idx, self._n_feature_rows() or len(array))
-                n_rows = self._n_feature_rows() or (
-                    sel.positions.max() + 1 if len(sel.positions) > 0 else 0
+                return
+
+            sel = RowSelection.from_raw(idx, self.n_rows() or len(array))
+            n_rows = self.n_rows() or (int(sel.positions.max()) + 1 if len(sel.positions) > 0 else 0)
+            shape = (n_rows, *np.asarray(array).shape[1:])
+            if na is None and np.issubdtype(np.asarray(array).dtype, np.floating):
+                na = np.nan
+            elif na is None:
+                na = 0
+            full_arr = np.full(shape, na, dtype=np.asarray(array).dtype)
+            full_arr[sel.positions] = array
+            self._features[name] = full_arr
+            return
+
+        if idx is None:
+            arr = np.asarray(array)
+            if arr.shape[0] != self._features[name].shape[0]:
+                raise ValueError(
+                    f"Cannot update feature '{name}': array has {arr.shape[0]} rows but existing feature has {self._features[name].shape[0]} rows."
                 )
-                shape = (n_rows, *np.asarray(array).shape[1:])
+            self._features[name] = arr.copy()
+            return
 
-                if na is None and np.issubdtype(np.asarray(array).dtype, np.floating):
-                    na = np.nan
-                elif na is None:
-                    na = 0
-
-                full_arr = np.full(shape, na, dtype=np.asarray(array).dtype)
-                full_arr[sel.positions] = array
-                self._features[name] = full_arr
-        else:
-            if idx is None:
-                arr = np.asarray(array)
-                if arr.shape[0] != self._features[name].shape[0]:
-                    raise ValueError(
-                        f"Cannot update feature '{name}': array has {arr.shape[0]} "
-                        f"rows but existing feature has "
-                        f"{self._features[name].shape[0]} rows."
-                    )
-                self._features[name] = arr.copy()
-            else:
-                sel = RowSelection.from_raw(idx, self._features[name].shape[0])
-                self._features[name][sel.positions] = array
+        sel = RowSelection.from_raw(idx, self._features[name].shape[0])
+        self._features[name][sel.positions] = array
 
     def drop_feature(self, name: str) -> None:
         del self._features[name]
@@ -116,56 +69,26 @@ class MemoryFeatureMixin(BaseFeatureMixin):
     def get_feature_shape(self, name: str) -> tuple:
         return self._features[name].shape
 
-    # ------------------------------------------------------------------
-    # Materialization Hooks
-    # ------------------------------------------------------------------
+    def n_rows(self) -> int:
+        if not self._features:
+            return self._n_rows_hint
+        first_name = next(iter(self._features))
+        return self._features[first_name].shape[0]
 
-    def _gather_materialized_state(
-        self,
-        target_path: Optional[Path] = None,
-        index_map: Optional[np.ndarray] = None,
-    ) -> Dict[str, Any]:
-        """Return ``{"features": sliced_or_full_copy}`` for ``clone``."""
-        result = super()._gather_materialized_state(
-            target_path=target_path, index_map=index_map
-        )
+    def gather_materialized_state(self, index_map: Optional[np.ndarray] = None) -> Dict[str, Any]:
         if index_map is not None:
-            result["features"] = {
-                k: v[index_map].copy() for k, v in self._features.items()
-            }
-        else:
-            result["features"] = {k: v.copy() for k, v in self._features.items()}
-        return result
+            return {"features": {k: v[index_map].copy() for k, v in self._features.items()}}
+        return {"features": {k: v.copy() for k, v in self._features.items()}}
 
-    # ------------------------------------------------------------------
-    # Persistence Hooks
-    # ------------------------------------------------------------------
-
-    def save_storage_context(self, path: Path, **kwargs: Any) -> None:
-        """
-        Persist feature arrays to ``<path>/features/<name>.npy``.
- 
-        The feature name is sanitised (``/`` and ``\\`` replaced with ``_``)
-        before being used as a filename stem.
-        """
+    def save(self, path: Path) -> None:
         feat_dir = path / "features"
         feat_dir.mkdir(exist_ok=True)
         for name, arr in self._features.items():
             safe_name = name.replace("/", "_").replace("\\", "_")
             np.save(str(feat_dir / f"{safe_name}.npy"), arr)
-        super().save_storage_context(path, **kwargs)
 
-    @classmethod
-    def load_storage_context(
-        cls,
-        path: Path,
-        mmap_features: bool = False,
-        **kwargs: Any,
-    ) -> Dict[str, Any]:
-        """
-        Read feature arrays from ``<path>/features/`` and add them to the
-        accumulated kwargs under the key ``"features"``.
-        """
+    @staticmethod
+    def load(path: Path, mmap_features: bool = False) -> Dict[str, np.ndarray]:
         feat_dir = path / "features"
         features: Dict[str, np.ndarray] = {}
         if feat_dir.exists():
@@ -175,8 +98,7 @@ class MemoryFeatureMixin(BaseFeatureMixin):
                     features[name] = np.load(str(npy_path), mmap_mode="r")
                 else:
                     features[name] = np.load(str(npy_path), allow_pickle=False)
-        result = super().load_storage_context(
-            path, mmap_features=mmap_features, **kwargs
-        )
-        result["features"] = features
-        return result
+        return features
+
+
+MemoryFeatureMixin = MemoryFeatureStore
