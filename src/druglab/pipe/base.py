@@ -11,18 +11,37 @@ import hashlib
 import json
 from abc import ABC, abstractmethod
 from concurrent.futures import ProcessPoolExecutor
-from typing import Any, Dict, Iterator, List, Optional
+from typing import Any, Dict, Iterator, List, Optional, Sequence, Tuple
 
 import numpy as np
 
+from druglab.db.backend.overlay import OverlayBackend
 from druglab.db.table import BaseTable, HistoryEntry
 from druglab.pipe.cache import BaseCache, default_cache
 
+def _chunk_index_ranges(n_rows: int, n_chunks: int) -> List[np.ndarray]:
+    """Split ``range(n_rows)`` into up to ``n_chunks`` contiguous index arrays."""
+    if n_rows <= 0 or n_chunks <= 0:
+        return []
+    boundaries = np.linspace(0, n_rows, num=min(n_chunks, n_rows) + 1, dtype=np.intp)
+    return [
+        np.arange(boundaries[i], boundaries[i + 1], dtype=np.intp)
+        for i in range(len(boundaries) - 1)
+        if boundaries[i] < boundaries[i + 1]
+    ]
+
+def _process_itemblock_chunk(args: Tuple["ItemBlock", BaseTable]) -> BaseTable:
+    """Worker entrypoint for ``ItemBlock`` multiprocessing scatter-gather."""
+    block, chunk_table = args
+    return block._process_chunk(chunk_table)
 
 class BaseBlock(ABC):
     """
     The absolute base for any pipeline block.
     """
+
+    required_features: List[str] = []
+    required_metadata: List[str] = []
 
     def __init__(
         self,
@@ -78,6 +97,16 @@ class BaseBlock(ABC):
                 )
             )
         return out_table
+    
+    @property
+    def prefetch_features(self) -> List[str]:
+        """Feature names the orchestrator should prefetch before detaching overlays."""
+        return list(self.required_features)
+
+    @property
+    def prefetch_metadata(self) -> List[str]:
+        """Metadata columns the orchestrator should prefetch before detaching overlays."""
+        return list(self.required_metadata)
 
     @abstractmethod
     def _process(self, table: Optional[BaseTable]) -> BaseTable:
@@ -107,61 +136,96 @@ class ItemBlock(BaseBlock):
         Generate a unique cache key for an item + this block's config.
         Subclasses dealing with RDKit Mols might override this to use SMILES.
         """
-        # Default fallback: hash the object string representation + config
         config_hash = hashlib.md5(json.dumps(self.get_config(), sort_keys=True).encode()).hexdigest()
-        item_hash = hash(str(item)) 
+        item_hash = hash(str(item))
         return f"{self.name}_{config_hash}_{item_hash}"
 
-    def _process(self, table: Optional[BaseTable]) -> BaseTable:
-        if table is None:
-            raise ValueError(f"{self.name} requires an input table.")
+    def _iter_objects_with_cache(
+        self,
+        table: BaseTable,
+    ) -> Tuple[List[Tuple[int, Any]], List[Any], List[int]]:
+        """Return cached results plus uncached objects and row indices."""
+        cached_results: List[Tuple[int, Any]] = []
+        items_to_process: List[Any] = []
+        indices_to_process: List[int] = []
 
-        results = []
-        items_to_process = []
-        indices_to_process = []
-
-        # UPDATE: Use get_objects() (backend call) directly instead
-        # of the `table.objects` property.
-        # More importantly: we iterate using enumerate on the backend call
-        # once and avoid a redundant full-list copy on every block execution.
-        n_objects = table.n
-
-        # 1. Check cache for all items
-        for i in range(n_objects):
+        for i in range(table.n):
             item = table.get_objects(i)
             if self.use_cache:
                 key = self._get_item_key(item)
                 cached = self.cache.get(key)
                 if cached is not None:
-                    results.append((i, cached))
+                    cached_results.append((i, cached))
                     continue
-            
             items_to_process.append(item)
             indices_to_process.append(i)
 
-        # 2. Multiprocessing execution for cache misses
-        if items_to_process:
-            if self.n_workers > 1:
-                with ProcessPoolExecutor(max_workers=self.n_workers) as executor:
-                    new_results = list(executor.map(self._process_item, items_to_process))
-            else:
-                new_results = [self._process_item(x) for x in items_to_process]
+        return cached_results, items_to_process, indices_to_process
 
-            # 3. Save to cache
+    def _process_chunk(self, table: BaseTable) -> BaseTable:
+        """Run item-wise processing and apply results on a single table chunk."""
+        _, items_to_process, _ = self._iter_objects_with_cache(table)
+        results = [self._process_item(item) for item in items_to_process]
+        if self.use_cache:
+            for item, res in zip(items_to_process, results):
+                self.cache.set(self._get_item_key(item), res)
+        return self._apply_results(table, results)
+
+    def _process(self, table: Optional[BaseTable]) -> BaseTable:
+        if table is None:
+            raise ValueError(f"{self.name} requires an input table.")
+
+        if self.n_workers <= 1:
+            cached_results, items_to_process, indices_to_process = self._iter_objects_with_cache(table)
+            computed_results = [self._process_item(x) for x in items_to_process]
+
             if self.use_cache:
-                for item, res in zip(items_to_process, new_results):
+                for item, res in zip(items_to_process, computed_results):
                     self.cache.set(self._get_item_key(item), res)
 
-            # Re-align with original indices
-            for idx, res in zip(indices_to_process, new_results):
-                results.append((idx, res))
+            ordered_pairs = cached_results + list(zip(indices_to_process, computed_results))
+            ordered_pairs.sort(key=lambda x: x[0])
+            return self._apply_results(table, [value for _, value in ordered_pairs])
 
-        # 4. Sort results back to original table order
-        results.sort(key=lambda x: x[0])
-        ordered_results = [r[1] for r in results]
+        if self.use_cache:
+            raise RuntimeError(
+                "ItemBlock multiprocessing does not support shared cache writes. "
+                "Set use_cache=False when n_workers > 1."
+            )
 
-        # 5. Delegate applying results to specific subclasses (Featurizer, Filter, etc.)
-        return self._apply_results(table, ordered_results)
+        base_backend = table.backend
+        chunk_indices = _chunk_index_ranges(table.n, self.n_workers)
+        detached_chunks: List[BaseTable] = []
+
+        for row_idx in chunk_indices:
+            overlay_backend = OverlayBackend(base_backend, row_idx)
+            overlay_table = table._new_instance_from_backend(overlay_backend, history=list(table.history))
+            overlay_backend.prefetch(
+                features=self.prefetch_features or None,
+                meta_cols=self.prefetch_metadata or None,
+            )
+            # ItemBlock always reads objects. Prime object delta before detach.
+            overlay_table.update_objects(overlay_table.get_objects())
+            overlay_backend.detach()
+            detached_chunks.append(overlay_table)
+
+        with ProcessPoolExecutor(max_workers=self.n_workers) as executor:
+            processed_chunks = list(
+                executor.map(
+                    _process_itemblock_chunk,
+                    [(self, chunk) for chunk in detached_chunks],
+                )
+            )
+
+        for chunk_table in processed_chunks:
+            if not isinstance(chunk_table.backend, OverlayBackend):
+                raise TypeError("Multiprocessing worker must return a table backed by OverlayBackend.")
+            chunk_table.backend.attach(base_backend)
+
+        for chunk_table in processed_chunks:
+            chunk_table.commit()
+
+        return table
 
     @abstractmethod
     def _process_item(self, item: Any) -> Any:

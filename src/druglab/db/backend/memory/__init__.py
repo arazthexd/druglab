@@ -51,6 +51,16 @@ class EagerMemoryBackend(
     """
     Fully eager, in-memory unified storage backend.
 
+    Thread-safety notice
+    --------------------
+    ``EagerMemoryBackend`` performs in-place writes to Python lists, pandas
+    frames, and NumPy arrays without internal locking. It must not be used for
+    concurrent writes from multiple threads or processes.
+
+    Synchronization belongs in the pipeline layer via ``OverlayBackend``
+    scatter-gather orchestration. Workers should mutate detached overlays and
+    the coordinator should merge changes with attach/commit.
+
     Lifecycle
     ---------
     No custom ``__init__`` is needed.  The cooperative MRO chain propagates
@@ -62,6 +72,13 @@ class EagerMemoryBackend(
     2. ``bind_capabilities``          -- ``MemoryFeatureMixin`` builds the
                                          live ``FeatureRegistry``.
     3. ``post_initialize_validate``   -- cross-domain dimension check.
+
+    Thread-Safety Warning
+    ---------------------
+    This backend mutates its internal data structures in place and is
+    explicitly **not thread-safe** for concurrent writes.  The pipeline
+    layer is responsible for synchronization via the OverlayBackend
+    Scatter-Gather pattern.
     """
 
     BACKEND_NAME = "EagerMemoryBackend"

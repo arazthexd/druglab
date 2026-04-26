@@ -34,6 +34,17 @@ class BaseStorageBackend(
 ):
     """
     Minimal unified interface for managing DrugLab table state.
+
+    Thread-safety notice
+    --------------------
+    Concrete storage backends mutate internal arrays/lists in place and do
+    not provide write locks. Concurrent writes against the same backend
+    instance are not thread-safe and are not process-safe.
+
+    Pipeline orchestration is responsible for synchronization. Multiprocessing
+    code must use ``OverlayBackend`` scatter-gather (prefetch -> detach ->
+    worker mutation -> attach -> commit) instead of sharing mutable base
+    backends across workers.
  
     Lifecycle orchestration
     ------------------------
