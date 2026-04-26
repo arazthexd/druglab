@@ -17,6 +17,7 @@ from __future__ import annotations
 from typing import Any, Optional
 from typing_extensions import Self
 from pathlib import Path
+import uuid as _uuid_mod
 
 import numpy as np
 
@@ -45,6 +46,10 @@ class BaseStorageBackend(
     Concrete backends assembling multiple mixins do **not** need to override
     ``__init__`` for boilerplate: each mixin handles its own state, and the
     hooks handle the rest.
+
+    ``backend.schema_uuid`` is a per-instance random UUID used by
+    ``OverlayBackend.attach()`` to verify that a re-attached backend is the
+    same instance (or an intentional clone) as the one detached from.
     """
 
     # ------------------------------------------------------------------
@@ -65,7 +70,13 @@ class BaseStorageBackend(
         # rejects keyword arguments.
         # super().__init__() is intentionally NOT called with kwargs.
         # (object.__init__() takes no extra arguments.)
- 
+
+        # Assign a unique identity to every concrete backend instance.
+        # This is done *before* the lifecycle hooks so that SchemaIdentity
+        # can be captured inside OverlayBackend.__init__.
+        if not hasattr(self, "schema_uuid"):
+            self.schema_uuid: str = str(_uuid_mod.uuid4())
+        
         # Fire lifecycle hooks in declared order.
         # Hooks receive the full original kwargs dict so specialized mixins
         # can consume what they need in initialize_storage_context.
@@ -107,7 +118,10 @@ class BaseStorageBackend(
             target_path=target_path,
             index_map=index_map,
         )
-        return self.__class__(**gathered)
+        new_instance = self.__class__(**gathered)
+        # Clones intentionally get a NEW uuid so attach() distinguishes them.
+        new_instance.schema_uuid = str(_uuid_mod.uuid4())
+        return new_instance
     
     def materialize(
         self,
