@@ -131,8 +131,7 @@ class TestZeroCopySubsetting:
         overlay = OverlayBackend(tctx.table.backend, np.array([0, 1, 2], dtype=np.intp))
         
         # Verify the internal CoW dictionary is empty initially
-        assert hasattr(overlay, "_local_features"), "OverlayBackend should have _local_features attr"
-        assert len(overlay._local_features) == 0
+        assert len(overlay._feat_delta.local) == 0
 
     def test_subset_with_bool_mask(self, tctx: TableContext):
         # Create a mask that matches the context's row count [True, False, True...]
@@ -424,7 +423,7 @@ class TestTombstones:
         overlay = OverlayBackend(base, np.arange(4, dtype=np.intp))
         overlay.drop_feature("fp")
         overlay.commit()
-        assert len(overlay._deleted_features) == 0
+        assert len(overlay._feat_delta.deleted) == 0
 
 
 # ===========================================================================
