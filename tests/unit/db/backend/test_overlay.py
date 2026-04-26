@@ -18,6 +18,22 @@ Coverage map
 11. Drop + Materialize                - feature/metadata drop survives materialize
 12. Save via Overlay                  - round-trip through materialize().save()
 13. Nested Overlay Data Correctness   - features / metadata / objects through two levels
+14. View Configuration                - allowlisting and read-only column slicing
+15. Caching Behaviour                 - prefetch, cache invalidation, commit ignores cache
+16. Detach / Attach                   - DetachedStateError, schema validation on attach
+
+Architecture note
+-----------------
+Delta state is now encapsulated in isolated dataclass containers instead of flat
+``self`` attributes.  The correct attribute paths are:
+
+    overlay._obj_delta.local          (Dict[int, Any])
+    overlay._feat_delta.local         (Dict[str, np.ndarray])
+    overlay._feat_delta.deleted       (Set[str])
+    overlay._meta_delta.local         (pd.DataFrame | None)
+    overlay._meta_delta.deleted_cols  (Set[str])
+    overlay._feat_cache.data          (Dict[str, np.ndarray])
+    overlay._meta_cache.data          (pd.DataFrame | None)
 """
 
 from __future__ import annotations
@@ -35,6 +51,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from druglab.db.backend import EagerMemoryBackend
 from druglab.db.backend.overlay import OverlayBackend
+from druglab.db.backend.overlay.identity import DetachedStateError, SchemaIdentity
 from druglab.db.table.base import BaseTable, HistoryEntry
 from tests.shared.make_dummy_db import (
     BackendContext,
@@ -49,8 +66,7 @@ from tests.shared.make_dummy_db import (
 
 
 # ---------------------------------------------------------------------------
-# Local fixtures (mirror conftest so the file is self-contained when run
-# directly; pytest will prefer conftest.py fixtures when both are present)
+# Local fixtures – mirror conftest so the file is self-contained
 # ---------------------------------------------------------------------------
 
 @pytest.fixture(name="bctx")
@@ -160,10 +176,10 @@ class TestZeroCopySubsetting:
         assert obj == {"id": 10}
 
     def test_subset_does_not_copy_base_objects(self, bctx: BackendContext):
-        """OverlayBackend must not hold a copy of all base objects."""
+        """OverlayBackend must not hold a copy of all base objects in its delta."""
         overlay = OverlayBackend(bctx.backend, np.array([0, 1], dtype=np.intp))
-        # local object store should start empty
-        assert len(overlay._local_objects) == 0
+        # Using the new delta dataclass attribute
+        assert len(overlay._obj_delta.local) == 0
 
 
 # ===========================================================================
@@ -257,12 +273,14 @@ class TestCoWFeatureAddition:
         with pytest.raises(KeyError):
             base.get_feature("new_feat")
 
-    def test_new_feature_stored_in_local_delta(self, bctx: BackendContext):
+    def test_new_feature_stored_in_feat_delta_local(self, bctx: BackendContext):
+        """New feature must live in the FeatureDelta.local dict, not a flat attribute."""
         base = bctx.backend
         overlay = OverlayBackend(base, np.array([0, 1, 2], dtype=np.intp))
 
         overlay.update_feature("my_feat", np.zeros((3, 1), dtype=np.float32))
-        assert "my_feat" in overlay._local_features
+        # New architecture: delta is encapsulated in _feat_delta dataclass
+        assert "my_feat" in overlay._feat_delta.local
 
     def test_feature_visible_in_names(self, bctx: BackendContext):
         base = bctx.backend
@@ -345,6 +363,55 @@ class TestCoWMutation:
         np.testing.assert_array_equal(base.get_feature(feat_name), orig_feat_data)
         np.testing.assert_array_equal(overlay.get_feature(feat_name), new_vals)
 
+    def test_add_metadata_column_visible_in_overlay(self, bctx: BackendContext):
+        base = bctx.backend
+        overlay = OverlayBackend(base, np.arange(bctx.num_rows, dtype=np.intp))
+
+        vals = np.arange(bctx.num_rows, dtype=np.int64) + 500
+        overlay.add_metadata_column("brand_new_col", vals)
+
+        result = overlay.get_metadata()["brand_new_col"].tolist()
+        assert result == vals.tolist()
+
+    def test_add_metadata_column_not_in_base(self, bctx: BackendContext):
+        base = bctx.backend
+        overlay = OverlayBackend(base, np.arange(bctx.num_rows, dtype=np.intp))
+
+        overlay.add_metadata_column("brand_new_col", np.zeros(bctx.num_rows, dtype=np.int64))
+        assert "brand_new_col" not in base.get_metadata_columns()
+
+    def test_object_delta_stored_in_dataclass(self, bctx: BackendContext):
+        """Mutations must be stored in ObjectDelta.local, not a flat attribute."""
+        base = bctx.backend
+        overlay = OverlayBackend(base, np.array([0, 1, 2], dtype=np.intp))
+
+        overlay.update_objects({"id": 77}, idx=1)
+        # New architecture uses _obj_delta.local dict
+        assert 1 in overlay._obj_delta.local
+        assert overlay._obj_delta.local[1] == {"id": 77}
+
+    def test_feature_delta_stored_in_dataclass(self, bctx: BackendContext):
+        """Feature mutations must be stored in FeatureDelta.local."""
+        base = bctx.backend
+        feat_name = bctx.feat_names[0]
+        overlay = OverlayBackend(base, np.arange(bctx.num_rows, dtype=np.intp))
+
+        new_arr = np.zeros((bctx.num_rows, bctx.feat_sizes[feat_name]), dtype=np.float32)
+        overlay.update_feature(feat_name, new_arr)
+
+        assert feat_name in overlay._feat_delta.local
+
+    def test_metadata_delta_stored_in_dataclass(self, bctx: BackendContext):
+        """Metadata mutations must land in MetadataDelta.local DataFrame."""
+        base = bctx.backend
+        first_col = bctx.meta_cols[0]
+        overlay = OverlayBackend(base, np.arange(bctx.num_rows, dtype=np.intp))
+
+        overlay.update_metadata(pd.Series([99] * bctx.num_rows, name=first_col))
+
+        assert overlay._meta_delta.local is not None
+        assert first_col in overlay._meta_delta.local.columns
+
 
 # ===========================================================================
 # 5. Commit
@@ -365,7 +432,8 @@ class TestCommit:
         overlay.commit()
         np.testing.assert_array_equal(base.get_feature(feat_name), new_data)
 
-    def test_commit_clears_local_features(self, bctx: BackendContext):
+    def test_commit_clears_feat_delta(self, bctx: BackendContext):
+        """After commit, FeatureDelta.local must be empty."""
         base = bctx.backend
         feat_name = bctx.feat_names[0]
         overlay = OverlayBackend(base, np.arange(bctx.num_rows, dtype=np.intp))
@@ -373,7 +441,8 @@ class TestCommit:
         overlay.update_feature(feat_name, np.zeros((bctx.num_rows, bctx.feat_sizes[feat_name]), dtype=np.float32))
         overlay.commit()
 
-        assert len(overlay._local_features) == 0
+        # New architecture: delta is cleared via FeatureDelta.clear()
+        assert len(overlay._feat_delta.local) == 0
 
     def test_commit_flushes_metadata_to_base(self, bctx: BackendContext):
         base = bctx.backend
@@ -386,7 +455,8 @@ class TestCommit:
         overlay.commit()
         assert base.get_metadata()[first_col].tolist() == new_vals
 
-    def test_commit_clears_local_metadata(self, bctx: BackendContext):
+    def test_commit_clears_meta_delta(self, bctx: BackendContext):
+        """After commit, MetadataDelta.local must be None."""
         base = bctx.backend
         first_col = bctx.meta_cols[0]
         overlay = OverlayBackend(base, np.arange(bctx.num_rows, dtype=np.intp))
@@ -394,7 +464,8 @@ class TestCommit:
         overlay.update_metadata(pd.Series([1] * bctx.num_rows, name=first_col))
         overlay.commit()
 
-        assert overlay._local_metadata is None
+        # New architecture: _meta_delta.local cleared by MetadataDelta.clear()
+        assert overlay._meta_delta.local is None
 
     def test_commit_flushes_objects_to_base(self, bctx: BackendContext):
         base = bctx.backend
@@ -406,14 +477,16 @@ class TestCommit:
         overlay.commit()
         assert base.get_objects(idx=0) == new_obj
 
-    def test_commit_clears_local_objects(self, bctx: BackendContext):
+    def test_commit_clears_obj_delta(self, bctx: BackendContext):
+        """After commit, ObjectDelta.local must be empty."""
         base = bctx.backend
         overlay = OverlayBackend(base, np.arange(bctx.num_rows, dtype=np.intp))
 
         overlay.update_objects({"id": 999}, idx=0)
         overlay.commit()
 
-        assert len(overlay._local_objects) == 0
+        # New architecture: _obj_delta.local cleared by ObjectDelta.clear()
+        assert len(overlay._obj_delta.local) == 0
 
     def test_commit_partial_index_flushes_correctly(self, bctx: BackendContext):
         """Overlay covers a subset of the base; only those rows should be flushed."""
@@ -438,6 +511,22 @@ class TestCommit:
         assert full_base_meta[2:5] == update_vals
         assert full_base_meta[5:] == generated_meta[first_col].iloc[5:].tolist()
 
+    def test_commit_does_not_clear_cache(self, bctx: BackendContext):
+        """Commit flushes deltas but must NOT clear the prefetch cache."""
+        base = bctx.backend
+        feat_name = bctx.feat_names[0]
+        overlay = OverlayBackend(base, np.arange(bctx.num_rows, dtype=np.intp))
+
+        # Prefetch to populate cache
+        overlay.prefetch(features=[feat_name])
+        assert overlay._feat_cache.has(feat_name)
+
+        # Now commit (no delta, but cache should survive)
+        overlay.commit()
+        assert overlay._feat_cache.has(feat_name), (
+            "Cache must survive commit(); only the delta is cleared."
+        )
+
 
 # ===========================================================================
 # 6. Clone
@@ -461,13 +550,14 @@ class TestOverlayClone:
         assert cloned._base is base
         assert "new_feat" not in base.get_feature_names()
 
+        # New architecture: check via delta dataclasses
         np.testing.assert_array_equal(
-            cloned._local_features["new_feat"],
-            overlay._local_features["new_feat"],
+            cloned._feat_delta.local["new_feat"],
+            overlay._feat_delta.local["new_feat"],
         )
-        assert cloned._local_objects == overlay._local_objects
-        assert cloned._deleted_features == overlay._deleted_features
-        assert cloned._deleted_metadata_cols == overlay._deleted_metadata_cols
+        assert cloned._obj_delta.local == overlay._obj_delta.local
+        assert cloned._feat_delta.deleted == overlay._feat_delta.deleted
+        assert cloned._meta_delta.deleted_cols == overlay._meta_delta.deleted_cols
 
     def test_clone_is_independent_from_source_overlay(self, bctx: BackendContext):
         overlay = OverlayBackend(bctx.backend, np.array([0, 1, 2], dtype=np.intp))
@@ -481,7 +571,8 @@ class TestOverlayClone:
             overlay.get_feature("new_feat"),
             np.array([[1.0], [2.0], [3.0]], dtype=np.float32),
         )
-        assert 1 not in overlay._local_objects
+        # New architecture: check via delta dataclass
+        assert 1 not in overlay._obj_delta.local
 
     def test_clone_preserves_index_map(self, bctx: BackendContext):
         indices = np.array([3, 7, 11], dtype=np.intp)
@@ -496,6 +587,34 @@ class TestOverlayClone:
         cloned = overlay.clone()
         cloned._index_map[0] = 99
         assert overlay._index_map[0] == 0
+
+    def test_clone_does_not_share_cache(self, bctx: BackendContext):
+        """Each clone must receive a fresh (empty) cache, not a shared reference."""
+        feat_name = bctx.feat_names[0]
+        overlay = OverlayBackend(bctx.backend, np.arange(bctx.num_rows, dtype=np.intp))
+        overlay.prefetch(features=[feat_name])
+
+        cloned = overlay.clone()
+        # Clone should have an empty (not shared) cache per the implementation contract
+        assert not cloned._feat_cache.has(feat_name), (
+            "Clone must start with an independent, empty cache."
+        )
+
+    def test_clone_delta_is_independent_deep_copy(self, bctx: BackendContext):
+        """Mutating the original's delta post-clone must not affect the clone."""
+        feat_name = bctx.feat_names[0]
+        feat_dim = bctx.feat_sizes[feat_name]
+        overlay = OverlayBackend(bctx.backend, np.arange(bctx.num_rows, dtype=np.intp))
+        arr = np.ones((bctx.num_rows, feat_dim), dtype=np.float32)
+        overlay.update_feature(feat_name, arr)
+
+        cloned = overlay.clone()
+
+        # Mutate source delta in-place
+        overlay._feat_delta.local[feat_name][:] = 99.0
+
+        # Clone must be unaffected
+        assert not np.all(cloned._feat_delta.local[feat_name] == 99.0)
 
 
 # ===========================================================================
@@ -776,6 +895,13 @@ class TestDropAndMaterialize:
         with pytest.raises(KeyError):
             overlay.get_feature(feat_name)
 
+    def test_deleted_feature_tracked_in_delta_dataclass(self, bctx: BackendContext):
+        """Dropped feature name must be in FeatureDelta.deleted set."""
+        feat_name = bctx.feat_names[0]
+        overlay = OverlayBackend(bctx.backend, np.arange(bctx.num_rows, dtype=np.intp))
+        overlay.drop_feature(feat_name)
+        assert feat_name in overlay._feat_delta.deleted
+
     def test_dropped_metadata_col_then_add_back(self, bctx: BackendContext):
         first_col = bctx.meta_cols[0]
         overlay = OverlayBackend(bctx.backend, np.arange(bctx.num_rows, dtype=np.intp))
@@ -792,6 +918,13 @@ class TestDropAndMaterialize:
         # All columns from base should be absent
         for col in bctx.meta_cols:
             assert col not in concrete.get_metadata().columns
+
+    def test_deleted_meta_col_tracked_in_delta_dataclass(self, bctx: BackendContext):
+        """Dropped column name must be in MetadataDelta.deleted_cols set."""
+        first_col = bctx.meta_cols[0]
+        overlay = OverlayBackend(bctx.backend, np.arange(bctx.num_rows, dtype=np.intp))
+        overlay.drop_metadata_columns(first_col)
+        assert first_col in overlay._meta_delta.deleted_cols
 
 
 # ===========================================================================
@@ -931,19 +1064,14 @@ class TestNestedOverlayDataCorrectness:
         assert "inner_only" not in outer.get_feature_names()
         assert "inner_only" not in base.get_feature_names()
 
-    def test_nested_local_feature_in_outer_reflected_in_inner(self, bctx: BackendContext):
+    def test_nested_local_feature_in_outer_not_visible_through_inner(self, bctx: BackendContext):
         """
-        A feature added to outer at a position that inner maps to should be
-        visible through inner after the inner flattens to base.
-
-        Because inner flattens to base (not outer), outer local features are NOT
-        automatically visible through inner — this tests the architectural boundary.
+        A feature added to outer lives in outer's delta; inner reads from base,
+        bypassing outer's delta, so inner should NOT see outer's local feature.
         """
         base, outer, inner = self._make_nested(bctx)
-        # outer covers positions [0,2,4,6,8]; inner maps [1,3] of outer → [2,6] of base.
-        # A feature added to outer lives only in outer._local_features; inner reads from base.
         outer.update_feature("outer_feat", np.arange(5, dtype=np.float32).reshape(5, 1))
-        # inner should NOT see outer's local feature (it bypasses outer and reads base)
+        # inner bypasses outer and reads base directly
         assert "outer_feat" not in inner.get_feature_names()
 
     # --- metadata ---
@@ -1007,3 +1135,552 @@ class TestNestedOverlayDataCorrectness:
         np.testing.assert_array_equal(concrete.get_feature(feat_name), expected_feat)
 
         assert concrete.get_objects() == [{"id": 2}, {"id": 6}]
+
+
+# ===========================================================================
+# 14. View Configuration
+# ===========================================================================
+
+class TestViewConfiguration:
+    """
+    set_view() installs an allowlist + column slices.  Accessing names outside
+    the allowlist must raise KeyError; mutating column-sliced features must raise
+    RuntimeError; clear_view() restores unrestricted access.
+    """
+
+    # --- Feature allowlist ---
+
+    def test_set_view_features_allowlist_restricts_access(self, bctx: BackendContext):
+        overlay = OverlayBackend(bctx.backend, np.arange(bctx.num_rows, dtype=np.intp))
+        allowed = [bctx.feat_names[0]]
+        blocked = bctx.feat_names[1]
+        overlay.set_view(features=allowed)
+
+        # Allowed feature is readable
+        arr = overlay.get_feature(allowed[0])
+        assert arr.shape[0] == bctx.num_rows
+
+        # Blocked feature raises KeyError
+        with pytest.raises(KeyError):
+            overlay.get_feature(blocked)
+
+    def test_set_view_features_allowlist_affects_get_feature_names(self, bctx: BackendContext):
+        allowed = [bctx.feat_names[0]]
+        overlay = OverlayBackend(bctx.backend, np.arange(bctx.num_rows, dtype=np.intp))
+        overlay.set_view(features=allowed)
+
+        names = overlay.get_feature_names()
+        assert set(names) == set(allowed)
+
+    def test_set_view_features_allowlist_blocks_update(self, bctx: BackendContext):
+        """Attempting to update a blocked feature must raise KeyError."""
+        blocked = bctx.feat_names[1]
+        overlay = OverlayBackend(bctx.backend, np.arange(bctx.num_rows, dtype=np.intp))
+        overlay.set_view(features=[bctx.feat_names[0]])
+
+        with pytest.raises(KeyError):
+            overlay.update_feature(
+                blocked,
+                np.zeros((bctx.num_rows, bctx.feat_sizes[blocked]), dtype=np.float32),
+            )
+
+    # --- Metadata column allowlist ---
+
+    def test_set_view_meta_cols_allowlist_restricts_access(self, bctx: BackendContext):
+        if len(bctx.meta_cols) < 2:
+            pytest.skip("Need at least 2 metadata columns")
+
+        allowed_col = bctx.meta_cols[0]
+        blocked_col = bctx.meta_cols[1]
+        overlay = OverlayBackend(bctx.backend, np.arange(bctx.num_rows, dtype=np.intp))
+        overlay.set_view(meta_cols=[allowed_col])
+
+        meta = overlay.get_metadata()
+        assert allowed_col in meta.columns
+        assert blocked_col not in meta.columns
+
+    def test_set_view_meta_cols_allowlist_affects_get_metadata_columns(self, bctx: BackendContext):
+        if len(bctx.meta_cols) < 2:
+            pytest.skip("Need at least 2 metadata columns")
+
+        allowed_col = bctx.meta_cols[0]
+        overlay = OverlayBackend(bctx.backend, np.arange(bctx.num_rows, dtype=np.intp))
+        overlay.set_view(meta_cols=[allowed_col])
+
+        cols = overlay.get_metadata_columns()
+        assert cols == [allowed_col]
+
+    def test_set_view_meta_cols_blocks_add_on_blocked_col(self, bctx: BackendContext):
+        if len(bctx.meta_cols) < 2:
+            pytest.skip("Need at least 2 metadata columns")
+
+        blocked_col = bctx.meta_cols[1]
+        overlay = OverlayBackend(bctx.backend, np.arange(bctx.num_rows, dtype=np.intp))
+        overlay.set_view(meta_cols=[bctx.meta_cols[0]])
+
+        with pytest.raises(KeyError):
+            overlay.add_metadata_column(blocked_col, np.zeros(bctx.num_rows))
+
+    # --- Column slicing (read-only) ---
+
+    def test_set_view_feature_col_slice_returns_correct_columns(self, bctx: BackendContext):
+        feat_name = bctx.feat_names[0]
+        feat_dim = bctx.feat_sizes[feat_name]
+        if feat_dim < 2:
+            pytest.skip("Feature dim must be ≥ 2 to slice")
+
+        overlay = OverlayBackend(bctx.backend, np.arange(bctx.num_rows, dtype=np.intp))
+        overlay.set_view(feature_col_slices={feat_name: (0, 2)})
+
+        arr = overlay.get_feature(feat_name)
+        assert arr.shape == (bctx.num_rows, 2)
+
+    def test_set_view_feature_col_slice_values_match_base(self, bctx: BackendContext):
+        feat_name = bctx.feat_names[0]
+        feat_dim = bctx.feat_sizes[feat_name]
+        if feat_dim < 3:
+            pytest.skip("Feature dim must be ≥ 3 to slice columns 1:3")
+
+        overlay = OverlayBackend(bctx.backend, np.arange(bctx.num_rows, dtype=np.intp))
+        overlay.set_view(feature_col_slices={feat_name: (1, 3)})
+
+        result = overlay.get_feature(feat_name)
+        expected = bctx.backend.get_feature(feat_name)[:, 1:3]
+        np.testing.assert_array_equal(result, expected)
+
+    def test_set_view_feature_col_slice_is_read_only(self, bctx: BackendContext):
+        """Mutating a column-sliced feature must raise RuntimeError."""
+        feat_name = bctx.feat_names[0]
+        feat_dim = bctx.feat_sizes[feat_name]
+        if feat_dim < 2:
+            pytest.skip("Feature dim must be ≥ 2 to slice")
+
+        overlay = OverlayBackend(bctx.backend, np.arange(bctx.num_rows, dtype=np.intp))
+        overlay.set_view(feature_col_slices={feat_name: (0, 2)})
+
+        with pytest.raises(RuntimeError):
+            overlay.update_feature(
+                feat_name,
+                np.zeros((bctx.num_rows, 2), dtype=np.float32),
+            )
+
+    def test_set_view_col_slice_shape_reported_correctly(self, bctx: BackendContext):
+        feat_name = bctx.feat_names[0]
+        feat_dim = bctx.feat_sizes[feat_name]
+        if feat_dim < 2:
+            pytest.skip("Feature dim must be ≥ 2 to slice")
+
+        overlay = OverlayBackend(bctx.backend, np.arange(bctx.num_rows, dtype=np.intp))
+        overlay.set_view(feature_col_slices={feat_name: (0, 2)})
+
+        shape = overlay.get_feature_shape(feat_name)
+        assert shape == (bctx.num_rows, 2)
+
+    # --- clear_view ---
+
+    def test_clear_view_restores_full_access(self, bctx: BackendContext):
+        """After clear_view(), all features and columns should be accessible."""
+        overlay = OverlayBackend(bctx.backend, np.arange(bctx.num_rows, dtype=np.intp))
+        overlay.set_view(features=[bctx.feat_names[0]])
+
+        overlay.clear_view()
+
+        # Both features should now be accessible
+        for name in bctx.feat_names:
+            arr = overlay.get_feature(name)
+            assert arr.shape[0] == bctx.num_rows
+
+    def test_clear_view_restores_meta_col_access(self, bctx: BackendContext):
+        if len(bctx.meta_cols) < 2:
+            pytest.skip("Need at least 2 metadata columns")
+
+        overlay = OverlayBackend(bctx.backend, np.arange(bctx.num_rows, dtype=np.intp))
+        overlay.set_view(meta_cols=[bctx.meta_cols[0]])
+        overlay.clear_view()
+
+        cols = set(overlay.get_metadata_columns())
+        assert set(bctx.meta_cols).issubset(cols)
+
+    def test_set_view_replaces_previous_config(self, bctx: BackendContext):
+        """Calling set_view() a second time must entirely replace the old config."""
+        overlay = OverlayBackend(bctx.backend, np.arange(bctx.num_rows, dtype=np.intp))
+
+        # First view: allow only first feature
+        overlay.set_view(features=[bctx.feat_names[0]])
+        with pytest.raises(KeyError):
+            overlay.get_feature(bctx.feat_names[1])
+
+        # Second view: allow only second feature
+        overlay.set_view(features=[bctx.feat_names[1]])
+        arr = overlay.get_feature(bctx.feat_names[1])
+        assert arr.shape[0] == bctx.num_rows
+
+        with pytest.raises(KeyError):
+            overlay.get_feature(bctx.feat_names[0])
+
+    def test_no_view_means_all_features_visible(self, bctx: BackendContext):
+        """Default (no set_view call) must allow unrestricted access."""
+        overlay = OverlayBackend(bctx.backend, np.arange(bctx.num_rows, dtype=np.intp))
+        for name in bctx.feat_names:
+            arr = overlay.get_feature(name)
+            assert arr.shape[0] == bctx.num_rows
+
+
+# ===========================================================================
+# 15. Caching Behaviour
+# ===========================================================================
+
+class TestCachingBehaviour:
+    """
+    prefetch() fills FeatureCache / MetadataCache.
+    Read order: Delta → Cache → Base.
+    Mutations invalidate the relevant cache entry.
+    commit() ignores the cache.
+    """
+
+    def test_prefetch_populates_feature_cache(self, bctx: BackendContext):
+        feat_name = bctx.feat_names[0]
+        overlay = OverlayBackend(bctx.backend, np.arange(bctx.num_rows, dtype=np.intp))
+
+        assert not overlay._feat_cache.has(feat_name)
+        overlay.prefetch(features=[feat_name])
+        assert overlay._feat_cache.has(feat_name)
+
+    def test_prefetch_feature_values_match_base(self, bctx: BackendContext):
+        feat_name = bctx.feat_names[0]
+        overlay = OverlayBackend(bctx.backend, np.arange(bctx.num_rows, dtype=np.intp))
+        overlay.prefetch(features=[feat_name])
+
+        cached = overlay._feat_cache.get(feat_name)
+        base_arr = bctx.backend.get_feature(feat_name)
+        np.testing.assert_array_equal(cached, base_arr)
+
+    def test_prefetch_multiple_features(self, bctx: BackendContext):
+        overlay = OverlayBackend(bctx.backend, np.arange(bctx.num_rows, dtype=np.intp))
+        overlay.prefetch(features=list(bctx.feat_names))
+        for name in bctx.feat_names:
+            assert overlay._feat_cache.has(name)
+
+    def test_feature_read_hits_cache_not_base(self, bctx: BackendContext):
+        """
+        After prefetch, get_feature must return the cached value even if
+        we corrupt the cache entry directly (proving it reads cache, not base).
+        """
+        feat_name = bctx.feat_names[0]
+        feat_dim = bctx.feat_sizes[feat_name]
+        overlay = OverlayBackend(bctx.backend, np.arange(bctx.num_rows, dtype=np.intp))
+        overlay.prefetch(features=[feat_name])
+
+        # Inject a sentinel value directly into the cache
+        sentinel = np.full((bctx.num_rows, feat_dim), -999.0, dtype=np.float32)
+        overlay._feat_cache.put(feat_name, sentinel)
+
+        result = overlay.get_feature(feat_name)
+        np.testing.assert_array_equal(result, sentinel)
+
+    def test_mutation_invalidates_feature_cache(self, bctx: BackendContext):
+        """update_feature must evict the corresponding cache entry."""
+        feat_name = bctx.feat_names[0]
+        feat_dim = bctx.feat_sizes[feat_name]
+        overlay = OverlayBackend(bctx.backend, np.arange(bctx.num_rows, dtype=np.intp))
+        overlay.prefetch(features=[feat_name])
+        assert overlay._feat_cache.has(feat_name)
+
+        overlay.update_feature(feat_name, np.zeros((bctx.num_rows, feat_dim), dtype=np.float32))
+
+        assert not overlay._feat_cache.has(feat_name), (
+            "Cache entry must be evicted after update_feature()."
+        )
+
+    def test_mutation_writes_to_delta_not_cache(self, bctx: BackendContext):
+        """After update_feature, data must be in the delta, not the cache."""
+        feat_name = bctx.feat_names[0]
+        feat_dim = bctx.feat_sizes[feat_name]
+        overlay = OverlayBackend(bctx.backend, np.arange(bctx.num_rows, dtype=np.intp))
+
+        new_arr = np.full((bctx.num_rows, feat_dim), 5.0, dtype=np.float32)
+        overlay.update_feature(feat_name, new_arr)
+
+        assert overlay._feat_delta.has(feat_name)
+        assert not overlay._feat_cache.has(feat_name)
+
+    def test_prefetch_noop_when_already_in_delta(self, bctx: BackendContext):
+        """prefetch() must not overwrite a delta entry with base data."""
+        feat_name = bctx.feat_names[0]
+        feat_dim = bctx.feat_sizes[feat_name]
+        overlay = OverlayBackend(bctx.backend, np.arange(bctx.num_rows, dtype=np.intp))
+
+        sentinel = np.full((bctx.num_rows, feat_dim), 77.0, dtype=np.float32)
+        overlay.update_feature(feat_name, sentinel)  # writes to delta
+
+        overlay.prefetch(features=[feat_name])  # should be a no-op for this name
+
+        # Reading should return delta (sentinel), not base data
+        result = overlay.get_feature(feat_name)
+        np.testing.assert_array_equal(result, sentinel)
+
+    def test_delta_takes_priority_over_cache(self, bctx: BackendContext):
+        """Delta must shadow the cache when both are populated."""
+        feat_name = bctx.feat_names[0]
+        feat_dim = bctx.feat_sizes[feat_name]
+        overlay = OverlayBackend(bctx.backend, np.arange(bctx.num_rows, dtype=np.intp))
+
+        # Populate cache
+        overlay.prefetch(features=[feat_name])
+        # Then write a different value to delta
+        delta_arr = np.full((bctx.num_rows, feat_dim), 42.0, dtype=np.float32)
+        overlay.update_feature(feat_name, delta_arr)
+        # Cache was evicted; delta value should be returned
+        result = overlay.get_feature(feat_name)
+        np.testing.assert_array_equal(result, delta_arr)
+
+    def test_commit_leaves_cache_intact(self, bctx: BackendContext):
+        """commit() must flush the delta but leave the cache populated."""
+        feat_name = bctx.feat_names[0]
+        overlay = OverlayBackend(bctx.backend, np.arange(bctx.num_rows, dtype=np.intp))
+
+        overlay.prefetch(features=[feat_name])
+        overlay.commit()  # nothing in delta, but cache should remain
+
+        assert overlay._feat_cache.has(feat_name), (
+            "Prefetch cache must not be cleared by commit()."
+        )
+
+    def test_prefetch_metadata_populates_meta_cache(self, bctx: BackendContext):
+        first_col = bctx.meta_cols[0]
+        overlay = OverlayBackend(bctx.backend, np.arange(bctx.num_rows, dtype=np.intp))
+
+        overlay.prefetch(meta_cols=[first_col])
+        assert overlay._meta_cache.has_col(first_col)
+
+    def test_metadata_mutation_invalidates_meta_cache(self, bctx: BackendContext):
+        first_col = bctx.meta_cols[0]
+        overlay = OverlayBackend(bctx.backend, np.arange(bctx.num_rows, dtype=np.intp))
+        overlay.prefetch(meta_cols=[first_col])
+        assert overlay._meta_cache.has_col(first_col)
+
+        overlay.update_metadata(pd.Series([0] * bctx.num_rows, name=first_col))
+
+        assert not overlay._meta_cache.has_col(first_col), (
+            "Metadata cache entry must be evicted after update_metadata()."
+        )
+
+    def test_prefetch_when_detached_raises(self, bctx: BackendContext):
+        """Calling prefetch() on a detached overlay must raise DetachedStateError."""
+        feat_name = bctx.feat_names[0]
+        overlay = OverlayBackend(bctx.backend, np.arange(bctx.num_rows, dtype=np.intp))
+        overlay.detach()
+
+        with pytest.raises(DetachedStateError):
+            overlay.prefetch(features=[feat_name])
+
+
+# ===========================================================================
+# 16. Detach / Attach
+# ===========================================================================
+
+class TestDetachAttach:
+    """
+    detach() severs the base reference.
+    Reads that miss the delta + cache raise DetachedStateError.
+    attach() restores the base only when schema-compatible.
+    """
+
+    def test_detach_sets_base_to_none(self, bctx: BackendContext):
+        overlay = OverlayBackend(bctx.backend, np.arange(bctx.num_rows, dtype=np.intp))
+        overlay.detach()
+        assert overlay._base is None
+
+    def test_is_detached_property(self, bctx: BackendContext):
+        overlay = OverlayBackend(bctx.backend, np.arange(bctx.num_rows, dtype=np.intp))
+        assert not overlay.is_detached
+
+        overlay.detach()
+        assert overlay.is_detached
+
+    def test_detached_feature_read_raises_when_no_delta_no_cache(self, bctx: BackendContext):
+        feat_name = bctx.feat_names[0]
+        overlay = OverlayBackend(bctx.backend, np.arange(bctx.num_rows, dtype=np.intp))
+        overlay.detach()
+
+        with pytest.raises(DetachedStateError):
+            overlay.get_feature(feat_name)
+
+    def test_detached_feature_read_succeeds_from_delta(self, bctx: BackendContext):
+        """Reads that hit the delta must succeed even when detached."""
+        feat_name = bctx.feat_names[0]
+        feat_dim = bctx.feat_sizes[feat_name]
+        overlay = OverlayBackend(bctx.backend, np.arange(bctx.num_rows, dtype=np.intp))
+
+        sentinel = np.full((bctx.num_rows, feat_dim), 55.0, dtype=np.float32)
+        overlay.update_feature(feat_name, sentinel)
+        overlay.detach()
+
+        result = overlay.get_feature(feat_name)
+        np.testing.assert_array_equal(result, sentinel)
+
+    def test_detached_feature_read_succeeds_from_cache(self, bctx: BackendContext):
+        """Reads that hit the prefetch cache must succeed even when detached."""
+        feat_name = bctx.feat_names[0]
+        overlay = OverlayBackend(bctx.backend, np.arange(bctx.num_rows, dtype=np.intp))
+
+        overlay.prefetch(features=[feat_name])
+        base_arr = bctx.backend.get_feature(feat_name).copy()
+        overlay.detach()
+
+        result = overlay.get_feature(feat_name)
+        np.testing.assert_array_equal(result, base_arr)
+
+    def test_detached_object_read_raises_for_unmodified_row(self, bctx: BackendContext):
+        overlay = OverlayBackend(bctx.backend, np.arange(bctx.num_rows, dtype=np.intp))
+        overlay.detach()
+
+        with pytest.raises(DetachedStateError):
+            overlay.get_objects(idx=0)
+
+    def test_detached_object_read_from_delta_succeeds(self, bctx: BackendContext):
+        overlay = OverlayBackend(bctx.backend, np.arange(bctx.num_rows, dtype=np.intp))
+        overlay.update_objects({"id": 42}, idx=3)
+        overlay.detach()
+
+        result = overlay.get_objects(idx=3)
+        assert result == {"id": 42}
+
+    def test_detached_metadata_read_raises_without_cache(self, bctx: BackendContext):
+        overlay = OverlayBackend(bctx.backend, np.arange(bctx.num_rows, dtype=np.intp))
+        overlay.detach()
+
+        with pytest.raises(DetachedStateError):
+            overlay.get_metadata()
+
+    def test_attach_restores_base(self, bctx: BackendContext):
+        overlay = OverlayBackend(bctx.backend, np.arange(bctx.num_rows, dtype=np.intp))
+        overlay.detach()
+        assert overlay.is_detached
+
+        overlay.attach(bctx.backend)
+        assert not overlay.is_detached
+        assert overlay._base is bctx.backend
+
+    def test_attach_allows_read_again(self, bctx: BackendContext):
+        feat_name = bctx.feat_names[0]
+        overlay = OverlayBackend(bctx.backend, np.arange(bctx.num_rows, dtype=np.intp))
+        overlay.detach()
+        overlay.attach(bctx.backend)
+
+        result = overlay.get_feature(feat_name)
+        assert result.shape[0] == bctx.num_rows
+
+    def test_attach_rejects_wrong_uuid(self, bctx: BackendContext):
+        """attach() must raise ValueError when UUIDs differ."""
+        overlay = OverlayBackend(bctx.backend, np.arange(bctx.num_rows, dtype=np.intp))
+        overlay.detach()
+
+        # Build a different backend with same shape but different UUID
+        different_backend = EagerMemoryBackend(
+            objects=_make_dict_objects(bctx.num_rows),
+            metadata=_make_metadata(bctx.num_rows, *bctx.meta_cols),
+            features=_make_features(bctx.num_rows, **bctx.feat_sizes),
+        )
+
+        with pytest.raises(ValueError, match="UUID mismatch"):
+            overlay.attach(different_backend)
+
+    def test_attach_rejects_mismatched_row_count(self, bctx: BackendContext):
+        """attach() must raise ValueError when row counts differ."""
+        overlay = OverlayBackend(bctx.backend, np.arange(bctx.num_rows, dtype=np.intp))
+
+        # Clone the backend (gets a new UUID) but we'll directly capture its identity
+        # by using a backend with same UUID but fewer rows (simulate truncation)
+        # We force this by patching schema_uuid on a different-sized backend.
+        different_size_backend = EagerMemoryBackend(
+            objects=_make_dict_objects(bctx.num_rows - 5),
+            metadata=_make_metadata(bctx.num_rows - 5, *bctx.meta_cols),
+            features=_make_features(bctx.num_rows - 5, **bctx.feat_sizes),
+        )
+        # Spoof the UUID to match so we can test the row-count check in isolation
+        different_size_backend.schema_uuid = bctx.backend.schema_uuid
+
+        overlay.detach()
+        with pytest.raises(ValueError, match="Row count mismatch"):
+            overlay.attach(different_size_backend)
+
+    def test_attach_rejects_mismatched_feature_schema(self, bctx: BackendContext):
+        """attach() must raise ValueError when feature schemas differ."""
+        overlay = OverlayBackend(bctx.backend, np.arange(bctx.num_rows, dtype=np.intp))
+
+        backend_no_feat = EagerMemoryBackend(
+            objects=_make_dict_objects(bctx.num_rows),
+            metadata=_make_metadata(bctx.num_rows, *bctx.meta_cols),
+            features={},  # empty features
+        )
+        backend_no_feat.schema_uuid = bctx.backend.schema_uuid
+
+        overlay.detach()
+        with pytest.raises(ValueError, match="Feature schema mismatch"):
+            overlay.attach(backend_no_feat)
+
+    def test_attach_rejects_mismatched_meta_schema(self, bctx: BackendContext):
+        """attach() must raise ValueError when metadata schemas differ."""
+        overlay = OverlayBackend(bctx.backend, np.arange(bctx.num_rows, dtype=np.intp))
+
+        backend_extra_col = EagerMemoryBackend(
+            objects=_make_dict_objects(bctx.num_rows),
+            metadata=_make_metadata(bctx.num_rows, *bctx.meta_cols, "surprise_col"),
+            features=_make_features(bctx.num_rows, **bctx.feat_sizes),
+        )
+        backend_extra_col.schema_uuid = bctx.backend.schema_uuid
+
+        overlay.detach()
+        with pytest.raises(ValueError, match="Metadata schema mismatch"):
+            overlay.attach(backend_extra_col)
+
+    def test_commit_while_detached_raises(self, bctx: BackendContext):
+        overlay = OverlayBackend(bctx.backend, np.arange(bctx.num_rows, dtype=np.intp))
+        overlay.update_feature(
+            bctx.feat_names[0],
+            np.zeros((bctx.num_rows, bctx.feat_sizes[bctx.feat_names[0]]), dtype=np.float32),
+        )
+        overlay.detach()
+
+        with pytest.raises(DetachedStateError):
+            overlay.commit()
+
+    def test_schema_identity_capture(self, bctx: BackendContext):
+        """SchemaIdentity.capture() must faithfully record backend attributes."""
+        identity = SchemaIdentity.capture(bctx.backend)
+
+        assert identity.uuid == bctx.backend.schema_uuid
+        assert identity.n_rows == bctx.num_rows
+        assert identity.feature_names == tuple(sorted(bctx.feat_names))
+        assert identity.meta_cols == tuple(sorted(bctx.meta_cols))
+
+    def test_schema_identity_validate_compatible_same(self, bctx: BackendContext):
+        """Identical identities must validate without error."""
+        a = SchemaIdentity.capture(bctx.backend)
+        b = SchemaIdentity.capture(bctx.backend)
+        a.validate_compatible(b)  # must not raise
+
+    def test_schema_identity_validate_multiple_errors_reported(self, bctx: BackendContext):
+        """validate_compatible must list all mismatches in the error message."""
+        a = SchemaIdentity.capture(bctx.backend)
+        b = SchemaIdentity(
+            uuid="totally-different-uuid",
+            n_rows=bctx.num_rows + 1,
+            feature_names=(),
+            meta_cols=(),
+        )
+        with pytest.raises(ValueError) as exc_info:
+            a.validate_compatible(b)
+
+        msg = str(exc_info.value)
+        assert "UUID mismatch" in msg
+        assert "Row count mismatch" in msg
+
+
+# ===========================================================================
+# Run
+# ===========================================================================
+
+if __name__ == "__main__":
+    pytest.main([__file__, "-v", "--tb=short"])
