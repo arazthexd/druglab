@@ -410,7 +410,7 @@ class BaseTable(ABC, Generic[OT]):
         """
         Save the table to a ``.dlb`` directory bundle.
  
-        Phase 1 change: delegates object writing via a batch ``object_writer``
+        NOTE: This delegates object writing via a batch ``object_writer``
         callable built from ``_make_object_writer()`` rather than the old
         per-object ``serializer`` kwarg.
  
@@ -480,7 +480,7 @@ class BaseTable(ABC, Generic[OT]):
         """
         Load a table saved with ``save()``.
  
-        Phase 1 change: builds a batch ``object_reader`` from
+        NOTE: This builds a batch ``object_reader`` from
         ``_make_object_reader()`` and passes it to ``EagerMemoryBackend.load``
         instead of the old per-object ``deserializer``.
         """

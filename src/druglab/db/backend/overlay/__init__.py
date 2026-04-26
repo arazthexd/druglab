@@ -13,19 +13,19 @@ state via isolated delta/cache dataclasses:
     OverlayMetadataMixin → MetadataDelta + MetadataCache
     OverlayFeatureMixin  → FeatureDelta  + FeatureCache
 
-Phase-by-phase behaviour
-------------------------
-Phase 1 - Architecture: mixins reference the context via ``OverlayContextProtocol``;
+Notes
+-----
+- Architecture: mixins reference the context via ``OverlayContextProtocol``;
     delta state is encapsulated in dataclasses rather than flat ``self`` attrs.
 
-Phase 2 - View Config: ``set_view()`` installs an allowlist + column slices.
+- View Config: ``set_view()`` installs an allowlist + column slices.
     Column-sliced features are read-only; mutations raise ``RuntimeError``.
 
-Phase 3 - Cache: ``prefetch()`` fills ``FeatureCache`` / ``MetadataCache``.
+- Cache: ``prefetch()`` fills ``FeatureCache`` / ``MetadataCache``.
     Read order: Delta → Cache → Base.  Mutations invalidate cache.
     ``commit()`` ignores cached data.
 
-Phase 4 - Detach/Attach: ``detach()`` sets ``_base = None``; reads that miss
+- Detach/Attach: ``detach()`` sets ``_base = None``; reads that miss
     Delta and Cache raise ``DetachedStateError``.  ``attach()`` validates
     UUID + dimensions before restoring ``_base``.
 """
@@ -100,7 +100,7 @@ class OverlayBackend(
             SchemaIdentity.capture(self._base) if self._base is not None else None
         )
 
-        # View configuration (Phase 2): starts unrestricted.
+        # View configuration: starts unrestricted.
         self._view_config = ViewConfig()
 
         # Initialise all domain mixin delta/cache state.
@@ -143,7 +143,7 @@ class OverlayBackend(
         return
 
     # ------------------------------------------------------------------
-    # Phase 2 – View Configuration
+    # View Configuration
     # ------------------------------------------------------------------
 
     def set_view(
@@ -187,7 +187,7 @@ class OverlayBackend(
         self._view_config = ViewConfig()
 
     # ------------------------------------------------------------------
-    # Phase 3 – Prefetch / Caching
+    # Prefetch / Caching
     # ------------------------------------------------------------------
 
     def prefetch(
@@ -238,7 +238,7 @@ class OverlayBackend(
             self._prefetch_metadata(col_list, overlay_positions)
 
     # ------------------------------------------------------------------
-    # Phase 4 – Detach / Attach
+    # Detach / Attach
     # ------------------------------------------------------------------
 
     def detach(self) -> None:
