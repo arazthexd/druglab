@@ -15,9 +15,9 @@ import pytest
 from druglab.db.backend import (
     BaseStorageBackend,
     EagerMemoryBackend,
-    MemoryMetadataMixin,
-    MemoryObjectMixin,
-    MemoryFeatureMixin,
+    MemoryMetadataStore,
+    MemoryObjectStore,
+    MemoryFeatureStore,
 )
 from druglab.db.table import BaseTable, HistoryEntry, META, OBJ, FEAT, M, O, F
 from tests.shared.make_dummy_db import (
@@ -41,4 +41,3 @@ def backend_context() -> BackendContext:
 @pytest.fixture(name="tctx")
 def table_context(bctx: BackendContext) -> TableContext:
     return bctx.get_table_context()
-    

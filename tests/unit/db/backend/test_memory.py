@@ -28,9 +28,9 @@ import pytest
 from druglab.db.backend import (
     BaseStorageBackend,
     EagerMemoryBackend,
-    MemoryMetadataMixin,
-    MemoryObjectMixin,
-    MemoryFeatureMixin,
+    MemoryMetadataStore,
+    MemoryObjectStore,
+    MemoryFeatureStore,
 )
 from druglab.db.backend.memory import (
     MemoryMetadataStore,
