@@ -23,6 +23,7 @@ class OverlayBackend(BaseStorageBackend):
     BACKEND_NAME = "OverlayBackend"
 
     def __init__(self, base_backend: BaseStorageBackend, index_map: Optional[np.ndarray] = None, **kwargs) -> None:
+        super().__init__()
         if isinstance(base_backend, OverlayBackend):
             outer_map = base_backend._index_map
             composed = outer_map.copy() if index_map is None else outer_map[np.asarray(index_map, dtype=np.intp)]
@@ -38,15 +39,6 @@ class OverlayBackend(BaseStorageBackend):
         self._object_store = OverlayObjectStore(self)
         self._metadata_store = OverlayMetadataStore(self)
         self._feature_store = OverlayFeatureStore(self)
-        self._sync_legacy_refs()
-
-    def _sync_legacy_refs(self) -> None:
-        """Compatibility aliases for existing tests/callers."""
-        self._obj_delta = self._object_store.delta
-        self._meta_delta = self._metadata_store.delta
-        self._feat_delta = self._feature_store.delta
-        self._meta_cache = self._metadata_store.cache
-        self._feat_cache = self._feature_store.cache
 
     def __len__(self) -> int:
         return len(self._index_map)
@@ -200,7 +192,6 @@ class OverlayBackend(BaseStorageBackend):
         cloned._object_store.delta.local = dict(self._object_store.delta.local)
         cloned._metadata_store._delta = self._metadata_store.delta.deep_copy()
         cloned._feature_store._delta = self._feature_store.delta.deep_copy()
-        cloned._sync_legacy_refs()
         return cloned
 
     def materialize(self, target_path: Optional[Path] = None) -> BaseStorageBackend:
@@ -240,6 +231,22 @@ class OverlayBackend(BaseStorageBackend):
 
     def save(self, path: Path, object_writer: Optional[Callable[[list, Path], None]] = None, **kwargs) -> None:
         self.materialize().save(path, object_writer=object_writer, **kwargs)
+
+    def _gather_materialized_state(
+        self,
+        target_path: Optional[Path] = None,
+        index_map: Optional[np.ndarray] = None,
+    ) -> Dict[str, object]:
+        raise NotImplementedError(
+            "OverlayBackend does not expose direct gathered state. Use materialize() or clone()."
+        )
+
+    def save_storage_context(self, path: Path, **kwargs) -> None:
+        raise NotImplementedError("OverlayBackend persists via materialize().save().")
+
+    @classmethod
+    def load_storage_context(cls, path: Path, **kwargs) -> Dict[str, object]:
+        raise NotImplementedError("OverlayBackend cannot be loaded directly from storage context.")
 
     def get_name(self) -> str:
         return self._base.__class__.__name__ if self._base is not None else "OverlayBackend"

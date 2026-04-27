@@ -34,10 +34,10 @@ class EagerMemoryBackend(BaseStorageBackend):
         metadata: Optional[pd.DataFrame] = None,
         features: Optional[Dict[str, np.ndarray]] = None,
     ) -> None:
+        super().__init__()
         self._object_store = MemoryObjectStore(objects)
         self._metadata_store = MemoryMetadataStore(metadata, n_rows_hint=self._object_store.n_rows())
         self._feature_store = MemoryFeatureStore(features, n_rows_hint=self._object_store.n_rows())
-        self.schema_uuid = str(_uuid_mod.uuid4())
         self.validate()
 
     def __len__(self) -> int:
@@ -109,6 +109,20 @@ class EagerMemoryBackend(BaseStorageBackend):
         for name in self.get_feature_names():
             if n != self.get_feature_shape(name)[0]:
                 raise ValueError(f"Feature '{name}' has {self.get_feature_shape(name)[0]} rows, expected {n}")
+            
+    def validate(self) -> None:
+        expected_len = len(self)
+        meta_len = self._n_metadata_rows()
+        feat_len = self._n_feature_rows()
+        obj_len = self._n_objects()
+        if not (expected_len == meta_len == feat_len == obj_len):
+            raise ValueError(
+                f"Backend Dimension Mismatch!\n"
+                f"Global Length: {expected_len}\n"
+                f"Metadata Rows: {meta_len}\n"
+                f"Feature Rows:  {feat_len}\n"
+                f"Object Count:  {obj_len}"
+            )
 
     def _gather_materialized_state(self, target_path: Optional[Path] = None, index_map: Optional[np.ndarray] = None):
         result = {}

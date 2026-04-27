@@ -14,24 +14,18 @@ single source of truth for all row-addressing in DrugLab.
 
 from __future__ import annotations
 
-from typing import Any, Optional
-from typing_extensions import Self
+from abc import ABC, abstractmethod
 from pathlib import Path
+from typing import Any, Dict, List, Optional, Union
 import uuid as _uuid_mod
 
 import numpy as np
+import pandas as pd
+from typing_extensions import Self
 
-from .mixins import (
-    BaseObjectMixin,
-    BaseFeatureMixin,
-    BaseMetadataMixin
-)
+__all__ = ["BaseStorageBackend"]
 
-class BaseStorageBackend(
-    BaseObjectMixin,
-    BaseMetadataMixin,
-    BaseFeatureMixin
-):
+class BaseStorageBackend(ABC):
     """
     Minimal unified interface for managing DrugLab table state.
 
@@ -45,59 +39,121 @@ class BaseStorageBackend(
     code must use ``OverlayBackend`` scatter-gather (prefetch -> detach ->
     worker mutation -> attach -> commit) instead of sharing mutable base
     backends across workers.
- 
-    Lifecycle orchestration
-    ------------------------
-    ``__init__`` fires three hooks in order after the cooperative MRO chain:
- 
-    1. ``initialize_storage_context(**kwargs)`` -- domain setup
-    2. ``bind_capabilities()``                  -- inter-mixin wiring
-    3. ``post_initialize_validate()``            -- consistency checks
- 
-    Concrete backends assembling multiple mixins do **not** need to override
-    ``__init__`` for boilerplate: each mixin handles its own state, and the
-    hooks handle the rest.
 
     ``backend.schema_uuid`` is a per-instance random UUID used by
     ``OverlayBackend.attach()`` to verify that a re-attached backend is the
     same instance (or an intentional clone) as the one detached from.
     """
 
-    # ------------------------------------------------------------------
-    # Initialization
-    # ------------------------------------------------------------------
-
-    def __init__(self, **kwargs: Any) -> None:
-        # This is the terminal node of the cooperative __init__ chain.
-        # Domain mixins above us (MemoryObjectMixin, MemoryMetadataMixin, etc.)
-        # each consume their own recognized kwarg (objects=, metadata=,
-        # features=) and forward the rest via super().__init__(**remaining).
-        # Any unrecognized kwargs that reach here are silently absorbed rather
-        # than forwarded to object.__init__ (which accepts none).
-        # This allows custom mixin __init__ methods to accept extra kwargs
-        # (e.g. connection_string=) without breaking the chain.
-        #
-        # NOTE: do NOT call super().__init__(**kwargs) here -- object.__init__
-        # rejects keyword arguments.
-        # super().__init__() is intentionally NOT called with kwargs.
-        # (object.__init__() takes no extra arguments.)
-
-        # Assign a unique identity to every concrete backend instance.
-        # This is done *before* the lifecycle hooks so that SchemaIdentity
-        # can be captured inside OverlayBackend.__init__.
-        if not hasattr(self, "schema_uuid"):
-            self.schema_uuid: str = str(_uuid_mod.uuid4())
-        
-        # Fire lifecycle hooks in declared order.
-        # Hooks receive the full original kwargs dict so specialized mixins
-        # can consume what they need in initialize_storage_context.
-        self.initialize_storage_context(**kwargs)
-        self.bind_capabilities()
-        self.post_initialize_validate()
+    def __init__(self) -> None:
+        self.schema_uuid: str = str(_uuid_mod.uuid4())
 
     # ------------------------------------------------------------------
-    # Clones (Partial/Full Deep Copies)
+    # Required domain APIs
     # ------------------------------------------------------------------
+
+    @abstractmethod
+    def __len__(self) -> int:
+        raise NotImplementedError
+
+    # Objects
+    @abstractmethod
+    def get_objects(self, idx=None):
+        raise NotImplementedError
+
+    @abstractmethod
+    def update_objects(self, objs, idx=None, **kwargs) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def _n_objects(self) -> int:
+        raise NotImplementedError
+
+    # Metadata
+    @abstractmethod
+    def get_metadata(self, idx=None, cols=None):
+        raise NotImplementedError
+
+    @abstractmethod
+    def add_metadata_column(self, name, value, idx=None, na=None, **kwargs) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def update_metadata(self, values, idx=None, **kwargs) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def drop_metadata_columns(self, cols=None) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def get_metadata_columns(self):
+        raise NotImplementedError
+
+    @abstractmethod
+    def _n_metadata_rows(self) -> int:
+        raise NotImplementedError
+
+    # Features
+    @abstractmethod
+    def get_feature(self, name: str, idx=None) -> np.ndarray:
+        raise NotImplementedError
+
+    def get_features(
+        self,
+        names: Optional[List[str]] = None,
+        idx=None,
+    ) -> Dict[str, np.ndarray]:
+        if names is None:
+            names = self.get_feature_names()
+        return {name: self.get_feature(name, idx) for name in names}
+
+    @abstractmethod
+    def update_feature(self, name: str, array: np.ndarray, idx=None, na=None, **kwargs) -> None:
+        raise NotImplementedError
+
+    def update_features(self, arrays: Dict[str, np.ndarray], idx=None, na=None, **kwargs) -> None:
+        for name, array in arrays.items():
+            self.update_feature(name, array, idx, na, **kwargs)
+
+    @abstractmethod
+    def drop_feature(self, name: str) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def get_feature_names(self):
+        raise NotImplementedError
+
+    @abstractmethod
+    def get_feature_shape(self, name: str) -> tuple:
+        raise NotImplementedError
+
+    def _n_feature_rows(self) -> int:
+        names = self.get_feature_names()
+        if not names:
+            return len(self)
+        return self.get_feature_shape(names[0])[0]
+
+    # ------------------------------------------------------------------
+    # Lifecycle-free materialization and persistence hooks
+    # ------------------------------------------------------------------
+
+    @abstractmethod
+    def _gather_materialized_state(
+        self,
+        target_path: Optional[Path] = None,
+        index_map: Optional[np.ndarray] = None,
+    ) -> Dict[str, Any]:
+        raise NotImplementedError
+
+    @abstractmethod
+    def save_storage_context(self, path: Path, **kwargs: Any) -> None:
+        raise NotImplementedError
+
+    @classmethod
+    @abstractmethod
+    def load_storage_context(cls, path: Path, **kwargs: Any) -> Dict[str, Any]:
+        raise NotImplementedError
 
     def clone(
         self,
@@ -105,13 +161,7 @@ class BaseStorageBackend(
         index_map: Optional[np.ndarray] = None,
     ) -> "BaseStorageBackend":
         """
-        Build a new backend instance of *this* class with (optionally sliced)
-        state gathered via the cooperative ``_gather_materialized_state`` hook.
- 
-        This is the single point where ``OverlayBackend.materialize()`` creates
-        its Phase-A clone.  Because ``_gather_materialized_state`` is MRO-
-        cooperative, any custom mixin that stores additional state only needs
-        to implement that one hook; no changes to ``clone`` are needed.
+        Build a new backend instance of *this* class with the same state.
  
         Parameters
         ----------
@@ -125,10 +175,7 @@ class BaseStorageBackend(
         BaseStorageBackend
             A new instance of ``type(self)`` with state matching *index_map*.
         """
-        gathered = self._gather_materialized_state(
-            target_path=target_path,
-            index_map=index_map,
-        )
+        gathered = self._gather_materialized_state(target_path=target_path, index_map=index_map)
         new_instance = self.__class__(**gathered)
         # Clones intentionally get a NEW uuid so attach() distinguishes them.
         new_instance.schema_uuid = str(_uuid_mod.uuid4())
@@ -153,100 +200,25 @@ class BaseStorageBackend(
     # Persistence
     # ------------------------------------------------------------------
 
-    def save(
-        self,
-        path: Path | str,
-        **kwargs: Any
-    ) -> None:
-        """
-        Persist backend state into a ``.dlb`` bundle directory.
-        
-        Delegates to the cooperative ``save_storage_context`` MRO chain so
-        that each mixin (metadata, objects, features) handles its own domain.
-        
-        Parameters
-        ----------
-        path : Path
-            The target ``.dlb`` directory (pre-created by the caller).
-        **kwargs
-            Forwarded down the chain.  Recognised kwargs (e.g. ``object_writer``)
-            are consumed by the relevant mixin; all others reach the terminal
-            node and are silently absorbed.
-        """
+    def save(self, path: Path | str, **kwargs: Any) -> None:
+        path = Path(path)
         if path.exists():
             print("WARNING: A .dlb bundle already exists. Overwriting.")
         path.mkdir(parents=True, exist_ok=True)
-        self.save_storage_context(
-            path=path, 
-            **kwargs
-        )
+        self.save_storage_context(path=path, **kwargs)
 
     @classmethod
-    def load(
-        cls,
-        path: Path,
-        **kwargs: Any
-    ) -> Self:
-        """
-        Reconstruct the backend from a ``.dlb`` bundle directory.
- 
-        Delegates to the cooperative ``load_storage_context`` MRO chain so
-        that each mixin reads its own domain.  The accumulated kwargs dict is
-        then passed directly to ``cls()``.
- 
-        Parameters
-        ----------
-        path : Path
-            The location of the ``.dlb`` bundle.
-        **kwargs
-            Forwarded down the chain.  Recognised kwargs (e.g. ``object_reader``)
-            are consumed by the relevant mixin; all others reach the terminal
-            node and are silently absorbed.
- 
-        Returns
-        -------
-        BaseStorageBackend
-            A fully populated instance of the backend.
-        """
+    def load(cls, path: Path, **kwargs: Any) -> Self:
         path = Path(path)
-        cls_kwargs = cls.load_storage_context(
-            path=path,
-            **kwargs
-        )
+        cls_kwargs = cls.load_storage_context(path=path, **kwargs)
         return cls(**cls_kwargs)
-    
+
     def get_name(self) -> str:
         return self.__class__.__name__
-    
+
     def get_module(self) -> str:
         return self.__class__.__module__
 
-    # ------------------------------------------------------------------
-    # Validation
-    # ------------------------------------------------------------------
-
+    @abstractmethod
     def validate(self) -> None:
-        """
-        Validate backend-wide dimensional consistency.
-
-        STRONGLY SUGGESTED: Validates the entire backend by checking
-        individual domain integrity and ensuring dimension alignment.
-
-        Raises
-        ------
-        ValueError
-            If any dimension mismatch is detected.
-        """
-        expected_len = len(self)
-        meta_len = self._n_metadata_rows()
-        feat_len = self._n_feature_rows()
-        obj_len = self._n_objects()
- 
-        if not (expected_len == meta_len == feat_len == obj_len):
-            raise ValueError(
-                f"Backend Dimension Mismatch!\n"
-                f"Global Length: {expected_len}\n"
-                f"Metadata Rows: {meta_len}\n"
-                f"Feature Rows:  {feat_len}\n"
-                f"Object Count:  {obj_len}"
-            )
+        raise NotImplementedError
