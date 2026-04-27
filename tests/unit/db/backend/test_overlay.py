@@ -27,13 +27,13 @@ Architecture note
 Delta state is now encapsulated in isolated dataclass containers instead of flat
 ``self`` attributes.  The correct attribute paths are:
 
-    overlay._obj_delta.local          (Dict[int, Any])
-    overlay._feat_delta.local         (Dict[str, np.ndarray])
-    overlay._feat_delta.deleted       (Set[str])
-    overlay._meta_delta.local         (pd.DataFrame | None)
-    overlay._meta_delta.deleted_cols  (Set[str])
-    overlay._feat_cache.data          (Dict[str, np.ndarray])
-    overlay._meta_cache.data          (pd.DataFrame | None)
+    overlay._object_store.delta.local          (Dict[int, Any])
+    overlay._feature_store.delta.local         (Dict[str, np.ndarray])
+    overlay._feature_store.delta.deleted       (Set[str])
+    overlay._metadata_store.delta.local         (pd.DataFrame | None)
+    overlay._metadata_store.delta.deleted_cols  (Set[str])
+    overlay._feature_store.cache.data          (Dict[str, np.ndarray])
+    overlay._metadata_store.cache.data          (pd.DataFrame | None)
 """
 
 from __future__ import annotations
@@ -179,7 +179,7 @@ class TestZeroCopySubsetting:
         """OverlayBackend must not hold a copy of all base objects in its delta."""
         overlay = OverlayBackend(bctx.backend, np.array([0, 1], dtype=np.intp))
         # Using the new delta dataclass attribute
-        assert len(overlay._obj_delta.local) == 0
+        assert len(overlay._object_store.delta.local) == 0
 
 
 # ===========================================================================
@@ -280,7 +280,7 @@ class TestCoWFeatureAddition:
 
         overlay.update_feature("my_feat", np.zeros((3, 1), dtype=np.float32))
         # New architecture: delta is encapsulated in _feat_delta dataclass
-        assert "my_feat" in overlay._feat_delta.local
+        assert "my_feat" in overlay._feature_store.delta.local
 
     def test_feature_visible_in_names(self, bctx: BackendContext):
         base = bctx.backend
@@ -387,8 +387,8 @@ class TestCoWMutation:
 
         overlay.update_objects({"id": 77}, idx=1)
         # New architecture uses _obj_delta.local dict
-        assert 1 in overlay._obj_delta.local
-        assert overlay._obj_delta.local[1] == {"id": 77}
+        assert 1 in overlay._object_store.delta.local
+        assert overlay._object_store.delta.local[1] == {"id": 77}
 
     def test_feature_delta_stored_in_dataclass(self, bctx: BackendContext):
         """Feature mutations must be stored in FeatureDelta.local."""
@@ -399,7 +399,7 @@ class TestCoWMutation:
         new_arr = np.zeros((bctx.num_rows, bctx.feat_sizes[feat_name]), dtype=np.float32)
         overlay.update_feature(feat_name, new_arr)
 
-        assert feat_name in overlay._feat_delta.local
+        assert feat_name in overlay._feature_store.delta.local
 
     def test_metadata_delta_stored_in_dataclass(self, bctx: BackendContext):
         """Metadata mutations must land in MetadataDelta.local DataFrame."""
@@ -409,8 +409,8 @@ class TestCoWMutation:
 
         overlay.update_metadata(pd.Series([99] * bctx.num_rows, name=first_col))
 
-        assert overlay._meta_delta.local is not None
-        assert first_col in overlay._meta_delta.local.columns
+        assert overlay._metadata_store.delta.local is not None
+        assert first_col in overlay._metadata_store.delta.local.columns
 
 
 # ===========================================================================
@@ -442,7 +442,7 @@ class TestCommit:
         overlay.commit()
 
         # New architecture: delta is cleared via FeatureDelta.clear()
-        assert len(overlay._feat_delta.local) == 0
+        assert len(overlay._feature_store.delta.local) == 0
 
     def test_commit_flushes_metadata_to_base(self, bctx: BackendContext):
         base = bctx.backend
@@ -465,7 +465,7 @@ class TestCommit:
         overlay.commit()
 
         # New architecture: _meta_delta.local cleared by MetadataDelta.clear()
-        assert overlay._meta_delta.local is None
+        assert overlay._metadata_store.delta.local is None
 
     def test_commit_flushes_objects_to_base(self, bctx: BackendContext):
         base = bctx.backend
@@ -486,7 +486,7 @@ class TestCommit:
         overlay.commit()
 
         # New architecture: _obj_delta.local cleared by ObjectDelta.clear()
-        assert len(overlay._obj_delta.local) == 0
+        assert len(overlay._object_store.delta.local) == 0
 
     def test_commit_partial_index_flushes_correctly(self, bctx: BackendContext):
         """Overlay covers a subset of the base; only those rows should be flushed."""
@@ -519,11 +519,11 @@ class TestCommit:
 
         # Prefetch to populate cache
         overlay.prefetch(features=[feat_name])
-        assert overlay._feat_cache.has(feat_name)
+        assert overlay._feature_store.cache.has(feat_name)
 
         # Now commit (no delta, but cache should survive)
         overlay.commit()
-        assert overlay._feat_cache.has(feat_name), (
+        assert overlay._feature_store.cache.has(feat_name), (
             "Cache must survive commit(); only the delta is cleared."
         )
 
@@ -552,12 +552,12 @@ class TestOverlayClone:
 
         # New architecture: check via delta dataclasses
         np.testing.assert_array_equal(
-            cloned._feat_delta.local["new_feat"],
-            overlay._feat_delta.local["new_feat"],
+            cloned._feature_store.delta.local["new_feat"],
+            overlay._feature_store.delta.local["new_feat"],
         )
-        assert cloned._obj_delta.local == overlay._obj_delta.local
-        assert cloned._feat_delta.deleted == overlay._feat_delta.deleted
-        assert cloned._meta_delta.deleted_cols == overlay._meta_delta.deleted_cols
+        assert cloned._object_store.delta.local == overlay._object_store.delta.local
+        assert cloned._feature_store.delta.deleted == overlay._feature_store.delta.deleted
+        assert cloned._metadata_store.delta.deleted_cols == overlay._metadata_store.delta.deleted_cols
 
     def test_clone_is_independent_from_source_overlay(self, bctx: BackendContext):
         overlay = OverlayBackend(bctx.backend, np.array([0, 1, 2], dtype=np.intp))
@@ -572,7 +572,7 @@ class TestOverlayClone:
             np.array([[1.0], [2.0], [3.0]], dtype=np.float32),
         )
         # New architecture: check via delta dataclass
-        assert 1 not in overlay._obj_delta.local
+        assert 1 not in overlay._object_store.delta.local
 
     def test_clone_preserves_index_map(self, bctx: BackendContext):
         indices = np.array([3, 7, 11], dtype=np.intp)
@@ -596,7 +596,7 @@ class TestOverlayClone:
 
         cloned = overlay.clone()
         # Clone should have an empty (not shared) cache per the implementation contract
-        assert not cloned._feat_cache.has(feat_name), (
+        assert not cloned._feature_store.cache.has(feat_name), (
             "Clone must start with an independent, empty cache."
         )
 
@@ -611,10 +611,10 @@ class TestOverlayClone:
         cloned = overlay.clone()
 
         # Mutate source delta in-place
-        overlay._feat_delta.local[feat_name][:] = 99.0
+        overlay._feature_store.delta.local[feat_name][:] = 99.0
 
         # Clone must be unaffected
-        assert not np.all(cloned._feat_delta.local[feat_name] == 99.0)
+        assert not np.all(cloned._feature_store.delta.local[feat_name] == 99.0)
 
 
 # ===========================================================================
@@ -900,7 +900,7 @@ class TestDropAndMaterialize:
         feat_name = bctx.feat_names[0]
         overlay = OverlayBackend(bctx.backend, np.arange(bctx.num_rows, dtype=np.intp))
         overlay.drop_feature(feat_name)
-        assert feat_name in overlay._feat_delta.deleted
+        assert feat_name in overlay._feature_store.delta.deleted
 
     def test_dropped_metadata_col_then_add_back(self, bctx: BackendContext):
         first_col = bctx.meta_cols[0]
@@ -924,7 +924,7 @@ class TestDropAndMaterialize:
         first_col = bctx.meta_cols[0]
         overlay = OverlayBackend(bctx.backend, np.arange(bctx.num_rows, dtype=np.intp))
         overlay.drop_metadata_columns(first_col)
-        assert first_col in overlay._meta_delta.deleted_cols
+        assert first_col in overlay._metadata_store.delta.deleted_cols
 
 
 # ===========================================================================
@@ -1342,16 +1342,16 @@ class TestCachingBehaviour:
         feat_name = bctx.feat_names[0]
         overlay = OverlayBackend(bctx.backend, np.arange(bctx.num_rows, dtype=np.intp))
 
-        assert not overlay._feat_cache.has(feat_name)
+        assert not overlay._feature_store.cache.has(feat_name)
         overlay.prefetch(features=[feat_name])
-        assert overlay._feat_cache.has(feat_name)
+        assert overlay._feature_store.cache.has(feat_name)
 
     def test_prefetch_feature_values_match_base(self, bctx: BackendContext):
         feat_name = bctx.feat_names[0]
         overlay = OverlayBackend(bctx.backend, np.arange(bctx.num_rows, dtype=np.intp))
         overlay.prefetch(features=[feat_name])
 
-        cached = overlay._feat_cache.get(feat_name)
+        cached = overlay._feature_store.cache.get(feat_name)
         base_arr = bctx.backend.get_feature(feat_name)
         np.testing.assert_array_equal(cached, base_arr)
 
@@ -1359,7 +1359,7 @@ class TestCachingBehaviour:
         overlay = OverlayBackend(bctx.backend, np.arange(bctx.num_rows, dtype=np.intp))
         overlay.prefetch(features=list(bctx.feat_names))
         for name in bctx.feat_names:
-            assert overlay._feat_cache.has(name)
+            assert overlay._feature_store.cache.has(name)
 
     def test_feature_read_hits_cache_not_base(self, bctx: BackendContext):
         """
@@ -1373,7 +1373,7 @@ class TestCachingBehaviour:
 
         # Inject a sentinel value directly into the cache
         sentinel = np.full((bctx.num_rows, feat_dim), -999.0, dtype=np.float32)
-        overlay._feat_cache.put(feat_name, sentinel)
+        overlay._feature_store.cache.put(feat_name, sentinel)
 
         result = overlay.get_feature(feat_name)
         np.testing.assert_array_equal(result, sentinel)
@@ -1384,11 +1384,11 @@ class TestCachingBehaviour:
         feat_dim = bctx.feat_sizes[feat_name]
         overlay = OverlayBackend(bctx.backend, np.arange(bctx.num_rows, dtype=np.intp))
         overlay.prefetch(features=[feat_name])
-        assert overlay._feat_cache.has(feat_name)
+        assert overlay._feature_store.cache.has(feat_name)
 
         overlay.update_feature(feat_name, np.zeros((bctx.num_rows, feat_dim), dtype=np.float32))
 
-        assert not overlay._feat_cache.has(feat_name), (
+        assert not overlay._feature_store.cache.has(feat_name), (
             "Cache entry must be evicted after update_feature()."
         )
 
@@ -1401,8 +1401,8 @@ class TestCachingBehaviour:
         new_arr = np.full((bctx.num_rows, feat_dim), 5.0, dtype=np.float32)
         overlay.update_feature(feat_name, new_arr)
 
-        assert overlay._feat_delta.has(feat_name)
-        assert not overlay._feat_cache.has(feat_name)
+        assert overlay._feature_store.delta.has(feat_name)
+        assert not overlay._feature_store.cache.has(feat_name)
 
     def test_prefetch_noop_when_already_in_delta(self, bctx: BackendContext):
         """prefetch() must not overwrite a delta entry with base data."""
@@ -1442,7 +1442,7 @@ class TestCachingBehaviour:
         overlay.prefetch(features=[feat_name])
         overlay.commit()  # nothing in delta, but cache should remain
 
-        assert overlay._feat_cache.has(feat_name), (
+        assert overlay._feature_store.cache.has(feat_name), (
             "Prefetch cache must not be cleared by commit()."
         )
 
@@ -1451,17 +1451,17 @@ class TestCachingBehaviour:
         overlay = OverlayBackend(bctx.backend, np.arange(bctx.num_rows, dtype=np.intp))
 
         overlay.prefetch(meta_cols=[first_col])
-        assert overlay._meta_cache.has_col(first_col)
+        assert overlay._metadata_store.cache.has_col(first_col)
 
     def test_metadata_mutation_invalidates_meta_cache(self, bctx: BackendContext):
         first_col = bctx.meta_cols[0]
         overlay = OverlayBackend(bctx.backend, np.arange(bctx.num_rows, dtype=np.intp))
         overlay.prefetch(meta_cols=[first_col])
-        assert overlay._meta_cache.has_col(first_col)
+        assert overlay._metadata_store.cache.has_col(first_col)
 
         overlay.update_metadata(pd.Series([0] * bctx.num_rows, name=first_col))
 
-        assert not overlay._meta_cache.has_col(first_col), (
+        assert not overlay._metadata_store.cache.has_col(first_col), (
             "Metadata cache entry must be evicted after update_metadata()."
         )
 
