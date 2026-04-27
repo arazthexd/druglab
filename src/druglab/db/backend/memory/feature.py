@@ -8,15 +8,16 @@ from typing import Any, Dict, List, Optional, TYPE_CHECKING
 import numpy as np
 
 from ...indexing import RowSelection
+from ..base.stores import BaseFeatureStore
 
 if TYPE_CHECKING:
     from druglab.db.indexing import INDEX_LIKE
 
 
-__all__ = ["MemoryFeatureStore", "MemoryFeatureMixin"]
+__all__ = ["MemoryFeatureStore"]
 
 
-class MemoryFeatureStore:
+class MemoryFeatureStore(BaseFeatureStore):
     def __init__(self, features: Optional[Dict[str, np.ndarray]] = None, *, n_rows_hint: int = 0) -> None:
         self._features = dict(features) if features is not None else {}
         self._n_rows_hint = int(n_rows_hint)
@@ -87,8 +88,12 @@ class MemoryFeatureStore:
             safe_name = name.replace("/", "_").replace("\\", "_")
             np.save(str(feat_dir / f"{safe_name}.npy"), arr)
 
-    @staticmethod
-    def load(path: Path, mmap_features: bool = False) -> Dict[str, np.ndarray]:
+    @classmethod
+    def load(
+        cls,
+        path: Path,
+        mmap_features: bool = False,
+    ) -> "MemoryFeatureStore":
         feat_dir = path / "features"
         features: Dict[str, np.ndarray] = {}
         if feat_dir.exists():
@@ -98,7 +103,7 @@ class MemoryFeatureStore:
                     features[name] = np.load(str(npy_path), mmap_mode="r")
                 else:
                     features[name] = np.load(str(npy_path), allow_pickle=False)
-        return features
+        return cls(features=features)
 
 
 MemoryFeatureMixin = MemoryFeatureStore

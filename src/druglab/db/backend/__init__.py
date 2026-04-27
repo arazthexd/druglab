@@ -11,39 +11,48 @@ Classes
 BaseStorageBackend
     Abstract unified interface for all storage backends.
 
-MemoryMetadataMixin
-    In-memory metadata management (Pandas DataFrame).
+BaseObjectStore
+    Abstract interface for object handling in storage backends.
 
-MemoryObjectMixin
-    In-memory object management (Python list).
+BaseFeatureStore
+    Abstract interface for feature handling in storage backends.
 
-MemoryFeatureMixin
-    In-memory feature management (dict of NumPy arrays).
+BaseMetadataStore
+    Abstract interface for metadata handling in storage backends.
+
+CompositeStorageBackend
+    Composite pattern for combining multiple domain stores.
+
+MemoryMetadataStore
+    In-memory metadata store.
+
+MemoryObjectStore
+    In-memory object store.
+
+MemoryFeatureStore
+    In-memory feature store.
 
 EagerMemoryBackend
-    Fully in-memory concrete backend combining all memory mixins.
+    Eager in-memory storage backend (Memory Metadata, Objects, and Features).
 
 OverlayBackend
-    Zero-copy proxy backend with Copy-on-Write semantics.
+    Overlay backend mainly is used for creating views of other backends
 """
 
 from .base import *
-from .memory import *
+from .composite import *
 from .overlay import *
+from .memory import *
 
 __all__ = [
-    # Base
     "BaseStorageBackend",
-    "BaseMetadataMixin",
-    "BaseObjectMixin",
-    "BaseFeatureMixin",
-
-    # Memory
-    "MemoryMetadataMixin",
-    "MemoryObjectMixin",
-    "MemoryFeatureMixin",
+    "BaseObjectStore",
+    "BaseMetadataStore",
+    "BaseFeatureStore",
+    "CompositeStorageBackend",
+    "MemoryMetadataStore",
+    "MemoryObjectStore",
+    "MemoryFeatureStore",
     "EagerMemoryBackend",
-
-    # Overlay
     "OverlayBackend",
 ]

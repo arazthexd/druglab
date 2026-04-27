@@ -19,10 +19,11 @@ from .table import (
 )
 from .backend import (
     BaseStorageBackend,
+    CompositeStorageBackend,
     EagerMemoryBackend,
-    MemoryMetadataMixin,
-    MemoryObjectMixin,
-    MemoryFeatureMixin,
+    MemoryMetadataStore,
+    MemoryObjectStore,
+    MemoryFeatureStore,
 )
 from .indexing import (
     INDEX_LIKE,
@@ -48,10 +49,11 @@ __all__ = [
     "F",
     # Backends
     "BaseStorageBackend",
+    "CompositeStorageBackend",
     "EagerMemoryBackend",
-    "MemoryMetadataMixin",
-    "MemoryObjectMixin",
-    "MemoryFeatureMixin",
+    "MemoryMetadataStore",
+    "MemoryObjectStore",
+    "MemoryFeatureStore",
     # Indexing utilities
     "INDEX_LIKE",
     "RowSelection",

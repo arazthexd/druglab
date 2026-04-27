@@ -10,15 +10,16 @@ from typing import Any, Callable, Dict, List, Optional, TYPE_CHECKING, Union
 import numpy as np
 
 from ...indexing import RowSelection
+from ..base.stores import BaseObjectStore
 
 if TYPE_CHECKING:
     from druglab.db.indexing import INDEX_LIKE
 
 
-__all__ = ["MemoryObjectStore", "MemoryObjectMixin"]
+__all__ = ["MemoryObjectStore"]
 
 
-class MemoryObjectStore:
+class MemoryObjectStore(BaseObjectStore):
     def __init__(self, objects: Optional[List[Any]] = None) -> None:
         self._objects = list(objects) if objects is not None else []
 
@@ -75,21 +76,26 @@ class MemoryObjectStore:
             for obj in self._objects:
                 pickle.dump(obj, f)
 
-    @staticmethod
-    def load(path: Path, object_reader: Optional[Callable[[Path], List[Any]]] = None) -> List[Any]:
+    @classmethod
+    def load(
+        cls,
+        path: Path,
+        object_reader: Optional[Callable[[Path], List[Any]]] = None,
+    ) -> "MemoryObjectStore":
         if object_reader is not None:
-            return object_reader(path / "objects")
+            return cls(objects=object_reader(path / "objects"))
 
         obj_path = path / "objects" / "objects.pkl"
         if not obj_path.exists():
-            return []
+            print("WARNING: No objects found when loading bundle.")
+            return cls(objects=[])
 
         with open(obj_path, "rb") as f:
             raw_payload = pickle.load(f)
             if isinstance(raw_payload, dict) and raw_payload.get("format") in {"stream_v1", "stream_v2"}:
                 count = int(raw_payload["count"])
-                return [pickle.load(f) for _ in range(count)]
-            return raw_payload
+                return cls(objects=[pickle.load(f) for _ in range(count)])
+            return cls(objects=raw_payload)
 
 
 MemoryObjectMixin = MemoryObjectStore

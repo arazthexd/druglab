@@ -23,7 +23,14 @@ import numpy as np
 import pandas as pd
 from typing_extensions import Self
 
-__all__ = ["BaseStorageBackend"]
+from .stores import BaseFeatureStore, BaseMetadataStore, BaseObjectStore
+
+__all__ = [
+    "BaseStorageBackend",
+    "BaseObjectStore",
+    "BaseMetadataStore",
+    "BaseFeatureStore",
+]
 
 class BaseStorageBackend(ABC):
     """

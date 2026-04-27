@@ -9,15 +9,16 @@ import numpy as np
 import pandas as pd
 
 from ...indexing import RowSelection
+from ..base.stores import BaseMetadataStore
 
 if TYPE_CHECKING:
     from druglab.db.indexing import INDEX_LIKE
 
 
-__all__ = ["MemoryMetadataStore", "MemoryMetadataMixin"]
+__all__ = ["MemoryMetadataStore"]
 
 
-class MemoryMetadataStore:
+class MemoryMetadataStore(BaseMetadataStore):
     def __init__(self, metadata: Optional[pd.DataFrame] = None, *, n_rows_hint: Optional[int] = None) -> None:
         if metadata is None:
             self._metadata = pd.DataFrame(index=range(n_rows_hint or 0))
@@ -109,15 +110,16 @@ class MemoryMetadataStore:
         else:
             pd.DataFrame(index=range(len(self._metadata.index))).to_csv(path / "metadata.csv", index=True)
 
-    @staticmethod
-    def load(path: Path) -> pd.DataFrame:
+    @classmethod
+    def load(cls, path: Path) -> "MemoryMetadataStore":
         parquet_path = path / "metadata.parquet"
         csv_path = path / "metadata.csv"
         if parquet_path.exists():
-            return pd.read_parquet(parquet_path)
+            return cls(metadata=pd.read_parquet(parquet_path))
         if csv_path.exists():
-            return pd.read_csv(csv_path)
-        return pd.DataFrame()
+            return cls(metadata=pd.read_csv(csv_path))
+        print("WARNING: No metadata found when loading bundle.")
+        return cls(metadata=pd.DataFrame())
 
 
 MemoryMetadataMixin = MemoryMetadataStore
