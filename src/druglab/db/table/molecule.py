@@ -3,15 +3,17 @@ druglab.db.molecule
 ~~~~~~~~~~~~~~~~~~~
 MoleculeTable: a BaseTable specialised for RDKit Mol objects.
 
-If RDKit is not installed the class still imports cleanly; methods that
-require RDKit raise ``ImportError`` at call time.
+Object serialization uses SMILES strings (``molecules.smi``) rather than
+pickle, making bundles robust against RDKit C++ ABI changes and Python
+version upgrades.  3-D conformers are serialised as SDF blocks
+(``molecules.sdf``) when any molecule in the table carries conformers.
 """
 
 from __future__ import annotations
 
 import copy
-import pickle
-from typing import Dict, Iterable, List, Optional, Sequence, Union, TYPE_CHECKING
+from pathlib import Path
+from typing import Callable, Dict, Iterable, List, Optional, Union, TYPE_CHECKING
 
 import numpy as np
 import pandas as pd
@@ -39,34 +41,121 @@ def _require_rdkit() -> None:
         )
 
 
+# ---------------------------------------------------------------------------
+# Codec helpers (module-level so they are picklable if ever needed by
+# multiprocessing, though they themselves do not use pickle).
+# ---------------------------------------------------------------------------
+
+def _write_molecules(objects: List, dir_path: Path) -> None:
+    """
+    Persist a list of RDKit Mol objects to disk.
+
+    Strategy
+    --------
+    * Molecules **with 3-D conformers** → ``molecules.sdf`` (SDF blocks).
+    * Molecules **without conformers** → ``molecules.smi`` (SMILES, one per line).
+
+    Both strategies can coexist: the reader detects which file is present.
+    An empty line or the literal ``None`` token represents a ``None`` molecule.
+    """
+    _require_rdkit()
+
+    has_conformers = any(
+        m is not None and m.GetNumConformers() > 0 for m in objects
+    )
+
+    if has_conformers:
+        # SDF path — preserves 3-D coordinates.
+        sdf_path = dir_path / "molecules.sdf"
+        writer = Chem.SDWriter(str(sdf_path))
+        for mol in objects:
+            if mol is None:
+                # SDWriter cannot write None; write a sentinel blank mol.
+                writer.write(Chem.MolFromSmiles("*"))
+            else:
+                writer.write(mol)
+        writer.close()
+        # Also write a flag so the reader knows None positions.
+        none_positions = [i for i, m in enumerate(objects) if m is None]
+        (dir_path / "none_positions.txt").write_text(
+            "\n".join(map(str, none_positions)), encoding="utf-8"
+        )
+    else:
+        # SMILES path — compact, human-readable, ABI-stable.
+        smi_path = dir_path / "molecules.smi"
+        lines = []
+        for mol in objects:
+            if mol is None:
+                lines.append("__NONE__")
+            else:
+                smi = Chem.MolToSmiles(mol)
+                lines.append(smi if smi else "__NONE__")
+        smi_path.write_text("\n".join(lines), encoding="utf-8")
+
+
+def _read_molecules(dir_path: Path) -> List:
+    """Restore molecules from ``molecules.sdf`` or ``molecules.smi``."""
+    _require_rdkit()
+
+    sdf_path = dir_path / "molecules.sdf"
+    smi_path = dir_path / "molecules.smi"
+
+    if sdf_path.exists():
+        supplier = Chem.SDMolSupplier(str(sdf_path), removeHs=False, sanitize=True)
+        none_positions: set = set()
+        none_path = dir_path / "none_positions.txt"
+        if none_path.exists():
+            text = none_path.read_text(encoding="utf-8").strip()
+            if text:
+                none_positions = {int(x) for x in text.splitlines()}
+        mols = []
+        for i, mol in enumerate(supplier):
+            mols.append(None if i in none_positions else mol)
+        return mols
+
+    if smi_path.exists():
+        lines = smi_path.read_text(encoding="utf-8").splitlines()
+        mols = []
+        for line in lines:
+            line = line.strip()
+            if not line or line == "__NONE__":
+                mols.append(None)
+            else:
+                mols.append(Chem.MolFromSmiles(line))
+        return mols
+
+    return []
+
+
 class MoleculeTable(BaseTable["Chem.Mol"]):
     """
     Table of RDKit Mol objects.
 
-    Construction
+    Object codec
     ------------
-    Prefer the factory class-methods over calling __init__ directly:
-
-        MoleculeTable.from_smiles(["CCO", "c1ccccc1"])
-        MoleculeTable.from_sdf("compounds.sdf")
-        MoleculeTable.from_mols([mol1, mol2])
-
-    Properties added beyond BaseTable
-    ----------------------------------
-    smiles : List[str]
-        Canonical SMILES for each molecule (computed on access).
+    * ``_get_default_object_writer`` → writes ``molecules.smi`` (or ``.sdf``
+      when conformers are present), completely replacing the old pickle path.
+    * ``_get_default_object_reader`` → reads the matching file back.
     """
 
     # ------------------------------------------------------------------
-    # BaseTable abstract interface
+    # Domain-safe I/O codec  (Task 2)
     # ------------------------------------------------------------------
 
+    def _get_default_object_writer(self) -> Callable[[List, Path], None]:
+        return _write_molecules
+
+    @classmethod
+    def _get_default_object_reader(cls) -> Callable[[Path], List]:
+        return _read_molecules
+
+    # Kept for back-compat / direct use by subclasses.
     def _serialize_object(self, obj: "Chem.Mol") -> bytes:
         _require_rdkit()
-        mol_bytes = obj.ToBinary() if obj is not None else b""
-        return mol_bytes
+        return obj.ToBinary() if obj is not None else b""
 
-    def _deserialize_object(self, raw: bytes) -> "Chem.Mol":
+    @classmethod
+    def _deserialize_object(cls, raw: bytes) -> "Chem.Mol":
         _require_rdkit()
         if not raw:
             return None
@@ -80,44 +169,25 @@ class MoleculeTable(BaseTable["Chem.Mol"]):
     # ------------------------------------------------------------------
 
     @classmethod
-    def from_mols(
-        cls,
-        mols: Iterable["Chem.Mol"],
-        metadata: Optional[pd.DataFrame] = None,
-    ) -> "MoleculeTable":
-        """Build a table from an iterable of RDKit Mol objects."""
+    def from_mols(cls, mols: Iterable["Chem.Mol"], metadata: Optional[pd.DataFrame] = None) -> "MoleculeTable":
         _require_rdkit()
-        mol_list = list(mols)
-        return cls(objects=mol_list, metadata=metadata)
+        return cls(objects=list(mols), metadata=metadata)
 
     @classmethod
-    def from_records(
-        cls,
-        records: Iterable["MoleculeRecord"]  # type: ignore
-    ) -> "MoleculeTable":
-        """Bridge method: Convert druglab.io MoleculeRecords into a MoleculeTable."""
-        mols = []
-        meta_rows = []
+    def from_records(cls, records) -> "MoleculeTable":
+        mols, meta_rows = [], []
         for r in records:
             mols.append(r.mol)
             row = {"name": r.name, "source": r.source, "index": r.index}
             row.update(r.properties)
             meta_rows.append(row)
-
-        metadata = pd.DataFrame(meta_rows)
-        return cls(objects=mols, metadata=metadata)
+        return cls(objects=mols, metadata=pd.DataFrame(meta_rows))
 
     @classmethod
-    def from_file(
-        cls,
-        path: str,
-        **reader_kwargs
-    ) -> "MoleculeTable":
-        """Load a table from any supported chemical file format."""
+    def from_file(cls, path: str, **reader_kwargs) -> "MoleculeTable":
         _require_rdkit()
         from druglab.io import read_file
-        records = read_file(path, **reader_kwargs)
-        return cls.from_records(records)
+        return cls.from_records(read_file(path, **reader_kwargs))
 
     @classmethod
     def from_smiles(
@@ -128,7 +198,6 @@ class MoleculeTable(BaseTable["Chem.Mol"]):
         metadata: Optional[pd.DataFrame] = None,
         smiles_col: str = "smiles",
     ) -> "MoleculeTable":
-        """Parse SMILES strings into a MoleculeTable."""
         _require_rdkit()
         smiles_list = list(smiles)
         mols: List[Optional["Chem.Mol"]] = []
@@ -148,70 +217,45 @@ class MoleculeTable(BaseTable["Chem.Mol"]):
         return cls(objects=mols, metadata=metadata)
 
     @classmethod
-    def from_sdf(
-        cls,
-        path: str,
-        *,
-        sanitize: bool = True,
-        remove_hs: bool = False,
-        max_mols: Optional[int] = None,
-    ) -> "MoleculeTable":
-        """Load molecules from an SDF file (legacy; prefer from_file)."""
+    def from_sdf(cls, path: str, *, sanitize: bool = True, remove_hs: bool = False, max_mols: Optional[int] = None) -> "MoleculeTable":
         _require_rdkit()
         from rdkit.Chem import PandasTools
-
-        df = PandasTools.LoadSDF(
-            path,
-            smilesName="smiles",
-            molColName="_mol",
-            includeFingerprints=False,
-            removeHs=remove_hs,
-        )
+        df = PandasTools.LoadSDF(path, smilesName="smiles", molColName="_mol", includeFingerprints=False, removeHs=remove_hs)
         if max_mols is not None:
             df = df.iloc[:max_mols]
-
         mols = list(df.pop("_mol"))
-        metadata = df.reset_index(drop=True)
-        return cls(objects=mols, metadata=metadata)
+        return cls(objects=mols, metadata=df.reset_index(drop=True))
 
     # ------------------------------------------------------------------
-    # Export & Output Bridging
+    # Export
     # ------------------------------------------------------------------
 
-    def to_records(self) -> List["MoleculeRecord"]:  # type: ignore
-        """Bridge method: Convert this table back into druglab.io MoleculeRecords."""
+    def to_records(self):
         from druglab.io._record import MoleculeRecord
         records = []
         meta = self.get_metadata()
         for i, mol in enumerate(self.get_objects()):
             row_dict = meta.iloc[i].to_dict()
-            name = row_dict.pop("name", "")
+            name  = row_dict.pop("name", "")
             source = row_dict.pop("source", "")
             index = row_dict.pop("index", i)
-
             records.append(MoleculeRecord(
-                mol=mol,
-                name=str(name) if not pd.isna(name) else "",
+                mol=mol, name=str(name) if not pd.isna(name) else "",
                 properties={k: v for k, v in row_dict.items() if not pd.isna(v)},
-                source=str(source),
-                index=int(index)
+                source=str(source), index=int(index),
             ))
         return records
 
     def to_file(self, path: str, **writer_kwargs) -> None:
-        """Write the table to any supported chemical file format."""
         from druglab.io import write_file
         write_file(self.to_records(), path, **writer_kwargs)
 
     def to_sdf(self, path: str, overwrite: bool = False) -> None:
-        """Write the table to an SDF file."""
         _require_rdkit()
         from rdkit.Chem import SDWriter
-        from pathlib import Path as _Path
-        if _Path(path).exists() and not overwrite:
-            raise FileExistsError(
-                f"File '{path}' already exists. Set overwrite=True to replace."
-            )
+        p = Path(path)
+        if p.exists() and not overwrite:
+            raise FileExistsError(f"File '{path}' already exists.")
         writer = SDWriter(path)
         meta = self.get_metadata()
         for i, mol in enumerate(self.get_objects()):
@@ -230,121 +274,72 @@ class MoleculeTable(BaseTable["Chem.Mol"]):
 
     @property
     def smiles(self) -> List[Optional[str]]:
-        """Canonical SMILES for each molecule (None for invalid mols)."""
         _require_rdkit()
-        return [
-            Chem.MolToSmiles(mol) if mol is not None else None
-            for mol in self.get_objects()
-        ]
+        return [Chem.MolToSmiles(mol) if mol is not None else None for mol in self.get_objects()]
 
     @property
     def mols(self) -> List["Chem.Mol"]:
-        """Flat list of all valid RDKit Mol objects in the table."""
-        return [mol for mol in self.get_objects() if mol is not None]
+        return [m for m in self.get_objects() if m is not None]
 
     @property
     def valid_mask(self) -> np.ndarray:
-        """Boolean array: True where the molecule is not None."""
         return np.array([
-            not any([
-                mol is None,
-                mol.GetNumAtoms() == 0
-            ]) for mol in self.get_objects()
+            not any([mol is None, mol.GetNumAtoms() == 0])
+            for mol in self.get_objects()
         ])
 
-    # ------------------------------------------------------------------
-    # Molecule-specific operations
-    # ------------------------------------------------------------------
-
     def to_smiles(self) -> List[Optional[str]]:
-        """Alias for ``self.smiles``."""
         return self.smiles
 
     def drop_invalid(self) -> "MoleculeTable":
-        """Return a new table with None/invalid molecules removed."""
-        mask = self.valid_mask
-        return self.subset(np.where(mask)[0])
+        return self.subset(np.where(self.valid_mask)[0])
 
-    def add_rdkit_descriptors(
-        self,
-        descriptors: Optional[List[str]] = None,
-        *,
-        prefix: str = "",
-    ) -> None:
-        """Compute RDKit molecular descriptors and add them as metadata columns."""
+    def add_rdkit_descriptors(self, descriptors: Optional[List[str]] = None, *, prefix: str = "") -> None:
         _require_rdkit()
         if descriptors is None:
-            descriptors = ["MolWt", "MolLogP", "NumHAcceptors",
-                           "NumHDonors", "TPSA", "NumRotatableBonds"]
-
+            descriptors = ["MolWt", "MolLogP", "NumHAcceptors", "NumHDonors", "TPSA", "NumRotatableBonds"]
         desc_fns = {name: getattr(Descriptors, name) for name in descriptors}
-        
-        # Build a dictionary of ONLY the new columns
-        new_cols = {}
-        for name, fn in desc_fns.items():
-            col = prefix + name
-            new_cols[col] = [
-                fn(mol) if mol is not None else float("nan")
-                for mol in self.get_objects()
-            ]
-            
-        # Use the correct Schema Evolution method!
+        new_cols = {
+            prefix + name: [fn(mol) if mol is not None else float("nan") for mol in self.get_objects()]
+            for name, fn in desc_fns.items()
+        }
         self.add_metadata_columns(new_cols)
 
     # ------------------------------------------------------------------
-    # 3D Conformer handling
+    # 3-D Conformer handling
     # ------------------------------------------------------------------
 
-    def unroll_conformers(
-        self,
-        id_col: str = "parent_index",
-    ) -> "ConformerTable":
-        """
-        Explode a multi-conformer MoleculeTable into a ConformerTable where
-        every row holds exactly one conformer.
-        """
+    def unroll_conformers(self, id_col: str = "parent_index") -> "ConformerTable":
         _require_rdkit()
         from .conformer import ConformerTable
 
-        new_objects: List[Chem.Mol] = []
-        meta_rows: List[dict] = []
+        new_objects, meta_rows = [], []
         meta = self.get_metadata()
 
         for parent_idx, mol in enumerate(self.get_objects()):
             if mol is None or mol.GetNumConformers() == 0:
                 continue
-
             parent_row = meta.iloc[parent_idx].to_dict()
-
             for conf in mol.GetConformers():
-                conf_id = conf.GetId()
-
                 single = Chem.RWMol(Chem.Mol(mol))
                 single.RemoveAllConformers()
-                new_conf = Chem.Conformer(conf)
-                single.AddConformer(new_conf, assignId=True)
-
+                single.AddConformer(Chem.Conformer(conf), assignId=True)
                 new_objects.append(single.GetMol())
-
                 row = dict(parent_row)
                 row[id_col] = parent_idx
-                row["conf_id"] = conf_id
+                row["conf_id"] = conf.GetId()
                 meta_rows.append(row)
-
-        new_meta = pd.DataFrame(meta_rows).reset_index(drop=True)
 
         history = list(self._history) + [
             HistoryEntry.now(
                 block_name="MoleculeTable.unroll_conformers",
                 config={"id_col": id_col},
-                rows_in=self.n,
-                rows_out=len(new_objects),
+                rows_in=self.n, rows_out=len(new_objects),
             )
         ]
-
         return ConformerTable(
             objects=new_objects,
-            metadata=new_meta,
+            metadata=pd.DataFrame(meta_rows).reset_index(drop=True),
             features={},
             history=history,
         )
@@ -357,16 +352,10 @@ class MoleculeTable(BaseTable["Chem.Mol"]):
         features_agg: Optional[Dict] = None,
         drop_empty: bool = True,
     ) -> "MoleculeTable":
-        """Merge a processed ConformerTable back into this MoleculeTable."""
         _require_rdkit()
-
         conf_meta = conf_table.get_metadata()
-
         if id_col not in conf_meta.columns:
-            raise ValueError(
-                f"Column '{id_col}' not found in ConformerTable metadata. "
-                f"Available: {list(conf_meta.columns)}"
-            )
+            raise ValueError(f"Column '{id_col}' not found in ConformerTable metadata.")
 
         meta_agg = metadata_agg or {}
         feat_agg = features_agg or {}
@@ -377,11 +366,7 @@ class MoleculeTable(BaseTable["Chem.Mol"]):
 
         new_objects = copy.deepcopy(self.get_objects())
         new_meta = self.get_metadata().copy(deep=True)
-        new_features = {
-            k: self.get_feature(k).copy()
-            for k in self.feature_names
-        }
-
+        new_features = {k: self.get_feature(k).copy() for k in self.feature_names}
         keep_mask = np.ones(self.n, dtype=bool)
 
         for parent_idx in range(self.n):
@@ -389,23 +374,19 @@ class MoleculeTable(BaseTable["Chem.Mol"]):
             if mol is None:
                 keep_mask[parent_idx] = False
                 continue
-
             row_indices = parent_to_rows.get(parent_idx)
-
             if not row_indices:
                 if drop_empty:
                     keep_mask[parent_idx] = False
                 else:
                     mol.RemoveAllConformers()
                 continue
-
             mol.RemoveAllConformers()
             for ri in row_indices:
                 conf_mol = conf_table.get_objects(ri)
                 if conf_mol is None or conf_mol.GetNumConformers() == 0:
                     continue
-                conf = conf_mol.GetConformer(0)
-                mol.AddConformer(Chem.Conformer(conf), assignId=True)
+                mol.AddConformer(Chem.Conformer(conf_mol.GetConformer(0)), assignId=True)
 
             group_df = conf_meta.iloc[row_indices]
             for col, agg_fn in meta_agg.items():
@@ -425,8 +406,7 @@ class MoleculeTable(BaseTable["Chem.Mol"]):
             for feat_name, agg_fn in feat_agg.items():
                 if feat_name not in conf_table.feature_names:
                     continue
-                feat_arr = conf_table.get_feature(feat_name)
-                group_feats = feat_arr[row_indices]
+                group_feats = conf_table.get_feature(feat_name)[row_indices]
                 if agg_fn == "mean":    agg_val = group_feats.mean(axis=0)
                 elif agg_fn == "min":   agg_val = group_feats.min(axis=0)
                 elif agg_fn == "max":   agg_val = group_feats.max(axis=0)
@@ -434,35 +414,22 @@ class MoleculeTable(BaseTable["Chem.Mol"]):
                 elif agg_fn == "first": agg_val = group_feats[0]
                 elif agg_fn == "last":  agg_val = group_feats[-1]
                 else:                   agg_val = group_feats.mean(axis=0)
-
                 if feat_name not in new_features:
-                    new_features[feat_name] = np.zeros(
-                        (self.n,) + agg_val.shape, dtype=agg_val.dtype
-                    )
+                    new_features[feat_name] = np.zeros((self.n,) + agg_val.shape, dtype=agg_val.dtype)
                 new_features[feat_name][parent_idx] = agg_val
 
         keep_indices = np.where(keep_mask)[0]
-        filtered_objects = [new_objects[i] for i in keep_indices]
-        filtered_meta = new_meta.iloc[keep_indices].reset_index(drop=True)
-        filtered_features = {k: v[keep_indices] for k, v in new_features.items()}
-
         history = list(self._history) + [
             HistoryEntry.now(
                 block_name="MoleculeTable.update_from_conformers",
-                config={
-                    "id_col": id_col,
-                    "drop_empty": drop_empty,
-                    "metadata_agg": str(meta_agg),
-                    "features_agg": str(feat_agg),
-                },
-                rows_in=self.n,
-                rows_out=len(filtered_objects),
+                config={"id_col": id_col, "drop_empty": drop_empty,
+                        "metadata_agg": str(meta_agg), "features_agg": str(feat_agg)},
+                rows_in=self.n, rows_out=int(keep_indices.sum()),
             )
         ]
-
         return MoleculeTable(
-            objects=filtered_objects,
-            metadata=filtered_meta,
-            features=filtered_features,
+            objects=[new_objects[i] for i in keep_indices],
+            metadata=new_meta.iloc[keep_indices].reset_index(drop=True),
+            features={k: v[keep_indices] for k, v in new_features.items()},
             history=history,
         )

@@ -2,43 +2,6 @@
 druglab.db
 ~~~~~~~~~~
 Database-like table structures for groups of molecules and reactions.
-
-Classes
--------
-BaseTable
-    Abstract base. Owns the four-property contract:
-    - objects   : List[T]                  — the molecules / reactions
-    - metadata  : pd.DataFrame             — scalar properties, row-aligned
-    - features  : Dict[str, np.ndarray]    — large vector arrays, row-aligned
-    - history   : List[HistoryEntry]       — append-only pipeline audit log
-
-MoleculeTable
-    Concrete subclass for RDKit Mol objects.
-
-ReactionTable
-    Concrete subclass for RDKit ChemicalReaction objects.
-
-ConformerTable
-    Subclass of MoleculeTable where every row holds exactly one conformer.
-    Created via ``MoleculeTable.unroll_conformers()`` and collapsed back
-    via ``ConformerTable.collapse()`` or ``MoleculeTable.update_from_conformers()``.
-
-Multi-axis Indexing Constants
-------------------------------
-Use these with ``table[AXIS, ...]`` for backend query pushdown:
-
-    META = M = 'metadata'
-    OBJ  = O = 'object'
-    FEAT = F = 'feature'
-
-    table[FEAT, 'fps', 0:100]        # load only rows 0-99
-    table[META, ['MolWt'], 5]        # single metadata row
-    table[OBJ, 3]                    # single object
-
-Storage Backends
-----------------
-    BaseStorageBackend   — abstract interface
-    EagerMemoryBackend   — fully in-memory (default)
 """
 
 from .table import (
@@ -56,14 +19,22 @@ from .table import (
 )
 from .backend import (
     BaseStorageBackend,
+    CompositeStorageBackend,
     EagerMemoryBackend,
-    MemoryMetadataMixin,
-    MemoryObjectMixin,
-    MemoryFeatureMixin,
+    MemoryMetadataStore,
+    MemoryObjectStore,
+    MemoryFeatureStore,
+)
+from .indexing import (
+    INDEX_LIKE,
+    RowSelection,
+    normalize_row_index,
+    coerce_bool_mask,
+    validate_take_index,
 )
 
 __all__ = [
-    # Core
+    # Core tables
     "BaseTable",
     "HistoryEntry",
     "MoleculeTable",
@@ -78,8 +49,15 @@ __all__ = [
     "F",
     # Backends
     "BaseStorageBackend",
+    "CompositeStorageBackend",
     "EagerMemoryBackend",
-    "MemoryMetadataMixin",
-    "MemoryObjectMixin",
-    "MemoryFeatureMixin",
+    "MemoryMetadataStore",
+    "MemoryObjectStore",
+    "MemoryFeatureStore",
+    # Indexing utilities
+    "INDEX_LIKE",
+    "RowSelection",
+    "normalize_row_index",
+    "coerce_bool_mask",
+    "validate_take_index",
 ]

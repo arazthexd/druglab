@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import csv
 import logging
+import inspect
 import os
 from abc import ABC, abstractmethod
 from typing import (
@@ -38,6 +39,7 @@ from typing import (
     Sequence,
     Tuple,
     Union,
+    Any
 )
 
 from druglab.io._record import MoleculeRecord, ReactionRecord
@@ -134,6 +136,7 @@ class SDFFormatReader(BaseFormatReader):
     def iter_records(self, path: str) -> Iterator[MoleculeRecord]:
         try:
             from rdkit.Chem import ForwardSDMolSupplier  # type: ignore
+            from rdkit import Chem
         except ImportError as e:
             raise DrugLabIOError(
                 "RDKit is required for SDF reading. Install it with: "
@@ -152,10 +155,9 @@ class SDFFormatReader(BaseFormatReader):
                     if rec is not None:
                         yield rec
                     continue
-
-                props: Dict[str, object] = {
-                    k: mol.GetPropsAsDict()[k] for k in mol.GetPropsAsDict()
-                }
+                
+                mol: Chem.Mol
+                props: Dict[str, object] = mol.GetPropsAsDict()
                 yield MoleculeRecord(
                     mol=mol,
                     name=mol.GetProp("_Name") if mol.HasProp("_Name") else "",
@@ -196,16 +198,37 @@ class SMILESFormatReader(BaseFormatReader):
     def __init__(
         self,
         delimiter: Optional[str] = None,
-        smiles_col: int = 0,
-        name_col: Optional[int] = 1,
+        smiles_col: Union[int, str] = 0,
+        name_col: Optional[Union[int, str]] = 1,
         sanitize: bool = True,
         on_error: OnErrorPolicy = "raise",
     ) -> None:
         super().__init__(on_error=on_error)
         self.delimiter = delimiter
-        self.smiles_col = smiles_col
-        self.name_col = name_col
+        self.smiles_col = self._normalize_column_selector(smiles_col, role="smiles")
+        self.name_col = self._normalize_column_selector(name_col, role="name")
         self.sanitize = sanitize
+
+    @staticmethod
+    def _normalize_column_selector(
+        selector: Optional[Union[int, str]],
+        role: str,
+    ) -> Optional[int]:
+        if selector is None:
+            return None
+        if isinstance(selector, int):
+            return selector
+        normalized = selector.strip().lower()
+        if normalized.isdigit():
+            return int(normalized)
+        if role == "smiles" and normalized in {"smiles", "smi"}:
+            return 0
+        if role == "name" and normalized in {"name", "id", "title"}:
+            return 1
+        raise ValueError(
+            f"Unsupported {role}_col selector for SMILESFormatReader: {selector!r}. "
+            "Use an integer index (or supported aliases)."
+        )
 
     def iter_records(self, path: str) -> Iterator[MoleculeRecord]:
         try:
@@ -280,8 +303,8 @@ class CSVFormatReader(BaseFormatReader):
 
     def __init__(
         self,
-        smiles_col: str = "SMILES",
-        name_col: Optional[str] = None,
+        smiles_col: Union[int, str] = "SMILES",
+        name_col: Optional[Union[int, str]] = None,
         delimiter: str = ",",
         sanitize: bool = True,
         on_error: OnErrorPolicy = "raise",
@@ -291,6 +314,29 @@ class CSVFormatReader(BaseFormatReader):
         self.name_col = name_col
         self.delimiter = delimiter
         self.sanitize = sanitize
+
+    @staticmethod
+    def _resolve_column_name(
+        fieldnames: List[str],
+        selector: Optional[Union[int, str]],
+        role: str,
+        path: str,
+    ) -> Optional[str]:
+        if selector is None:
+            return None
+        if isinstance(selector, int):
+            if selector < 0 or selector >= len(fieldnames):
+                raise DrugLabIOError(
+                    f"{role} column index {selector} is out of range for {path}. "
+                    f"Available columns: {fieldnames}"
+                )
+            return fieldnames[selector]
+        if selector not in fieldnames:
+            raise DrugLabIOError(
+                f"{role} column '{selector}' not found in {path}. "
+                f"Available columns: {fieldnames}"
+            )
+        return selector
 
     def iter_records(self, path: str) -> Iterator[MoleculeRecord]:
         try:
@@ -308,14 +354,17 @@ class CSVFormatReader(BaseFormatReader):
             if reader.fieldnames is None:
                 return
 
-            if self.smiles_col not in reader.fieldnames:
-                raise DrugLabIOError(
-                    f"SMILES column '{self.smiles_col}' not found in {path}. "
-                    f"Available columns: {list(reader.fieldnames)}"
-                )
+            fieldnames = list(reader.fieldnames)
+            smiles_col_name = self._resolve_column_name(
+                fieldnames, self.smiles_col, role="SMILES", path=path
+            )
+            assert smiles_col_name is not None
+            name_col_name = self._resolve_column_name(
+                fieldnames, self.name_col, role="name", path=path
+            )
 
             for idx, row in enumerate(reader):
-                smiles = row.get(self.smiles_col, "").strip()
+                smiles = row.get(smiles_col_name, "").strip()
                 if not smiles:
                     self._handle_error(
                         path, idx, ValueError("Empty SMILES field")
@@ -323,11 +372,11 @@ class CSVFormatReader(BaseFormatReader):
                     continue
 
                 name = (
-                    row.get(self.name_col, "")
-                    if self.name_col
+                    row.get(name_col_name, "")
+                    if name_col_name
                     else ""
                 )
-                props = {k: v for k, v in row.items() if k != self.smiles_col}
+                props = {k: v for k, v in row.items() if k != smiles_col_name}
 
                 try:
                     mol = MolFromSmiles(smiles, sanitize=self.sanitize)
@@ -475,15 +524,18 @@ class BaseReader(ABC):
         as each file has a recognised extension.
     on_error:
         Error policy forwarded to every format reader.
+    format_kwargs:
+        Optional per-format overrides, e.g.
+        ``{"csv": {"smiles_col": "SMILES"}, "smi": {"smiles_col": 0}}``.
     reader_kwargs:
-        Extra keyword arguments forwarded to each :class:`BaseFormatReader`
-        constructor (e.g. ``sanitize=False``).
+        Shared keyword arguments forwarded to compatible format readers.
     """
 
     def __init__(
         self,
         paths: Union[str, Sequence[str]],
         on_error: OnErrorPolicy = "raise",
+        format_kwargs: Optional[Dict[str, Dict[str, Any]]] = None,
         **reader_kwargs,
     ) -> None:
         if isinstance(paths, str):
@@ -491,6 +543,7 @@ class BaseReader(ABC):
         self.paths: List[str] = list(paths)
         self.on_error = on_error
         self.reader_kwargs = reader_kwargs
+        self.format_kwargs = {k.lower(): dict(v) for k, v in (format_kwargs or {}).items()}
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -501,7 +554,11 @@ class BaseReader(ABC):
 
         fmt = detect_format(path)
         cls = get_reader_cls(fmt)
-        return cls(on_error=self.on_error, **self.reader_kwargs)
+        kwargs = dict(self.reader_kwargs)
+        kwargs.update(self.format_kwargs.get(fmt, {}))
+        allowed = set(inspect.signature(cls.__init__).parameters) - {"self", "on_error"}
+        filtered = {k: v for k, v in kwargs.items() if k in allowed}
+        return cls(on_error=self.on_error, **filtered)
 
     def _iter_all_records(self) -> Generator[AnyRecord, None, None]:
         """Yield every record from every registered path, in order."""
@@ -529,8 +586,10 @@ class BatchReader(BaseReader):
         Number of records per batch (default 1 000).
     on_error:
         Error policy (``"raise"``, ``"skip"``, or ``"warn"``).
+    format_kwargs:
+        Optional per-format reader kwargs for mixed-format workflows.
     **reader_kwargs:
-        Extra arguments forwarded to the underlying format reader.
+        Shared reader kwargs applied when accepted by a format reader.
 
     Examples
     --------
@@ -553,9 +612,15 @@ class BatchReader(BaseReader):
         paths: Union[str, Sequence[str]],
         batch_size: int = 1_000,
         on_error: OnErrorPolicy = "raise",
+        format_kwargs: Optional[Dict[str, Dict[str, Any]]] = None,
         **reader_kwargs,
     ) -> None:
-        super().__init__(paths, on_error=on_error, **reader_kwargs)
+        super().__init__(
+            paths,
+            on_error=on_error,
+            format_kwargs=format_kwargs,
+            **reader_kwargs,
+        )
         if batch_size < 1:
             raise ValueError("batch_size must be >= 1")
         self.batch_size = batch_size
@@ -611,8 +676,10 @@ class EagerReader(BaseReader):
         One or more file paths to read.
     on_error:
         Error policy.
+    format_kwargs:
+        Optional per-format reader kwargs for mixed-format workflows.
     **reader_kwargs:
-        Extra arguments forwarded to the underlying format reader.
+        Shared reader kwargs applied when accepted by a format reader.
 
     Examples
     --------
@@ -626,9 +693,15 @@ class EagerReader(BaseReader):
         self,
         paths: Union[str, Sequence[str]],
         on_error: OnErrorPolicy = "raise",
+        format_kwargs: Optional[Dict[str, Dict[str, Any]]] = None,
         **reader_kwargs,
     ) -> None:
-        super().__init__(paths, on_error=on_error, **reader_kwargs)
+        super().__init__(
+            paths,
+            on_error=on_error,
+            format_kwargs=format_kwargs,
+            **reader_kwargs,
+        )
         self._records: Optional[List[AnyRecord]] = None
 
     # ------------------------------------------------------------------

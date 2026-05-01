@@ -236,8 +236,11 @@ class ConformerGenerator(BasePreparation):
         
         # Extract conformers before clearing
         n_atoms = mol.GetNumAtoms()
-        confs_to_keep = [Chem.Conformer(n_atoms) for cid in cids_to_keep]
-        [confs_to_keep[i].SetPositions(mol.GetConformer(cid).GetPositions()) for i, cid in enumerate(cids_to_keep)]
+        confs_to_keep = []
+        for cid in cids_to_keep:
+            conf = Chem.Conformer(n_atoms)
+            conf.SetPositions(mol.GetConformer(cid).GetPositions())
+            confs_to_keep.append(conf)
         
         # Clear existing conformers and add the kept ones back sequentially
         # assignId=True ensures they are indexed 0, 1, 2... based on energy

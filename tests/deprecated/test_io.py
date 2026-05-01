@@ -280,6 +280,12 @@ class TestSMILESFormatReader:
         assert isinstance(records, list)
         assert len(records) == 3
 
+    def test_alias_column_selectors(self, smiles_file):
+        path = smiles_file("C methane\n")
+        records = list(SMILESFormatReader(smiles_col="smiles", name_col="name").iter_records(str(path)))
+        assert len(records) == 1
+        assert records[0].name == "methane"
+
 
 # ---------------------------------------------------------------------------
 # CSV format reader
@@ -322,6 +328,11 @@ class TestCSVFormatReader:
         records = list(CSVFormatReader(smiles_col="SMILES", name_col=None).iter_records(str(path)))
         assert records[0].name == ""
 
+    def test_int_column_selectors(self, csv_file):
+        path = csv_file("SMILES,Name,MW\nC,methane,16\n")
+        records = list(CSVFormatReader(smiles_col=0, name_col=1).iter_records(str(path)))
+        assert len(records) == 1
+        assert records[0].name == "methane"
 
 # ---------------------------------------------------------------------------
 # BatchReader
@@ -382,6 +393,22 @@ class TestBatchReader:
         r = BatchReader(str(path), batch_size=3)
         assert r.n_batches_estimate(10) == 4  # ceil(10/3)
 
+    def test_mixed_format_with_per_format_kwargs(self, smiles_file, csv_file):
+        smi_path = smiles_file("C methane\n")
+        csv_path = csv_file("canonical,Name\nCC,ethane\n")
+
+        reader = BatchReader(
+            [str(smi_path), str(csv_path)],
+            batch_size=10,
+            format_kwargs={
+                "smi": {"smiles_col": 0, "name_col": 1},
+                "csv": {"smiles_col": "canonical", "name_col": "Name"},
+            },
+        )
+        records = reader.collect()
+        assert len(records) == 2
+        assert records[0].name == "methane"
+        assert records[1].name == "ethane"
 
 # ---------------------------------------------------------------------------
 # EagerReader
@@ -428,6 +455,19 @@ class TestEagerReader:
         reader.read()
         assert "3" in repr(reader)
 
+    def test_shared_kwargs_do_not_break_mixed_formats(self, smiles_file, csv_file):
+        smi_path = smiles_file("C methane\n")
+        csv_path = csv_file("canonical,Name\nCC,ethane\n")
+
+        reader = EagerReader(
+            [str(smi_path), str(csv_path)],
+            smiles_col=0,
+            name_col=1,
+            format_kwargs={"csv": {"smiles_col": "canonical", "name_col": "Name"}},
+        )
+        records = reader.read()
+        assert len(records) == 2
+        assert [r.name for r in records] == ["methane", "ethane"]
 
 # ---------------------------------------------------------------------------
 # read_file convenience

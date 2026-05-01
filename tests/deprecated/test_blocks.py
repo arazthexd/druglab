@@ -98,6 +98,11 @@ class TestPreparations:
             assert mol.GetNumConformers() == 3
 
 class TestFilters:
+    def test_mw_filter_config_contains_threshold(self):
+        block = MWFilter(max_mw=320.0)
+        cfg = block.get_config()
+        assert cfg["max_mw"] == 320.0
+        
     def test_property_filter(self, sample_table):
         block = PropertyFilter(max_mw=150.0)
         out = block.run(sample_table)
@@ -194,6 +199,36 @@ class TestFilters:
         block = UniqueFilter(key="smiles")
         out = block.run(mols)
         assert out.n == 1
+
+    def test_unique_filter_auto_reset_second_run_keeps_all(self, clean_table):
+        """
+        REGRESSION: with auto_reset=True (the default), running the same block
+        twice on identical data should produce the full deduplicated table each
+        time — NOT an empty table on the second call.
+        """
+        block = UniqueFilter(key="smiles", auto_reset=True)
+        out1 = block.run(clean_table)
+        out2 = block.run(clean_table)
+ 
+        # REGRESSION: old code would make out2 empty because all keys were
+        # already in _seen from out1.
+        assert out1.n == clean_table.n, f"First run: expected {clean_table.n}, got {out1.n}"
+        assert out2.n == clean_table.n, (
+            f"Second run returned {out2.n} items "
+            f"instead of {clean_table.n}.  State from the first run bled into the second."
+        )
+ 
+    def test_unique_filter_no_reset_second_run_keeps_none(self, clean_table):
+        """
+        With auto_reset=False, state IS accumulated across calls — which is
+        the correct behaviour for a batch-mode pipeline processing chunks.
+        """
+        block = UniqueFilter(key="smiles", auto_reset=False)
+        out1 = block.run(clean_table)
+        out2 = block.run(clean_table)
+
+        assert out1.n == clean_table.n, f"First run: expected {clean_table.n}, got {out1.n}"
+        assert out2.n == 0, f"Second run should have no items, got {out2.n}"
 
 class TestFeaturizers:
     def test_maccs_featurizer(self, sample_table):
