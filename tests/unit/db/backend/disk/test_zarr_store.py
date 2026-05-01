@@ -25,15 +25,14 @@ from druglab.db.backend.disk import ZarrFeatureStore
 @pytest.fixture
 def tmp_zarr(tmp_path):
     """Open a fresh Zarr group in a temp directory."""
-    group = zarr.open_group(str(tmp_path / "features.zarr"), mode="w")
-    return group, tmp_path
+    return tmp_path / "features.zarr", tmp_path
 
 
 @pytest.fixture
 def store_with_data(tmp_zarr):
     """A ZarrFeatureStore pre-populated with two features."""
-    group, tmp_path = tmp_zarr
-    store = ZarrFeatureStore(group)
+    zarr_path, tmp_path = tmp_zarr
+    store = ZarrFeatureStore(zarr_path)
     store.update_feature("fp", np.arange(20, dtype=np.float32).reshape(5, 4))
     store.update_feature("desc", np.ones((5, 8), dtype=np.float64))
     return store, tmp_path
@@ -45,8 +44,8 @@ def store_with_data(tmp_zarr):
 
 class TestZarrFeatureStoreIO:
     def test_update_and_get_full(self, tmp_zarr):
-        group, _ = tmp_zarr
-        store = ZarrFeatureStore(group)
+        zarr_path, _ = tmp_zarr
+        store = ZarrFeatureStore(zarr_path)
         arr = np.arange(12, dtype=np.float32).reshape(4, 3)
         store.update_feature("fp", arr)
         np.testing.assert_array_equal(store.get_feature("fp"), arr)
@@ -88,8 +87,8 @@ class TestZarrFeatureStoreIO:
         assert store.n_rows() == 5
 
     def test_n_rows_empty(self, tmp_zarr):
-        group, _ = tmp_zarr
-        store = ZarrFeatureStore(group)
+        zarr_path, _ = tmp_zarr
+        store = ZarrFeatureStore(zarr_path)
         assert store.n_rows() == 0
 
     def test_update_full_array_replaces(self, store_with_data):
@@ -118,8 +117,8 @@ class TestZarrFeatureStoreAppend:
         np.testing.assert_array_equal(store.get_feature("fp")[5:], new_fp)
 
     def test_append_auto_creates_array(self, tmp_zarr):
-        group, _ = tmp_zarr
-        store = ZarrFeatureStore(group)
+        zarr_path, _ = tmp_zarr
+        store = ZarrFeatureStore(zarr_path)
         data = np.arange(6, dtype=np.float32).reshape(3, 2)
         store.append({"new_feat": data})
         assert store.n_rows() == 3
@@ -128,12 +127,18 @@ class TestZarrFeatureStoreAppend:
     def test_append_uses_chunk_rows(self, tmp_zarr):
         """Auto-created arrays use _CHUNK_ROWS along axis 0."""
         from druglab.db.backend.disk.zarr import _CHUNK_ROWS
-        group, _ = tmp_zarr
-        store = ZarrFeatureStore(group)
+        zarr_path, _ = tmp_zarr
+        store = ZarrFeatureStore(zarr_path)
         store.append({"feat": np.zeros((5, 128), dtype=np.float32)})
-        arr = group["feat"]
+        arr = zarr.open_group(str(zarr_path), mode="r")["feat"]
         assert arr.chunks[0] == _CHUNK_ROWS
         assert arr.chunks[1] == 128
+
+    def test_append_rejects_object_dtype(self, tmp_zarr):
+        zarr_path, _ = tmp_zarr
+        store = ZarrFeatureStore(zarr_path)
+        with pytest.raises(TypeError, match="numeric and boolean"):
+            store.append({"bad": np.array(["a", "b"])})
 
 
 # ===========================================================================
@@ -141,6 +146,24 @@ class TestZarrFeatureStoreAppend:
 # ===========================================================================
 
 class TestZarrFeatureStorePersistence:
+    def test_temp_path_defaults_and_exists(self):
+        store = ZarrFeatureStore()
+        assert store._is_temp is True
+        assert store.path.exists()
+        assert store.path.parent == Path(tempfile.gettempdir())
+
+    def test_save_moves_temp_store_into_bundle(self, tmp_path):
+        store = ZarrFeatureStore()
+        store.update_feature("fp", np.arange(12, dtype=np.float32).reshape(3, 4))
+        old_path = store.path
+        bundle = tmp_path / "bundle"
+        bundle.mkdir()
+        store.save(bundle)
+        assert not old_path.exists()
+        assert store.path == bundle / "features.zarr"
+        assert store.path.exists()
+        np.testing.assert_array_equal(store.get_feature("fp"), np.arange(12, dtype=np.float32).reshape(3, 4))
+
     def test_save_load_roundtrip(self, store_with_data):
         store, tmp_path = store_with_data
         bundle = tmp_path / "bundle"

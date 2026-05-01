@@ -30,6 +30,7 @@ class MemoryFeatureStore(BaseFeatureStore):
     def get_feature(self, name: str, idx: Optional["INDEX_LIKE"] = None) -> np.ndarray:
         arr = self._features[name]
         sel = RowSelection.from_raw(idx, arr.shape[0])
+        self._validate_indices(sel.positions)
         return sel.apply_to(arr)
 
     def update_feature(self, name: str, array: np.ndarray, idx: Optional["INDEX_LIKE"] = None, na: Any = None) -> None:
@@ -43,6 +44,7 @@ class MemoryFeatureStore(BaseFeatureStore):
                 return
 
             sel = RowSelection.from_raw(idx, self.n_rows() or len(array))
+            self._validate_indices(sel.positions)
             n_rows = self.n_rows() or (int(sel.positions.max()) + 1 if len(sel.positions) > 0 else 0)
             shape = (n_rows, *np.asarray(array).shape[1:])
             if na is None and np.issubdtype(np.asarray(array).dtype, np.floating):
@@ -64,6 +66,7 @@ class MemoryFeatureStore(BaseFeatureStore):
             return
 
         sel = RowSelection.from_raw(idx, self._features[name].shape[0])
+        self._validate_indices(sel.positions)
         self._features[name][sel.positions] = array
 
     def drop_feature(self, name: str) -> None:

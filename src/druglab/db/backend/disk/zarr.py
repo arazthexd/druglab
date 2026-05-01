@@ -39,6 +39,9 @@ prevents NumPy / Zarr from silently returning the last row of an array.
 from __future__ import annotations
 
 from pathlib import Path
+import shutil
+import tempfile
+import warnings
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
 import numpy as np
@@ -68,39 +71,33 @@ def _require_zarr() -> None:
             "Install it with: pip install zarr"
         )
 
-
-def _validate_no_virtual(idx: np.ndarray) -> None:
-    """Raise IndexError if any index is -1 (un-resolved overlay append)."""
-    if idx is not None and np.any(idx < 0):
-        raise IndexError(
-            "Base stores cannot process virtual indices (-1). "
-            "Ensure the OverlayBackend resolved all appended rows via "
-            "commit() before calling the base store."
-        )
-
-
 class ZarrFeatureStore(BaseFeatureStore):
+    def _validate_dtype(self, arr: np.ndarray) -> None:
+        if not np.issubdtype(arr.dtype, np.number) and arr.dtype != bool:
+            raise TypeError("ZarrFeatureStore only supports numeric and boolean feature matrices.")
+
+
     """
     Out-of-core feature store backed by a ``zarr.Group``.
 
     Parameters
     ----------
-    group : zarr.Group
-        An open, writable Zarr group.  All feature arrays are created as
-        direct children of this group.  Pass ``zarr.open_group(path, mode='w')``
-        for a brand-new store or ``zarr.open_group(path, mode='r+')`` to
-        attach to an existing one.
+    path
+        Path to the Zarr file. If None, a temporary file is created.
     """
 
-    def __init__(self, group: "zarr.Group") -> None:
+    def __init__(self, path: Optional[Path] = None) -> None:
         _require_zarr()
-        self._group = group
+        self._is_temp = path is None
+        self.path = Path(path) if path is not None else Path(tempfile.mkdtemp(prefix="druglab_zarr_"))
+        sync_path = self.path.with_suffix(".sync")
+        self._group = zarr.open_group(str(self.path), mode="a")
         self._journal: Optional["zarr.Group"] = None
         # Recover from a crash if a journal already exists on disk.
         if _JOURNAL_KEY in self._group:
-            # Do NOT auto-rollback here — let the caller decide.
-            # But keep the reference so rollback_transaction() can act.
+            warnings.warn("Incomplete transaction journal detected. Auto-rolling back to prevent corruption.")
             self._journal = self._group[_JOURNAL_KEY]
+            self.rollback_transaction()
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -124,7 +121,7 @@ class ZarrFeatureStore(BaseFeatureStore):
         if idx is None:
             return arr[:]
         idx_np = np.asarray(idx, dtype=np.intp)
-        _validate_no_virtual(idx_np)
+        self._validate_indices(idx_np)
         return arr.oindex[idx_np]
 
     def update_feature(
@@ -135,13 +132,14 @@ class ZarrFeatureStore(BaseFeatureStore):
         na: Any = None,
     ) -> None:
         array = np.asarray(array)
+        self._validate_dtype(array)
         if name not in self._group:
             # Auto-create on first write.
             if idx is None:
                 shape = array.shape
             else:
                 idx_np = np.asarray(idx, dtype=np.intp)
-                _validate_no_virtual(idx_np)
+                self._validate_indices(idx_np)
                 n_rows = self.n_rows() or (int(idx_np.max()) + 1 if idx_np.size else 0)
                 shape = (n_rows,) + array.shape[1:]
 
@@ -168,7 +166,7 @@ class ZarrFeatureStore(BaseFeatureStore):
             zarr_arr[:] = array
         else:
             idx_np = np.asarray(idx, dtype=np.intp)
-            _validate_no_virtual(idx_np)
+            self._validate_indices(idx_np)
             zarr_arr.oindex[idx_np] = array
 
     def drop_feature(self, name: str) -> None:
@@ -198,6 +196,7 @@ class ZarrFeatureStore(BaseFeatureStore):
         """
         for name, new_arr in data.items():
             new_arr = np.asarray(new_arr)
+            self._validate_dtype(new_arr)
             if name not in self._group:
                 chunks = (_CHUNK_ROWS,) + new_arr.shape[1:]
                 new_zarr = self._group.create_array(
@@ -237,29 +236,33 @@ class ZarrFeatureStore(BaseFeatureStore):
         If the group lives elsewhere, copy all arrays into a new group at
         ``path / "features.zarr"``.
         """
-        import zarr
-        expected = Path(path) / "features.zarr"
-        store_path = Path(str(self._group.store.path)) if hasattr(self._group.store, "path") else None
-        if store_path is not None and Path(store_path) == expected:
-            return  # Already in the right place, nothing to do.
-        # Copy to bundle location.
-        target = zarr.open_group(str(expected), mode="w")
-        for name in self._feature_names_raw():
-            arr = self._group[name]
-            data = arr[:]
-            chunks = arr.chunks
-            new_arr = target.create_array(name, shape=data.shape, chunks=chunks, dtype=data.dtype)
-            new_arr[:] = data
+        target_path = Path(path) / "features.zarr"
+        if self.path.absolute() == target_path.absolute():
+            return
+        if target_path.exists():
+            shutil.rmtree(target_path)
+        shutil.move(str(self.path), str(target_path))
+
+        sync_source = self.path.with_suffix(".sync")
+        sync_target = target_path.with_suffix(".sync")
+        if sync_target.exists():
+            if sync_target.is_dir():
+                shutil.rmtree(sync_target)
+            else:
+                sync_target.unlink()
+        if sync_source.exists():
+            shutil.move(str(sync_source), str(sync_target))
+
+        self.path = target_path
+        self._is_temp = False
+        self._group = zarr.open_group(str(self.path), mode="a")
 
     @classmethod
     def load(cls, path: Path, **kwargs) -> "ZarrFeatureStore":
         _require_zarr()
         import zarr
         zarr_path = Path(path) / "features.zarr"
-        if not zarr_path.exists():
-            # Return an empty store backed by a new in-memory group.
-            return cls(zarr.open_group(str(zarr_path), mode="w"))
-        return cls(zarr.open_group(str(zarr_path), mode="r+"))
+        return cls(zarr_path)
 
     # ------------------------------------------------------------------
     # Out-of-core rollback journal (transaction protocol)

@@ -46,8 +46,7 @@ class _FakeDelta:
 # ---------------------------------------------------------------------------
 
 def _open_store(path: Path, mode: str = "w") -> ZarrFeatureStore:
-    group = zarr.open_group(str(path / "features.zarr"), mode=mode)
-    return ZarrFeatureStore(group)
+    return ZarrFeatureStore(path / "features.zarr")
 
 
 def _make_store(tmp_path: Path) -> ZarrFeatureStore:
@@ -180,7 +179,7 @@ class TestZarrTransactionRollbackDroppedFeature:
 # ===========================================================================
 
 class TestZarrCrashRecovery:
-    def test_journal_persists_and_rollback_restores(self, tmp_path):
+    def test_journal_autorecovers_on_init(self, tmp_path):
         """
         Simulate a crash between begin_transaction and commit_transaction.
 
@@ -198,10 +197,8 @@ class TestZarrCrashRecovery:
         assert _JOURNAL_KEY in store._group
 
         # Re-open the store (simulates a new process after restart).
-        store2 = _open_store(tmp_path, mode="r+")
-        assert store2._journal is not None  # Detects stale journal on init.
-
-        store2.rollback_transaction()
+        with pytest.warns(UserWarning, match="Incomplete transaction journal"):
+            store2 = _open_store(tmp_path, mode="r+")
 
         # Data must be back to original.
         np.testing.assert_array_equal(store2.get_feature("fp"), original)

@@ -7,6 +7,14 @@ from typing import Any, Dict, List, Optional
 import numpy as np
 
 class BaseFeatureStore(ABC):
+    def _validate_indices(self, idx: np.ndarray) -> None:
+        if idx is None:
+            return
+        if np.any(idx < 0):
+            raise IndexError(
+                "Base stores cannot process virtual indices (-1). Overlays must resolve appends before routing."
+            )
+
     @abstractmethod
     def get_feature(self, name: str, idx=None) -> np.ndarray:
         raise NotImplementedError
