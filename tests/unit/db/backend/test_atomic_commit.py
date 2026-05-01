@@ -664,3 +664,20 @@ class TestEdgeCases:
         assert backend._feature_store._journal is None
         assert backend._metadata_store._journal is None
         assert backend._object_store._journal is None
+
+class TestMixedCommitWithVirtualRows:
+    def test_overlay_commit_routes_mutations_and_appends(self):
+        base = _make_backend(5)
+        from druglab.db.backend.overlay import OverlayBackend
+
+        overlay = OverlayBackend(base, np.arange(5, dtype=np.intp))
+        overlay.update_feature("fp", np.array([[999.0, 999.0, 999.0, 999.0], [777.0, 777.0, 777.0, 777.0]]), idx=[0, 1])
+        overlay.append(
+            objects=["obj_new_0", "obj_new_1", "obj_new_2"],
+            metadata=pd.DataFrame({"label": ["a", "b", "c"], "score": [10.0, 11.0, 12.0]}),
+            features={"fp": np.array([[1.0, 1.0, 1.0, 1.0], [2.0, 2.0, 2.0, 2.0], [3.0, 3.0, 3.0, 3.0]])},
+        )
+        overlay.commit()
+        assert len(base) == 8
+        np.testing.assert_array_equal(base.get_feature("fp", idx=[0, 1]), np.array([[999.0, 999.0, 999.0, 999.0], [777.0, 777.0, 777.0, 777.0]]))
+        np.testing.assert_array_equal(base.get_feature("fp", idx=[5, 6, 7]), np.array([[1.0, 1.0, 1.0, 1.0], [2.0, 2.0, 2.0, 2.0], [3.0, 3.0, 3.0, 3.0]]))

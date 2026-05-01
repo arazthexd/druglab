@@ -85,6 +85,12 @@ class CompositeStorageBackend(BaseStorageBackend):
     def _n_feature_rows(self) -> int:
         return self._feature_store.n_rows()
 
+    def append(self, objects, metadata, features) -> None:
+        self._object_store.append(objects)
+        self._metadata_store.append(metadata)
+        self._feature_store.append(features)
+        self.validate()
+
     # ------------------------------------------------------------------
     # Validation
     # ------------------------------------------------------------------

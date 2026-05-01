@@ -1678,6 +1678,19 @@ class TestDetachAttach:
         assert "UUID mismatch" in msg
         assert "Row count mismatch" in msg
 
+# ===========================================================================
+# 17. Append
+# ===========================================================================
+
+class TestVirtualOverlayAppend:
+    def test_overlay_append_uses_virtual_rows(self, bctx: BackendContext):
+        overlay = OverlayBackend(bctx.backend, np.arange(3, dtype=np.intp))
+        new_objects = [{"id": 100 + i} for i in range(5)]
+        new_meta = pd.DataFrame({"col1": list(range(5)), "col2": list(range(5, 10))})
+        new_feat = {"feat1": np.ones((5, 4), dtype=np.float32), "feat2": np.ones((5, 8), dtype=np.float32)}
+        overlay.append(new_objects, new_meta, new_feat)
+        assert len(overlay) == 8
+        np.testing.assert_array_equal(overlay.get_feature("feat1", idx=slice(3, 8)), np.ones((5, 4), dtype=np.float32))
 
 # ===========================================================================
 # Run

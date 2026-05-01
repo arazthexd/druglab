@@ -61,6 +61,9 @@ class MemoryObjectStore(BaseObjectStore):
     def n_rows(self) -> int:
         return len(self._objects)
 
+    def append(self, data: Any) -> None:
+        self._objects.extend(data)
+
     def gather_materialized_state(self, index_map: Optional[np.ndarray] = None) -> Dict[str, Any]:
         if index_map is not None:
             return {"objects": [copy.deepcopy(self._objects[i]) for i in index_map]}

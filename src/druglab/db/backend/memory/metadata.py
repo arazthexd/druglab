@@ -125,6 +125,9 @@ class MemoryMetadataStore(BaseMetadataStore):
             return len(self._metadata.index)
         return n_rows
 
+    def append(self, data: Any) -> None:
+        self._metadata = pd.concat([self._metadata, data], ignore_index=True)
+
     def gather_materialized_state(self, index_map: Optional[np.ndarray] = None) -> Dict[str, Any]:
         if index_map is not None:
             return {"metadata": self._metadata.iloc[index_map].reset_index(drop=True).copy()}

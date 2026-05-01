@@ -81,6 +81,13 @@ class MemoryFeatureStore(BaseFeatureStore):
         first_name = next(iter(self._features))
         return self._features[first_name].shape[0]
 
+    def append(self, data: Any) -> None:
+        for feat_name, new_array in data.items():
+            if feat_name in self._features:
+                self._features[feat_name] = np.vstack([self._features[feat_name], new_array])
+            else:
+                self._features[feat_name] = new_array
+
     def gather_materialized_state(self, index_map: Optional[np.ndarray] = None) -> Dict[str, Any]:
         if index_map is not None:
             return {"features": {k: v[index_map].copy() for k, v in self._features.items()}}

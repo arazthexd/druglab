@@ -560,6 +560,25 @@ class TestEagerMemoryRoundtrip:
         loaded = EagerMemoryBackend.load(bundle, object_reader=object_pkl_reader)
         assert isinstance(loaded, EagerMemoryBackend)
 
+# ===========================================================================
+# Section 8: Append
+# ===========================================================================
+
+class TestAppendBehavior:
+    def test_composite_append_grows_all_stores(self):
+        backend = EagerMemoryBackend(
+            objects=[{"id": 0}],
+            metadata=pd.DataFrame({"m": [1]}),
+            features={"fp": np.array([[1.0, 2.0]])},
+        )
+        backend.append(
+            objects=[{"id": 1}, {"id": 2}],
+            metadata=pd.DataFrame({"m": [2, 3]}),
+            features={"fp": np.array([[3.0, 4.0], [5.0, 6.0]])},
+        )
+        assert len(backend) == 3
+        assert backend.get_objects(idx=2) == {"id": 2}
+        np.testing.assert_array_equal(backend.get_feature("fp", idx=[1, 2]), np.array([[3.0, 4.0], [5.0, 6.0]]))
 
 # ===========================================================================
 # Run

@@ -32,6 +32,11 @@ class BaseFeatureStore(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    def append(self, data: Any) -> None:
+        """Append net-new rows to the end of the store."""
+        raise NotImplementedError
+
+    @abstractmethod
     def gather_materialized_state(self, index_map: Optional[np.ndarray] = None) -> Dict[str, Any]:
         raise NotImplementedError
 

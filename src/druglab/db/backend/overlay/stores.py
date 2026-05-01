@@ -301,6 +301,9 @@ class OverlayFeatureStore(BaseFeatureStore):
         if overlay_positions is None:
             overlay_positions = np.arange(len(self._index_map), dtype=np.intp)
         base_positions = self._index_map[overlay_positions]
+        base_positions = base_positions[base_positions >= 0]
+        if base_positions.size == 0:
+            return
         for name in names:
             if self._delta.has(name) or self._delta.is_deleted(name):
                 continue
@@ -313,13 +316,44 @@ class OverlayFeatureStore(BaseFeatureStore):
     # Commit / materialize helpers
     # ------------------------------------------------------------------
 
+    def append(self, data: Any) -> None:
+        n_new = next(iter(data.values())).shape[0] if data else 0
+        if n_new == 0:
+            return
+        n_current = len(self._index_map)
+        self._index_map = np.concatenate([self._index_map, np.full(n_new, -1, dtype=np.intp)])
+        for name, values in data.items():
+            if self._delta.has(name):
+                existing = self._delta.get(name)
+                self._delta.set(name, np.vstack([existing, values]))
+            else:
+                if self._base_store is not None and name in self._base_store.get_feature_names():
+                    base_arr = self._base_store.get_feature(name, idx=self._index_map[:n_current])
+                    self._delta.set(name, np.vstack([base_arr, values]))
+                else:
+                    self._delta.set(name, values.copy())
+            self._cache.evict(name)
+
     def commit(self, base_backend: "BaseStorageBackend") -> None:
         """Flush all deltas to *base_backend* and clear the delta store."""
-        for name, arr in self._delta.local.items():
-            base_backend.update_feature(name, arr, idx=self._index_map)
+        virtual_mask = self._index_map == -1
+        n_appended = int(np.count_nonzero(virtual_mask))
+
+        mutate_idx = np.where(self._index_map >= 0)[0]
+        if mutate_idx.size > 0:
+            mapped_idx = self._index_map[mutate_idx]
+            for name, arr in self._delta.local.items():
+                base_backend.update_feature(name, arr[mutate_idx], idx=mapped_idx)
+
+        if n_appended > 0:
+            append_payload = {name: arr[virtual_mask] for name, arr in self._delta.local.items()}
+            if append_payload:
+                base_backend._feature_store.append(append_payload) # TODO: ALERT / Add ABC contract to base backend
+
         for name in self._delta.deleted:
             if name in base_backend.get_feature_names():
                 base_backend.drop_feature(name)
+    
         self._delta.clear()
 
     def apply_materialized_deltas(
@@ -587,21 +621,43 @@ class OverlayMetadataStore(BaseMetadataStore):
     # Commit / materialize helpers
     # ------------------------------------------------------------------
 
+    def append(self, data: Any) -> None:
+        n_new = len(data)
+        if n_new == 0:
+            return
+        n_current = len(self._index_map)
+        self._index_map = np.concatenate([self._index_map, np.full(n_new, -1, dtype=np.intp)])
+        self._delta.ensure_local(n_current + n_new)
+        for col in data.columns:
+            self._delta.local.loc[n_current:, col] = data[col].values
+        self._cache.clear()
+
     def commit(self, base_backend: "BaseStorageBackend") -> None:
         """Flush all deltas to *base_backend* and clear the delta store."""
+        virtual_mask = self._index_map == -1
+        mutate_idx = np.where(self._index_map >= 0)[0]
+        n_appended = int(np.count_nonzero(virtual_mask))
+        base_len = len(base_backend)
+
         if self._delta.local is not None and not self._delta.local.empty:
             base_cols = set(base_backend.get_metadata_columns())
-            for col in self._delta.local.columns:
-                val = self._delta.local[col].values
-                if col in base_cols:
-                    base_backend.update_metadata({col: val}, idx=self._index_map)
-                else:
-                    base_backend.add_metadata_column(col, val, idx=self._index_map)
+            if mutate_idx.size > 0:
+                mapped_idx = self._index_map[mutate_idx]
+                for col in self._delta.local.columns:
+                    val = self._delta.local[col].values[mutate_idx]
+                    if col in base_cols:
+                        base_backend.update_metadata({col: val}, idx=mapped_idx)
+                    else:
+                        base_backend.add_metadata_column(col, val, idx=mapped_idx)
+            if n_appended > 0:
+                base_backend._metadata_store.append(self._delta.local.iloc[virtual_mask].reset_index(drop=True))
+
         if self._delta.deleted_cols:
             existing = set(base_backend.get_metadata_columns())
             cols_to_drop = list(self._delta.deleted_cols & existing)
             if cols_to_drop:
                 base_backend.drop_metadata_columns(cols_to_drop)
+
         self._delta.clear()
 
     def apply_materialized_deltas(
@@ -742,10 +798,26 @@ class OverlayObjectStore(BaseObjectStore):
     # Commit / materialize helpers
     # ------------------------------------------------------------------
 
+    def append(self, data: Any) -> None:
+        n_new = len(data)
+        if n_new == 0:
+            return
+        n_current = len(self._index_map)
+        self._index_map = np.concatenate([self._index_map, np.full(n_new, -1, dtype=np.intp)])
+        for offset, obj in enumerate(data):
+            self._delta.set(n_current + offset, obj)
+
     def commit(self, base_backend: "BaseStorageBackend") -> None:
         """Flush all deltas to *base_backend* and clear the delta store."""
-        for overlay_idx, obj in self._delta.local.items():
-            base_backend.update_objects(obj, idx=int(self._index_map[overlay_idx]))
+        appended_objs = []
+        for overlay_idx, obj in sorted(self._delta.local.items()):
+            base_idx = int(self._index_map[overlay_idx])
+            if base_idx == -1:
+                appended_objs.append(obj)
+            else:
+                base_backend.update_objects(obj, idx=base_idx)
+        if appended_objs:
+            base_backend._object_store.append(appended_objs)
         self._delta.clear()
 
     def apply_materialized_deltas(

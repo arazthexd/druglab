@@ -433,9 +433,24 @@ class OverlayBackend(CompositeStorageBackend):
         """
         if self._base is None:
             raise DetachedStateError("Cannot commit: overlay is detached.")
+        virtual_mask = self._index_map == -1
+        base_len_before = len(self._base)
         self._feature_store.commit(self._base)
         self._metadata_store.commit(self._base)
         self._object_store.commit(self._base)
+        n_appended = int(np.count_nonzero(virtual_mask))
+        if n_appended > 0:
+            self._index_map[virtual_mask] = np.arange(
+                base_len_before, base_len_before + n_appended, dtype=np.intp
+            )
+
+    def append(self, objects, metadata, features) -> None:
+        self._object_store.append(objects)
+        self._metadata_store.append(metadata)
+        self._feature_store.append(features)
+        self._index_map = self._object_store._index_map
+        self._metadata_store._index_map = self._index_map
+        self._feature_store._index_map = self._index_map
 
     # ------------------------------------------------------------------
     # Persistence — overlays persist via materialize().save()
