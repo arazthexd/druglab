@@ -1,9 +1,9 @@
-"""In-memory metadata store."""
+"""In-memory metadata store with Just-In-Time format selection."""
 
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Dict, List, Optional, TYPE_CHECKING, Union
+from typing import Any, Dict, List, Literal, Optional, TYPE_CHECKING, Union
 
 import numpy as np
 import pandas as pd
@@ -17,15 +17,30 @@ if TYPE_CHECKING:
 
 __all__ = ["MemoryMetadataStore"]
 
+_SUPPORTED_FORMATS = ("parquet", "csv")
+
 
 class MemoryMetadataStore(BaseMetadataStore):
-    def __init__(self, metadata: Optional[pd.DataFrame] = None, *, n_rows_hint: Optional[int] = None) -> None:
+    def __init__(
+        self,
+        metadata: Optional[pd.DataFrame] = None,
+        *,
+        n_rows_hint: Optional[int] = None,
+    ) -> None:
         if metadata is None:
             self._metadata = pd.DataFrame(index=range(n_rows_hint or 0))
         else:
             self._metadata = metadata
 
-    def get_metadata(self, idx: Optional["INDEX_LIKE"] = None, cols: Optional[Union[str, List[str]]] = None) -> pd.DataFrame:
+    # ------------------------------------------------------------------
+    # Read
+    # ------------------------------------------------------------------
+
+    def get_metadata(
+        self,
+        idx: Optional["INDEX_LIKE"] = None,
+        cols: Optional[Union[str, List[str]]] = None,
+    ) -> pd.DataFrame:
         sel = RowSelection.from_raw(idx, len(self._metadata))
         df = self._metadata if sel.is_full else self._metadata.iloc[sel.positions]
         if cols is not None:
@@ -33,6 +48,10 @@ class MemoryMetadataStore(BaseMetadataStore):
                 cols = [cols]
             df = df[cols]
         return df.reset_index(drop=True)
+
+    # ------------------------------------------------------------------
+    # Write
+    # ------------------------------------------------------------------
 
     def add_metadata_column(
         self,
@@ -60,7 +79,11 @@ class MemoryMetadataStore(BaseMetadataStore):
         arr[resolved] = value
         self._metadata[name] = arr
 
-    def update_metadata(self, values: Union[pd.DataFrame, pd.Series, Dict[str, Any]], idx: Optional["INDEX_LIKE"] = None) -> None:
+    def update_metadata(
+        self,
+        values: Union[pd.DataFrame, pd.Series, Dict[str, Any]],
+        idx: Optional["INDEX_LIKE"] = None,
+    ) -> None:
         sel = RowSelection.from_raw(idx, len(self._metadata))
         if isinstance(values, pd.DataFrame):
             val_dict = {col: values[col].values for col in values.columns}
@@ -73,11 +96,15 @@ class MemoryMetadataStore(BaseMetadataStore):
 
         for col, val in val_dict.items():
             if col not in self._metadata.columns:
-                raise KeyError(f"Column '{col}' does not exist in metadata. Use add_metadata_column.")
+                raise KeyError(
+                    f"Column '{col}' does not exist in metadata. Use add_metadata_column."
+                )
             if sel.is_full:
                 self._metadata[col] = val
             else:
-                self._metadata.iloc[sel.positions, self._metadata.columns.get_loc(col)] = val
+                self._metadata.iloc[
+                    sel.positions, self._metadata.columns.get_loc(col)
+                ] = val
 
     def drop_metadata_columns(self, cols: Optional[Union[str, List[str]]] = None) -> None:
         if cols is None:
@@ -101,25 +128,64 @@ class MemoryMetadataStore(BaseMetadataStore):
             return {"metadata": self._metadata.iloc[index_map].reset_index(drop=True).copy()}
         return {"metadata": self._metadata.copy()}
 
-    def save(self, path: Path) -> None:
-        if not self._metadata.empty:
-            try:
-                self._metadata.to_parquet(path / "metadata.parquet", index=False)
-            except Exception:
-                self._metadata.to_csv(path / "metadata.csv", index=False)
+    # ------------------------------------------------------------------
+    # Persistence — Just-In-Time format selection
+    # ------------------------------------------------------------------
+
+    def save(self, path: Path, format: str = "parquet", **kwargs) -> None:
+        """
+        Persist the metadata DataFrame.
+
+        Parameters
+        ----------
+        path : Path
+            Bundle root directory.
+        format : {"parquet", "csv"}
+            Serialization format chosen **at save time**.  Defaults to
+            ``"parquet"`` for compact binary storage.  Pass ``"csv"`` to
+            produce a human-readable text file.
+
+        Raises
+        ------
+        ValueError
+            If *format* is not one of the supported values.
+        """
+        if format not in _SUPPORTED_FORMATS:
+            raise ValueError(
+                f"Unsupported metadata format '{format}'. "
+                f"Choose one of: {_SUPPORTED_FORMATS}."
+            )
+
+        if format == "parquet":
+            self._metadata.to_parquet(path / "metadata.parquet", index=True)
         else:
-            pd.DataFrame(index=range(len(self._metadata.index))).to_csv(path / "metadata.csv", index=True)
+            self._metadata.to_csv(path / "metadata.csv", index=True)
 
     @classmethod
-    def load(cls, path: Path) -> "MemoryMetadataStore":
-        parquet_path = path / "metadata.parquet"
-        csv_path = path / "metadata.csv"
-        if parquet_path.exists():
-            return cls(metadata=pd.read_parquet(parquet_path))
-        if csv_path.exists():
-            return cls(metadata=pd.read_csv(csv_path))
+    def load(cls, path: Path, format: str = "parquet", **kwargs) -> "MemoryMetadataStore":
+        """
+        Restore the metadata DataFrame.
+
+        Parameters
+        ----------
+        path : Path
+            Bundle root directory.
+        format : {"parquet", "csv"}
+            Must match the format used when the bundle was saved.  The
+            ``CompositeStorageBackend`` reads this from the manifest and
+            passes it here automatically.
+        """
+        if format == "parquet":
+            parquet_path = path / "metadata.parquet"
+            if parquet_path.exists():
+                return cls(metadata=pd.read_parquet(parquet_path))
+        else:  # csv
+            csv_path = path / "metadata.csv"
+            if csv_path.exists():
+                return cls(metadata=pd.read_csv(csv_path))
+
         print("WARNING: No metadata found when loading bundle.")
-        return cls(metadata=pd.DataFrame())
+        return cls(metadata=None)
 
 
 MemoryMetadataMixin = MemoryMetadataStore

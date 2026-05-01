@@ -37,6 +37,7 @@ from druglab.db.backend.memory import (
     MemoryFeatureStore,
 )
 from druglab.db.table import BaseTable, HistoryEntry, META, OBJ, FEAT, M, O, F
+from druglab.db.utils import object_pkl_reader, object_pkl_writer
 from tests.shared.make_dummy_db import (
     _make_dummy_dict_memory_backend_context,
     BackendContext,
@@ -333,14 +334,14 @@ class TestSaveStorageContext:
 
     def test_metadata_mixin_saves_parquet(self, tmp_path):
         backend = self._make_backend()
-        backend.save_storage_context(tmp_path)
+        backend.save_storage_context(tmp_path, object_writer=object_pkl_writer)
         assert (tmp_path / "metadata.parquet").exists() or (
             tmp_path / "metadata.csv"
         ).exists()
 
     def test_feature_mixin_saves_npy(self, tmp_path):
         backend = self._make_backend()
-        backend.save_storage_context(tmp_path)
+        backend.save_storage_context(tmp_path, object_writer=object_pkl_writer)
         feat_dir = tmp_path / "features"
         assert feat_dir.exists()
         npy_files = list(feat_dir.glob("*.npy"))
@@ -348,7 +349,7 @@ class TestSaveStorageContext:
 
     def test_object_mixin_saves_pickle(self, tmp_path):
         backend = self._make_backend()
-        backend.save_storage_context(tmp_path)
+        backend.save_storage_context(tmp_path, object_writer=object_pkl_writer)
         obj_pkl = tmp_path / "objects" / "objects.pkl"
         assert obj_pkl.exists()
 
@@ -368,7 +369,7 @@ class TestSaveStorageContext:
     def test_mro_chain_fires_all_three_domains(self, tmp_path):
         """A single save_storage_context call should produce all three domain artefacts."""
         backend = self._make_backend()
-        backend.save_storage_context(tmp_path)
+        backend.save_storage_context(tmp_path, object_writer=object_pkl_writer)
         assert (tmp_path / "objects" / "objects.pkl").exists()
         assert any((tmp_path / "features").glob("*.npy"))
         assert (tmp_path / "metadata.parquet").exists() or (
@@ -389,25 +390,25 @@ class TestLoadStorageContext:
             metadata=pd.DataFrame({"val": list(range(n))}),
             features={"fp": np.eye(n, dtype=np.float32)},
         )
-        backend.save(tmp_path)
+        backend.save(tmp_path, object_writer=object_pkl_writer)
         return tmp_path
 
     def test_load_roundtrip_default(self, tmp_path):
         bundle = self._make_bundle(tmp_path / "bundle")
-        loaded = EagerMemoryBackend.load(bundle)
+        loaded = EagerMemoryBackend.load(bundle, object_reader=object_pkl_reader)
         # Objects round-trip (no serializer → raw dicts via default pickle)
         assert loaded.get_objects() == [{"id": i} for i in range(4)]
 
     def test_load_features_roundtrip(self, tmp_path):
         bundle = self._make_bundle(tmp_path / "bundle")
-        loaded = EagerMemoryBackend.load(bundle)
+        loaded = EagerMemoryBackend.load(bundle, object_reader=object_pkl_reader)
         np.testing.assert_array_almost_equal(
             loaded.get_feature("fp"), np.eye(4, dtype=np.float32)
         )
 
     def test_load_metadata_roundtrip(self, tmp_path):
         bundle = self._make_bundle(tmp_path / "bundle")
-        loaded = EagerMemoryBackend.load(bundle)
+        loaded = EagerMemoryBackend.load(bundle, object_reader=object_pkl_reader)
         assert loaded.get_metadata()["val"].tolist() == list(range(4))
 
     def test_load_with_custom_object_reader(self, tmp_path):
@@ -425,14 +426,14 @@ class TestLoadStorageContext:
     def test_load_storage_context_classmethod_returns_dict(self, tmp_path):
         """load_storage_context should return a dict with 'objects','metadata','features'."""
         bundle = self._make_bundle(tmp_path / "bundle")
-        kwargs = EagerMemoryBackend.load_storage_context(bundle)
+        kwargs = EagerMemoryBackend.load_storage_context(bundle, object_reader=object_pkl_reader)
         assert "objects" in kwargs
         assert "metadata" in kwargs
         assert "features" in kwargs
 
     def test_load_mmap_features(self, tmp_path):
         bundle = self._make_bundle(tmp_path / "bundle")
-        loaded = EagerMemoryBackend.load(bundle, mmap_features=True)
+        loaded = EagerMemoryBackend.load(bundle, mmap_features=True, object_reader=object_pkl_reader)
         fp = loaded.get_feature("fp")
         assert fp.shape == (4, 4)
 
@@ -517,7 +518,7 @@ class TestEagerMemoryRoundtrip:
 
     def test_save_creates_bundle_directory(self, tmp_path):
         backend = EagerMemoryBackend(objects=[1, 2, 3])
-        backend.save(tmp_path / "bundle")
+        backend.save(tmp_path / "bundle", object_writer=object_pkl_writer)
         assert (tmp_path / "bundle").is_dir()
 
     def test_save_load_objects_with_writer_reader(self, tmp_path):
@@ -549,14 +550,14 @@ class TestEagerMemoryRoundtrip:
         bundle = tmp_path / "bundle"
         objects = [{"id": i} for i in range(4)]
         backend = EagerMemoryBackend(objects=objects)
-        backend.save(bundle)
-        loaded = EagerMemoryBackend.load(bundle)
+        backend.save(bundle, object_writer=object_pkl_writer)
+        loaded = EagerMemoryBackend.load(bundle, object_reader=object_pkl_reader)
         assert loaded.get_objects() == objects
 
     def test_load_returns_eager_memory_backend(self, tmp_path):
         bundle = tmp_path / "bundle"
-        EagerMemoryBackend(objects=[1, 2]).save(bundle)
-        loaded = EagerMemoryBackend.load(bundle)
+        EagerMemoryBackend(objects=[1, 2]).save(bundle, object_writer=object_pkl_writer)
+        loaded = EagerMemoryBackend.load(bundle, object_reader=object_pkl_reader)
         assert isinstance(loaded, EagerMemoryBackend)
 
 

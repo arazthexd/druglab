@@ -9,6 +9,7 @@ from druglab.db.backend.memory import (
     MemoryMetadataStore,
     MemoryObjectStore,
 )
+from druglab.db.utils import object_pkl_reader, object_pkl_writer
 
 
 def _make_composite(n: int = 4) -> CompositeStorageBackend:
@@ -26,12 +27,12 @@ class TestCompositeStorageBackend:
 
     def test_manifest_round_trip(self, tmp_path):
         backend = _make_composite(3)
-        backend.save(tmp_path)
+        backend.save(tmp_path, object_writer=object_pkl_writer)
 
         manifest = tmp_path / "composite_manifest.json"
         assert manifest.exists()
 
-        loaded = CompositeStorageBackend.load(tmp_path)
+        loaded = CompositeStorageBackend.load(tmp_path, object_reader=object_pkl_reader)
         assert isinstance(loaded, CompositeStorageBackend)
         assert loaded.get_objects() == backend.get_objects()
         pd.testing.assert_frame_equal(loaded.get_metadata(), backend.get_metadata())

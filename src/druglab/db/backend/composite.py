@@ -3,7 +3,7 @@ from __future__ import annotations
 import importlib
 import json
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Callable, List
 
 import numpy as np
 
@@ -11,6 +11,9 @@ from .base import BaseStorageBackend
 from .base.stores import BaseFeatureStore, BaseMetadataStore, BaseObjectStore
 
 __all__ = ["CompositeStorageBackend"]
+
+_DEFAULT_METADATA_FORMAT = "parquet"
+
 
 class CompositeStorageBackend(BaseStorageBackend):
     BACKEND_NAME = "CompositeStorageBackend"
@@ -29,6 +32,10 @@ class CompositeStorageBackend(BaseStorageBackend):
 
     def __len__(self) -> int:
         return self._n_objects()
+
+    # ------------------------------------------------------------------
+    # Domain delegation
+    # ------------------------------------------------------------------
 
     def get_objects(self, idx=None):
         return self._object_store.get_objects(idx)
@@ -75,6 +82,10 @@ class CompositeStorageBackend(BaseStorageBackend):
     def _n_feature_rows(self) -> int:
         return self._feature_store.n_rows()
 
+    # ------------------------------------------------------------------
+    # Validation
+    # ------------------------------------------------------------------
+
     def validate(self) -> None:
         expected_len = len(self)
         meta_len = self._n_metadata_rows()
@@ -89,6 +100,10 @@ class CompositeStorageBackend(BaseStorageBackend):
                 f"Object Count:  {obj_len}"
             )
 
+    # ------------------------------------------------------------------
+    # Materialized state
+    # ------------------------------------------------------------------
+
     def _gather_materialized_state(
         self,
         target_path: Optional[Path] = None,
@@ -100,13 +115,35 @@ class CompositeStorageBackend(BaseStorageBackend):
         result.update(self._feature_store.gather_materialized_state(index_map=index_map))
         return result
 
-    def save_storage_context(self, path: Path, **kwargs: Any) -> None:
-        object_writer = kwargs.get("object_writer")
-        if object_writer is not None:
-            self._object_store.save(path, object_writer=object_writer)
-        else:
-            self._object_store.save(path)
-        self._metadata_store.save(path)
+    # ------------------------------------------------------------------
+    # Persistence
+    # ------------------------------------------------------------------
+
+    def save_storage_context(
+        self,
+        path: Path,
+        object_writer: Optional[Callable[[List[Any], Path], None]] = None,
+        metadata_format: str = _DEFAULT_METADATA_FORMAT,
+        **kwargs: Any,
+    ) -> None:
+        """
+        Persist all three domain stores and write a ``composite_manifest.json``.
+
+        Parameters
+        ----------
+        path : Path
+            Bundle root directory.
+        metadata_format : {"parquet", "csv"}
+            Format used to serialise the metadata DataFrame.  The choice is
+            recorded in the manifest so ``load_storage_context`` can instruct
+            the metadata store to read the matching file extension.
+        object_writer: Optional[Callable[[List[Any], Path], None]]
+            Forwarded to the object store verbatim.
+        **kwargs
+            Any remaining kwargs are forwarded to ``_feature_store.save()``.
+        """
+        self._object_store.save(path, object_writer=object_writer)
+        self._metadata_store.save(path, format=metadata_format)
         self._feature_store.save(path)
 
         manifest = {
@@ -117,6 +154,9 @@ class CompositeStorageBackend(BaseStorageBackend):
             "metadata_store": {
                 "module": self._metadata_store.__class__.__module__,
                 "class": self._metadata_store.__class__.__name__,
+                # ← The format decision is persisted here so load can reconstruct
+                #   the correct file without guessing.
+                "format": metadata_format,
             },
             "feature_store": {
                 "module": self._feature_store.__class__.__module__,
@@ -127,22 +167,50 @@ class CompositeStorageBackend(BaseStorageBackend):
 
     @classmethod
     def load_storage_context(cls, path: Path, **kwargs: Any) -> Dict[str, Any]:
+        """
+        Rebuild the three domain stores from a bundle directory.
+
+        The ``"format"`` key stored in the manifest is forwarded to the
+        metadata store's ``.load()`` so it reads the correct file type.
+        """
         manifest_path = path / "composite_manifest.json"
         if not manifest_path.exists():
             raise FileNotFoundError("Missing composite_manifest.json.")
 
         manifest = json.loads(manifest_path.read_text())
 
-        def _load_store(config: Dict[str, str], p: Path):
+        def _load_store(config: Dict[str, str], p: Path, extra_kwargs: Dict[str, Any]):
             mod = importlib.import_module(config["module"])
             store_cls = getattr(mod, config["class"])
+            # Merge caller kwargs with manifest-level kwargs (manifest wins for
+            # format-style keys; caller wins for things like object_reader).
+            merged = {**extra_kwargs}
             try:
-                return store_cls.load(p, **kwargs)
+                return store_cls.load(p, **merged)
             except TypeError:
                 return store_cls.load(p)
 
+        # Extract format from manifest so the metadata store gets the right hint.
+        meta_config = manifest["metadata_store"]
+        metadata_format = meta_config.get("format", _DEFAULT_METADATA_FORMAT)
+
+        # Caller-supplied object_reader takes precedence.
+        object_reader = kwargs.get("object_reader")
+
         return {
-            "object_store": _load_store(manifest["object_store"], path),
-            "metadata_store": _load_store(manifest["metadata_store"], path),
-            "feature_store": _load_store(manifest["feature_store"], path),
+            "object_store": _load_store(
+                manifest["object_store"],
+                path,
+                {"object_reader": object_reader} if object_reader is not None else {},
+            ),
+            "metadata_store": _load_store(
+                meta_config,
+                path,
+                {"format": metadata_format},
+            ),
+            "feature_store": _load_store(
+                manifest["feature_store"],
+                path,
+                {},
+            ),
         }

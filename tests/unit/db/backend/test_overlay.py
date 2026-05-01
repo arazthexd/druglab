@@ -53,6 +53,7 @@ from druglab.db.backend import EagerMemoryBackend
 from druglab.db.backend.overlay import OverlayBackend
 from druglab.db.backend.overlay.identity import DetachedStateError, SchemaIdentity
 from druglab.db.table.base import BaseTable, HistoryEntry
+from druglab.db.utils import object_pkl_reader, object_pkl_writer
 from tests.shared.make_dummy_db import (
     BackendContext,
     DictTable,
@@ -940,7 +941,7 @@ class TestSaveViaOverlay:
         with tempfile.TemporaryDirectory() as tmp:
             bundle = Path(tmp) / "test.dlb"
             table = DictTable(_backend=overlay)
-            table.save(bundle)
+            table.save(bundle, object_writer=object_pkl_writer)
             assert bundle.is_dir()
 
     def test_save_and_reload_preserves_object_count(self, bctx: BackendContext):
@@ -950,8 +951,8 @@ class TestSaveViaOverlay:
         with tempfile.TemporaryDirectory() as tmp:
             bundle = Path(tmp) / "test.dlb"
             table = DictTable(_backend=overlay)
-            table.save(bundle)
-            reloaded = DictTable.load(bundle)
+            table.save(bundle, object_writer=object_pkl_writer)
+            reloaded = DictTable.load(bundle, object_reader=object_pkl_reader)
             assert len(reloaded) == len(indices)
 
     def test_save_and_reload_preserves_metadata(self, bctx: BackendContext):
@@ -962,8 +963,8 @@ class TestSaveViaOverlay:
         with tempfile.TemporaryDirectory() as tmp:
             bundle = Path(tmp) / "test.dlb"
             table = DictTable(_backend=overlay)
-            table.save(bundle)
-            reloaded = DictTable.load(bundle)
+            table.save(bundle, object_writer=object_pkl_writer)
+            reloaded = DictTable.load(bundle, object_reader=object_pkl_reader)
 
             generated = _make_metadata(bctx.num_rows, *bctx.meta_cols)
             expected = generated[first_col].iloc[indices].tolist()
@@ -977,8 +978,8 @@ class TestSaveViaOverlay:
         with tempfile.TemporaryDirectory() as tmp:
             bundle = Path(tmp) / "test.dlb"
             table = DictTable(_backend=overlay)
-            table.save(bundle)
-            reloaded = DictTable.load(bundle)
+            table.save(bundle, object_writer=object_pkl_writer)
+            reloaded = DictTable.load(bundle, object_reader=object_pkl_reader)
 
             expected = bctx.backend.get_feature(feat_name)[indices]
             np.testing.assert_array_equal(reloaded.get_feature(feat_name), expected)
@@ -996,8 +997,8 @@ class TestSaveViaOverlay:
         with tempfile.TemporaryDirectory() as tmp:
             bundle = Path(tmp) / "test.dlb"
             table = DictTable(_backend=overlay)
-            table.save(bundle)
-            reloaded = DictTable.load(bundle)
+            table.save(bundle, object_writer=object_pkl_writer)
+            reloaded = DictTable.load(bundle, object_reader=object_pkl_reader)
 
         np.testing.assert_array_equal(reloaded.get_feature(feat_name), patch)
 
@@ -1009,8 +1010,8 @@ class TestSaveViaOverlay:
         with tempfile.TemporaryDirectory() as tmp:
             bundle = Path(tmp) / "test.dlb"
             table = DictTable(_backend=overlay)
-            table.save(bundle)
-            reloaded = DictTable.load(bundle)
+            table.save(bundle, object_writer=object_pkl_writer)
+            reloaded = DictTable.load(bundle, object_reader=object_pkl_reader)
 
         assert feat_name not in reloaded.get_feature_names()
 
@@ -1025,7 +1026,7 @@ class TestSaveViaOverlay:
         with tempfile.TemporaryDirectory() as tmp:
             bundle = Path(tmp) / "test.dlb"
             table = DictTable(_backend=overlay)
-            table.save(bundle)
+            table.save(bundle, object_writer=object_pkl_writer)
 
         np.testing.assert_array_equal(bctx.backend.get_feature(feat_name), original_feat)
 

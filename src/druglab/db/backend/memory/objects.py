@@ -1,9 +1,8 @@
-"""In-memory object store."""
+"""In-memory object store — pickle-free."""
 
 from __future__ import annotations
 
 import copy
-import pickle
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, TYPE_CHECKING, Union
 
@@ -27,11 +26,13 @@ class MemoryObjectStore(BaseObjectStore):
         if idx is None:
             return self._objects.copy()
 
-        if isinstance(idx, int):
+        if isinstance(idx, (int, np.integer)):
             n = len(self._objects)
             i = int(idx)
             if i >= n or i < -n:
-                raise IndexError(f"index {idx} is out of bounds for axis 0 with size {n}")
+                raise IndexError(
+                    f"index {idx} is out of bounds for axis 0 with size {n}"
+                )
             index = n + i if i < 0 else i
             return self._objects[index]
 
@@ -43,7 +44,7 @@ class MemoryObjectStore(BaseObjectStore):
             self._objects = list(objs)
             return
 
-        if isinstance(idx, int):
+        if isinstance(idx, (int, np.integer)):
             n = len(self._objects)
             index = n + idx if idx < 0 else idx
             self._objects[index] = objs
@@ -63,18 +64,46 @@ class MemoryObjectStore(BaseObjectStore):
             return {"objects": [copy.deepcopy(self._objects[i]) for i in index_map]}
         return {"objects": list(self._objects)}
 
-    def save(self, path: Path, object_writer: Optional[Callable[[List[Any], Path], None]] = None) -> None:
+    def save(
+        self,
+        path: Path,
+        object_writer: Optional[Callable[[List[Any], Path], None]] = None,
+    ) -> None:
+        """
+        Persist objects using an explicit *object_writer* callback.
+
+        Parameters
+        ----------
+        path : Path
+            Bundle root directory.  The writer receives ``path / "objects"``.
+        object_writer : Callable[[List[Any], Path], None]
+            **Required when there are objects to persist.**  Receives the full
+            object list and the ``objects/`` sub-directory path.  The caller
+            is responsible for choosing a safe, domain-appropriate format.
+
+        Raises
+        ------
+        RuntimeError
+            If *object_writer* is ``None`` and the store is non-empty.
+        """
         obj_dir = path / "objects"
         obj_dir.mkdir(exist_ok=True)
 
-        if object_writer is not None:
-            object_writer(self._objects, obj_dir)
+        if not self._objects:
+            # Nothing to write — create an empty sentinel so load() can detect
+            # an intentionally empty store without raising.
+            (obj_dir / ".empty").touch()
             return
 
-        with open(obj_dir / "objects.pkl", "wb") as f:
-            pickle.dump({"format": "stream_v2", "count": len(self._objects), "serialized": False}, f)
-            for obj in self._objects:
-                pickle.dump(obj, f)
+        if object_writer is None:
+            raise RuntimeError(
+                "MemoryObjectStore.save() requires an explicit `object_writer` callback. "
+                "No default pickle serialization is available. "
+                "Supply a writer via BaseTable.save(object_writer=...) or by overriding "
+                "`_get_default_object_writer()` on your Table subclass."
+            )
+
+        object_writer(self._objects, obj_dir)
 
     @classmethod
     def load(
@@ -82,20 +111,40 @@ class MemoryObjectStore(BaseObjectStore):
         path: Path,
         object_reader: Optional[Callable[[Path], List[Any]]] = None,
     ) -> "MemoryObjectStore":
-        if object_reader is not None:
-            return cls(objects=object_reader(path / "objects"))
+        """
+        Restore objects using an explicit *object_reader* callback.
 
-        obj_path = path / "objects" / "objects.pkl"
-        if not obj_path.exists():
-            print("WARNING: No objects found when loading bundle.")
+        Parameters
+        ----------
+        path : Path
+            Bundle root directory.  The reader receives ``path / "objects"``.
+        object_reader : Callable[[Path], List[Any]]
+            **Required when persisted objects exist.**  Returns the reconstructed
+            object list from the ``objects/`` sub-directory.
+
+        Raises
+        ------
+        RuntimeError
+            If *object_reader* is ``None`` and a non-empty objects directory is
+            found.
+        """
+        obj_dir = path / "objects"
+
+        if not obj_dir.exists():
             return cls(objects=[])
 
-        with open(obj_path, "rb") as f:
-            raw_payload = pickle.load(f)
-            if isinstance(raw_payload, dict) and raw_payload.get("format") in {"stream_v1", "stream_v2"}:
-                count = int(raw_payload["count"])
-                return cls(objects=[pickle.load(f) for _ in range(count)])
-            return cls(objects=raw_payload)
+        # Intentionally-empty store (written by save() when list was empty).
+        if (obj_dir / ".empty").exists() and not any(
+            p for p in obj_dir.iterdir() if p.name != ".empty"
+        ):
+            return cls(objects=[])
 
+        if object_reader is None:
+            raise RuntimeError(
+                "MemoryObjectStore.load() requires an explicit `object_reader` callback. "
+                "No default pickle deserialization is available. "
+                "Supply a reader via EagerMemoryBackend.load(object_reader=...) or by "
+                "overriding `_make_object_reader()` on your Table subclass."
+            )
 
-MemoryObjectMixin = MemoryObjectStore
+        return cls(objects=object_reader(obj_dir))

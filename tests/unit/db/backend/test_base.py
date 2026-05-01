@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import pickle as pkl
 
 import numpy as np
 import pandas as pd
@@ -10,6 +11,7 @@ import pytest
 
 from druglab.db.backend.base import BaseStorageBackend
 from druglab.db.backend import EagerMemoryBackend
+from druglab.db.utils import object_pkl_reader, object_pkl_writer
 
 
 class TestBaseStorageBackendABC:
@@ -45,12 +47,18 @@ class TestBaseBackendSharedBehaviors:
     def test_save_and_load_round_trip(self, tmp_path: Path):
         backend = EagerMemoryBackend(
             objects=[{"id": 0}, {"id": 1}],
-            metadata=pd.DataFrame({"m": [1, 2]}),
+            metadata=pd.DataFrame({"m1": [1, 2], "m2":[3, 4]}),
             features={"f": np.arange(4, dtype=np.float32).reshape(2, 2)},
         )
-        backend.save(tmp_path)
+        backend.save(
+            tmp_path, 
+            object_writer=object_pkl_writer
+        )
 
-        loaded = EagerMemoryBackend.load(tmp_path)
+        loaded = EagerMemoryBackend.load(
+            tmp_path, 
+            object_reader=object_pkl_reader
+        )
         assert loaded.get_objects() == backend.get_objects()
         pd.testing.assert_frame_equal(loaded.get_metadata(), backend.get_metadata())
         np.testing.assert_array_equal(loaded.get_feature("f"), backend.get_feature("f"))
