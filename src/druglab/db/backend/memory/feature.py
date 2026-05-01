@@ -11,16 +11,21 @@ from ...indexing import RowSelection
 from ..base.stores import BaseFeatureStore
 
 if TYPE_CHECKING:
+    from druglab.db.backend.overlay.deltas import FeatureDelta
     from druglab.db.indexing import INDEX_LIKE
 
 
 __all__ = ["MemoryFeatureStore"]
+
+# Sentinel meaning "this feature did not exist before the transaction"
+_MISSING = object()
 
 
 class MemoryFeatureStore(BaseFeatureStore):
     def __init__(self, features: Optional[Dict[str, np.ndarray]] = None, *, n_rows_hint: int = 0) -> None:
         self._features = dict(features) if features is not None else {}
         self._n_rows_hint = int(n_rows_hint)
+        self._journal: Optional[Dict[str, Any]] = None
 
     def get_feature(self, name: str, idx: Optional["INDEX_LIKE"] = None) -> np.ndarray:
         arr = self._features[name]
@@ -104,6 +109,89 @@ class MemoryFeatureStore(BaseFeatureStore):
                 else:
                     features[name] = np.load(str(npy_path), allow_pickle=False)
         return cls(features=features)
+
+    # ------------------------------------------------------------------
+    # Transaction protocol
+    # ------------------------------------------------------------------
+
+    def begin_transaction(self, delta: "FeatureDelta", index_map: np.ndarray) -> None:
+        """
+        Snapshot the rows that will be mutated or deleted by *delta*.
+
+        Journal structure per feature::
+
+            {
+                "<name>": {
+                    "existed": True | False,        # False → new feature; rollback deletes it
+                    "indices": np.ndarray | None,   # None when full array is replaced
+                    "old_values": np.ndarray | None,
+                }
+            }
+        """
+        self._journal = {}
+
+        # Features that will be written (updated or added)
+        for name in delta.local:
+            if name in self._features:
+                self._journal[name] = {
+                    "existed": True,
+                    "indices": index_map.copy(),
+                    "old_values": self._features[name][index_map].copy(),
+                }
+            else:
+                # Brand-new feature; rollback must delete it
+                self._journal[name] = {
+                    "existed": False,
+                    "indices": None,
+                    "old_values": None,
+                }
+
+        # Features that will be dropped
+        for name in delta.deleted:
+            if name in self._features:
+                self._journal[name] = {
+                    "existed": True,
+                    "indices": None,           # full array backed up
+                    "old_values": self._features[name].copy(),
+                }
+
+    def commit_transaction(self, delta: "FeatureDelta", index_map: np.ndarray) -> None:
+        """Apply *delta* to the store; journal must have been set by begin_transaction."""
+        if self._journal is None:
+            raise RuntimeError("Cannot commit without beginning a transaction first.")
+
+        # Drop deleted features
+        for name in delta.deleted:
+            if name in self._features:
+                del self._features[name]
+
+        # Apply updates / additions
+        for name, arr in delta.local.items():
+            if name in delta.deleted:
+                continue
+            self.update_feature(name, arr, idx=index_map)
+
+        # NOTE: Do NOT clear self._journal here.
+        # apply_deltas() clears it explicitly only after ALL three stores commit
+        # successfully.  If a later store fails, rollback_transaction() must
+        # still find the journal populated.
+
+    def rollback_transaction(self) -> None:
+        """Restore rows that were backed up in begin_transaction."""
+        if self._journal is None:
+            return
+        for name, entry in self._journal.items():
+            if not entry["existed"]:
+                # Feature was brand new — remove any partial write
+                self._features.pop(name, None)
+            elif entry["indices"] is None:
+                # Full-array backup (e.g. a dropped feature)
+                self._features[name] = entry["old_values"]
+            else:
+                # Partial-row backup
+                if name in self._features:
+                    self._features[name][entry["indices"]] = entry["old_values"]
+        self._journal = None
 
 
 MemoryFeatureMixin = MemoryFeatureStore

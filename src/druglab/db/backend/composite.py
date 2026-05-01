@@ -3,12 +3,15 @@ from __future__ import annotations
 import importlib
 import json
 from pathlib import Path
-from typing import Any, Dict, Optional, Callable, List
+from typing import Any, Dict, Optional, Callable, List, TYPE_CHECKING
 
 import numpy as np
 
 from .base import BaseStorageBackend
 from .base.stores import BaseFeatureStore, BaseMetadataStore, BaseObjectStore
+
+if TYPE_CHECKING:
+    from druglab.db.backend.overlay.deltas import FeatureDelta, MetadataDelta, ObjectDelta
 
 __all__ = ["CompositeStorageBackend"]
 
@@ -99,6 +102,74 @@ class CompositeStorageBackend(BaseStorageBackend):
                 f"Feature Rows:  {feat_len}\n"
                 f"Object Count:  {obj_len}"
             )
+
+    # ------------------------------------------------------------------
+    # Atomic delta application (transaction manager)
+    # ------------------------------------------------------------------
+
+    def apply_deltas(
+        self,
+        obj_delta: "ObjectDelta",
+        meta_delta: "MetadataDelta",
+        feat_delta: "FeatureDelta",
+        index_map: np.ndarray,
+    ) -> None:
+        """
+        Atomically apply deltas from all three domains to the concrete stores.
+
+        This is a two-phase commit:
+
+        Phase 1 — **Begin** (safe): Each store snapshots the rows it will
+        mutate into a lightweight rollback journal.  No data is modified.
+        Failures here cannot corrupt state.
+
+        Phase 2 — **Commit** (mutating): Each store applies its delta in
+        sequence.  If any store raises, Phase 3 executes immediately.
+
+        Phase 3 — **Rollback** (on failure only): Every store reverts to the
+        snapshot taken in Phase 1.  Because Phase 1 touched nothing, the
+        rollback always returns the backend to a consistent pre-commit state.
+
+        Parameters
+        ----------
+        obj_delta : ObjectDelta
+            Sparse ``{overlay_idx: new_obj}`` mapping.
+        meta_delta : MetadataDelta
+            Local DataFrame patch + deleted column set.
+        feat_delta : FeatureDelta
+            Local feature arrays + deleted feature set.
+        index_map : np.ndarray
+            1-D ``np.intp`` array: overlay row i → base row ``index_map[i]``.
+
+        Raises
+        ------
+        RuntimeError
+            If any commit phase raises, wraps the original exception and
+            re-raises after successful rollback.
+        """
+        # Phase 1: Journal / prepare (nothing mutates here)
+        self._object_store.begin_transaction(obj_delta, index_map)
+        self._metadata_store.begin_transaction(meta_delta, index_map)
+        self._feature_store.begin_transaction(feat_delta, index_map)
+
+        try:
+            # Phase 2: Commit (mutations happen here, in order)
+            self._object_store.commit_transaction(obj_delta, index_map)
+            self._metadata_store.commit_transaction(meta_delta, index_map)
+            self._feature_store.commit_transaction(feat_delta, index_map)
+        except Exception as exc:
+            # Phase 3: Rollback all three domains unconditionally
+            self._object_store.rollback_transaction()
+            self._metadata_store.rollback_transaction()
+            self._feature_store.rollback_transaction()
+            raise RuntimeError(
+                "Atomic commit failed. Backend state has been successfully rolled back."
+            ) from exc
+
+        # Phase 4: All three commits succeeded — clear journals
+        self._object_store._journal = None
+        self._metadata_store._journal = None
+        self._feature_store._journal = None
 
     # ------------------------------------------------------------------
     # Materialized state

@@ -12,6 +12,7 @@ from ...indexing import RowSelection
 from ..base.stores import BaseObjectStore
 
 if TYPE_CHECKING:
+    from druglab.db.backend.overlay.deltas import ObjectDelta
     from druglab.db.indexing import INDEX_LIKE
 
 
@@ -21,6 +22,7 @@ __all__ = ["MemoryObjectStore"]
 class MemoryObjectStore(BaseObjectStore):
     def __init__(self, objects: Optional[List[Any]] = None) -> None:
         self._objects = list(objects) if objects is not None else []
+        self._journal: Optional[Dict[int, Any]] = None
 
     def get_objects(self, idx: Optional["INDEX_LIKE"] = None) -> Union[Any, List[Any]]:
         if idx is None:
@@ -148,3 +150,47 @@ class MemoryObjectStore(BaseObjectStore):
             )
 
         return cls(objects=object_reader(obj_dir))
+
+    # ------------------------------------------------------------------
+    # Transaction protocol
+    # ------------------------------------------------------------------
+
+    def begin_transaction(self, delta: "ObjectDelta", index_map: np.ndarray) -> None:
+        """
+        Snapshot the objects at each base position that will be mutated.
+
+        The *delta* maps overlay positions → new objects; *index_map* translates
+        overlay positions to base positions.
+
+        Journal: ``{base_position: old_object}``
+        """
+        self._journal = {}
+        for overlay_idx in delta.local:
+            base_pos = int(index_map[overlay_idx])
+            if 0 <= base_pos < len(self._objects):
+                self._journal[base_pos] = self._objects[base_pos]
+                # Deep copy only if the object is mutable (best-effort)
+                try:
+                    self._journal[base_pos] = copy.deepcopy(self._objects[base_pos])
+                except Exception:
+                    self._journal[base_pos] = self._objects[base_pos]
+
+    def commit_transaction(self, delta: "ObjectDelta", index_map: np.ndarray) -> None:
+        """Apply *delta* to the store; journal must have been set by begin_transaction."""
+        if self._journal is None:
+            raise RuntimeError("Cannot commit without beginning a transaction first.")
+
+        for overlay_idx, obj in delta.local.items():
+            base_pos = int(index_map[overlay_idx])
+            self._objects[base_pos] = obj
+
+        # NOTE: Do NOT clear self._journal here.
+        # apply_deltas() clears it only after ALL three stores commit successfully.
+
+    def rollback_transaction(self) -> None:
+        """Restore objects backed up in begin_transaction."""
+        if self._journal is None:
+            return
+        for base_pos, old_obj in self._journal.items():
+            self._objects[base_pos] = old_obj
+        self._journal = None

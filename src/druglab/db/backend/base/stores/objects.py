@@ -31,3 +31,19 @@ class BaseObjectStore(ABC):
     @abstractmethod
     def load(cls, path: Path, **kwargs) -> "BaseObjectStore":
         raise NotImplementedError
+
+    # ------------------------------------------------------------------
+    # Transaction protocol
+    # ------------------------------------------------------------------
+
+    def begin_transaction(self, delta: Any, index_map: np.ndarray) -> None:
+        """Prepare for a commit: validate the delta and snapshot rows to journal."""
+        raise NotImplementedError
+
+    def commit_transaction(self, delta: Any, index_map: np.ndarray) -> None:
+        """Apply the delta to the underlying storage."""
+        raise NotImplementedError
+
+    def rollback_transaction(self) -> None:
+        """Revert any changes made during the transaction using the rollback journal."""
+        raise NotImplementedError
