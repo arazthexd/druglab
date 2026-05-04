@@ -90,7 +90,7 @@ class BaseBlock(ABC):
         if out_table is not None:
             out_table.append_history(
                 HistoryEntry.now(
-                    block_name=self.__class__.__name__,
+                    operation=self.__class__.__name__,
                     config=self.get_config(),
                     rows_in=rows_in,
                     rows_out=rows_out,
