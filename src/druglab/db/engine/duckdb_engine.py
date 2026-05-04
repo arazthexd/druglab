@@ -234,10 +234,40 @@ class DuckDBEngine(BaseEngine[pd.DataFrame]):
             # CREATE: infer schema from the DataFrame
             self.conn.execute(f"CREATE TABLE {table_name} AS SELECT * FROM data")
         else:
-            # APPEND: validate schema before inserting
-            self._validate_schema(table_name, data)
+            # APPEND: dynamically add missing columns to the table first
+            self._evolve_schema(table_name, data)
+            
+            # Insert using explicit column names. DuckDB will automatically 
+            # fill any table columns missing from this DataFrame with NULL.
             cols = ", ".join(f'"{c}"' for c in data.columns)
             self.conn.execute(f"INSERT INTO {table_name} ({cols}) SELECT * FROM data")
+
+    def _pandas_to_duckdb_type(self, dtype: np.dtype) -> str:
+        """Heuristic mapping from pandas dtypes to DuckDB SQL types."""
+        dtype_str = str(dtype).lower()
+        if "int8" in dtype_str: return "TINYINT"
+        if "int16" in dtype_str: return "SMALLINT"
+        if "int32" in dtype_str: return "INTEGER"
+        if "int" in dtype_str: return "BIGINT"
+        if "float16" in dtype_str or "float32" in dtype_str: return "REAL"
+        if "float" in dtype_str: return "DOUBLE"
+        if "bool" in dtype_str: return "BOOLEAN"
+        if "datetime" in dtype_str: return "TIMESTAMP"
+        return "VARCHAR"
+    
+    def _evolve_schema(self, table_name: str, data: pd.DataFrame) -> None:
+        """
+        Dynamically expands the DuckDB table if the incoming DataFrame 
+        has new columns.
+        """
+        stored_schema = self._get_schema(table_name)
+        stored_cols = set(stored_schema.keys())
+        
+        for col in data.columns:
+            if col not in stored_cols:
+                sql_type = self._pandas_to_duckdb_type(data[col].dtype)
+                # Execute schema evolution
+                self.conn.execute(f'ALTER TABLE {table_name} ADD COLUMN "{col}" {sql_type}')
 
     # ------------------------------------------------------------------
     # export

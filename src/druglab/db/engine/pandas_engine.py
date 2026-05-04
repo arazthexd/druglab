@@ -169,8 +169,7 @@ class PandasEngine(BaseEngine[pd.DataFrame]):
             # CREATE: deep-copy to ensure the engine owns its data
             self._store[table_name] = data.copy()
         else:
-            # APPEND: validate schema first
-            self._validate_schema(table_name, data)
+            # APPEND: pd.concat automatically handles schema union (extra/missing columns)
             self._store[table_name] = pd.concat(
                 [self._store[table_name], data],
                 ignore_index=True,

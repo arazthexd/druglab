@@ -196,34 +196,58 @@ class TestCommonEngines:
         with pytest.raises(PermissionError):
             view.write("molecules", "metadata", dummy)
 
-    # --- schema validation ---
+    # --- schema validation / evolution ---
 
-    def test_write_rejects_extra_columns(self, engine):
-        bad_data = pd.DataFrame({
+    def test_write_evolves_schema_with_extra_columns(self, engine):
+        """Tests that Path 1 dynamically adds new columns to the backend."""
+        new_data = pd.DataFrame({
             "_row_id": [4],
-            "smiles": ["C"],
-            "molwt": [16.0],
-            "extra_col": ["oops"],
+            "smiles": ["C5"],
+            "molwt": [72.0],
+            "extra_col": ["new_info"],
         })
-        with pytest.raises(ValueError, match="extra columns"):
-            engine.write("molecules", "metadata", bad_data)
+        
+        # This used to raise a ValueError, now it should successfully evolve the schema
+        engine.write("molecules", "metadata", new_data)
+        
+        df_all = engine.materialize("molecules", "metadata")
+        
+        assert len(df_all) == 5
+        assert "extra_col" in df_all.columns
+        
+        # Check that the new row has the expected value
+        assert df_all.loc[df_all["_row_id"] == 4, "extra_col"].iloc[0] == "new_info"
+        
+        # Older rows should have NaN/NULL for the newly added column
+        assert pd.isna(df_all.loc[df_all["_row_id"] == 0, "extra_col"].iloc[0])
 
-    def test_write_rejects_missing_columns(self, engine):
-        bad_data = pd.DataFrame({
+    def test_write_handles_missing_columns(self, engine):
+        """Tests that missing columns are safely ignored and filled with NULL/NaN."""
+        partial_data = pd.DataFrame({
             "_row_id": [4],
-            "smiles": ["C"],
-            # molwt is missing
+            "smiles": ["C5"],
+            # 'molwt' is deliberately missing
         })
-        with pytest.raises(ValueError, match="columns missing"):
-            engine.write("molecules", "metadata", bad_data)
+        
+        engine.write("molecules", "metadata", partial_data)
+        
+        df_all = engine.materialize("molecules", "metadata")
+        
+        assert len(df_all) == 5
+        assert df_all.loc[df_all["_row_id"] == 4, "smiles"].iloc[0] == "C5"
+        
+        # The missing column should be filled with NaN for the new row
+        assert pd.isna(df_all.loc[df_all["_row_id"] == 4, "molwt"].iloc[0])
 
     def test_write_accepts_correct_schema(self, engine):
+        """Baseline test: identical schema should still append normally."""
         good_data = pd.DataFrame({
             "_row_id": [4],
             "smiles": ["C"],
             "molwt": [16.0],
         })
         engine.write("molecules", "metadata", good_data)  # should not raise
+        assert engine.n_rows("molecules", "metadata") == 5
 
     # --- export ---
 
