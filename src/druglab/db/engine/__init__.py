@@ -1,18 +1,8 @@
-"""
+r"""
 Provide a unified data storage engine interface.
 
 This module defines the abstract contracts and concrete implementations
 for moving data in and out of various storage backends.
-
-**Hierarchy**
-
-- `BaseEngine`: Universal contract (abstract)
-  - `InMemoryEngine`: In-process, volatile (abstract)
-      - `PandasEngine`
-      - `NumPyEngine`
-  - `OnDiskEngine`: Persistent, local filesystem (abstract)
-      - `DuckDBEngine`
-      - `ZarrEngine`
 
 **Design Principles**
 
@@ -28,3 +18,6 @@ for moving data in and out of various storage backends.
    selectors, etc.) without the base class trying to abstract it away.
 """
 
+from .base import *
+from .utils import *
+from .impls import *

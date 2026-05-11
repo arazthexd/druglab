@@ -2,9 +2,14 @@ from __future__ import annotations
  
 import abc
 import os
+from enum import Enum
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterator, Sequence
+
+import pyarrow as pa
+import pyarrow.dataset as pad
+import numpy as np
 
 # ---------------------------------------------------------------------------
 # Capability descriptor
@@ -45,7 +50,7 @@ class EngineCapabilities:
     supports_schema_evolution: bool = False
 
 # ---------------------------------------------------------------------------
-# Read / Write option bundles
+# Read options
 # ---------------------------------------------------------------------------
 
 @dataclass
@@ -55,16 +60,137 @@ class ReadOptions:
     filters: list[tuple] | None = None      # list of (col, op, val) triples
     limit: int | None = None                # max rows to return
     offset: int = 0                         # skip first N rows
-    batch_size: int | None = None           # rows per batch in streaming reads
+    batch_size: int = 128_000               # rows per batch in streaming reads
+
+# ---------------------------------------------------------------------------
+# Write options
+# ---------------------------------------------------------------------------
+
+class WriteMode(str, Enum):
+    """
+    Describes how incoming rows are merged with any existing data.
  
+    OVERWRITE
+        Replace the entire dataset with the incoming data.
+        Existing rows are discarded regardless of content.
  
+    APPEND
+        Add incoming rows after existing rows with no deduplication check.
+        Use when you know the incoming rows are new (e.g. time-series).
+        Will create duplicates if the same rows are written twice.
+ 
+    UPSERT
+        For each incoming row: if a row with the same value of `key_columns`
+        already exists, update it; otherwise insert it.
+        Requires WriteOptions.key_columns to be set.
+        Error if key_columns is empty.
+ 
+    REPLACE_WHERE
+        Replace only the rows that match WriteOptions.replace_filter,
+        leaving all other rows untouched.
+        Incoming data replaces the matched rows entirely (not column-by-column).
+        Requires WriteOptions.replace_filter to be set.
+        Analogous to Delta Lake's replaceWhere option.
+    """
+    OVERWRITE      = "overwrite"
+    APPEND         = "append"
+    UPSERT         = "upsert"
+    REPLACE_WHERE  = "replace_where"
+
+class IfExists(str, Enum):
+    """
+    What to do if the target dataset does or does not exist yet.
+    This is a creation guard, orthogonal to WriteMode.
+ 
+    REPLACE 
+        Create the dataset if it doesn't exist;
+        silently proceed if it does.
+    ERROR               
+        Raise if the dataset already exists.
+        Useful for preventing accidental overwrites.
+    IGNORE              
+        Do nothing if the dataset already exists.
+        The write is a no-op when the dataset is present.
+    CREATE_ONLY         
+        Raise if the dataset does NOT exist.
+        Useful for enforcing that a schema was pre-created.
+    """
+    REPLACE     = "replace"
+    ERROR       = "error"
+    IGNORE      = "ignore"
+    CREATE_ONLY = "create_only"
+
+class SchemaEvolution(str, Enum):
+    """
+    How to handle schema mismatches between incoming data and existing data.
+ 
+    STRICT      
+        Incoming schema must exactly match existing schema.
+        Extra or missing columns raise SchemaError.
+    MERGE       
+        Add new columns from the incoming schema to the existing one,
+        filling missing values with null for existing rows.
+        Columns present in existing but absent in incoming are kept
+        and filled with null for the new rows.
+    OVERWRITE   
+        Adopt the incoming schema wholesale.
+        Existing columns absent in incoming are dropped.
+    """
+    STRICT    = "strict"
+    MERGE     = "merge"
+    OVERWRITE = "overwrite"
+
+class SchemaError(Exception):
+    """Raised when incoming schema is incompatible with existing schema."""
+
 @dataclass
 class WriteOptions:
-    """Options that apply across all engines for a write operation."""
-    mode: str = "overwrite"                 # "overwrite" | "append" | "error_if_exists"
-    schema_evolution: str = "strict"        # "strict" | "merge" | "overwrite"
+    """
+    Controls how a write operation behaves.
+
+    Attributes:
+        mode (WriteMode): 
+            How rows are merged.
+        if_exists (IfExists): 
+            Creation guard.
+        schema_evolution (SchemaEvolution): 
+            How schema mismatches are handled.
+        key_columns (Optional[List[str]]): 
+            Required when mode=UPSERT. The columns that identify a row uniquely. 
+            Rows with matching key values are updated; others are inserted.
+        replace_filter (Optional[List[Tuple[str, str, Any]]]): 
+            Required when mode=REPLACE_WHERE. A (col, op, val) filter list — rows 
+            matching this are replaced; rows not matching are kept unchanged.
+        partition_by (Optional[List[str]]): 
+            Hive-partition the output by these columns. Ignored by in-memory 
+            engines (no filesystem).
+        compression (Optional[str]): 
+            Codec hint (e.g. "snappy", "zstd"). Ignored by in-memory engines 
+            (no serialisation).
+        max_rows_per_file (Optional[int]): 
+            Split output across multiple files. Ignored by in-memory engines.
+
+    These options below are hints to on-disk / cloud engines. In-memory engines 
+    document why they ignore them.
+    """
+    mode: WriteMode = WriteMode.OVERWRITE
+    if_exists: IfExists = IfExists.REPLACE
+    schema_evolution: SchemaEvolution = SchemaEvolution.STRICT
+ 
+    # Mode-specific parameters
+    key_columns: list[str] = field(default_factory=list)
+    replace_filter: list[tuple] | None = None
+ 
+    # On-disk / cloud hints (no-ops for in-memory engines)
     partition_by: list[str] = field(default_factory=list)
-    compression: str | None = None          # hint; backend may ignore
+    compression: str | None = None
+    max_rows_per_file: int | None = None
+ 
+    def __post_init__(self) -> None:
+        if self.mode == WriteMode.UPSERT and not self.key_columns:
+            raise ValueError("WriteMode.UPSERT requires key_columns to be set.")
+        if self.mode == WriteMode.REPLACE_WHERE and self.replace_filter is None:
+            raise ValueError("WriteMode.REPLACE_WHERE requires replace_filter to be set.")
 
 # ---------------------------------------------------------------------------
 # Schema wrapper
@@ -80,3 +206,86 @@ class DatasetInfo:
     column_types: dict[str, str]  # column name → human-readable type string
     size_bytes: int | None        # None if not available
     extra: dict[str, Any] = field(default_factory=dict)
+
+# ---------------------------------------------------------------------------
+# I/O helpers
+# ---------------------------------------------------------------------------
+
+def normalize_to_reader(data: Any) -> pa.RecordBatchReader:
+    """
+    Convert any supported input type to a pa.RecordBatchReader.
+ 
+    Accepted types (checked with isinstance, not duck-typing):
+        pa.Table               >> wrap in InMemoryDataset, get scanner, get reader
+        pa.RecordBatchReader   >> pass through
+        pa.dataset.Dataset     >> scanner with no filters, then reader
+        pa.dataset.Scanner     >> directly to reader
+        pd.DataFrame           >> Table >> reader (pandas is optional)
+        np.ndarray (structured)>> Table >> reader
+        dict of arrays/lists   >> Table >> reader
+ 
+    Third-party types can be registered with register_reader_converter().
+    """
+    # 1. Already a reader.
+    if isinstance(data, pa.RecordBatchReader):
+        return data
+ 
+    # 2. PyArrow Table >> wrap in dataset so we go through the same path.
+    if isinstance(data, pa.Table):
+        ds: pad.Dataset = pad.dataset(data)
+        return ds.scanner().to_reader()
+ 
+    # 3. Scanner → reader directly (preserves the attached query plan).
+    if isinstance(data, pad.Scanner):
+        return data.to_reader()
+ 
+    # 4. Dataset → default scanner → reader.
+    if isinstance(data, pad.Dataset):
+        return data.scanner().to_reader()
+ 
+    # 5. Pandas DataFrame (optional dependency).
+    try:
+        import pandas as pd
+        if isinstance(data, pd.DataFrame):
+            ds = pad.dataset(pa.Table.from_pandas(data, preserve_index=False))
+            return ds.scanner().to_reader()
+    except ImportError:
+        pass
+ 
+    # 6. Numpy structured array (named dtype = column-oriented).
+    if isinstance(data, np.ndarray) and data.dtype.names:
+        tbl = pa.Table.from_pydict({name: data[name] for name in data.dtype.names})
+        ds = pad.dataset(tbl)
+        return ds.scanner().to_reader()
+ 
+    # 7. Dict of arrays / lists.
+    if isinstance(data, dict):
+        ds = pad.dataset(pa.Table.from_pydict(data))
+        return ds.scanner().to_reader()
+ 
+    # 8. Registered third-party converters.
+    for predicate, converter in _READER_CONVERTERS:
+        if predicate(data):
+            result = converter(data)
+            if not isinstance(result, pa.RecordBatchReader):
+                raise TypeError(
+                    f"Converter for {type(data).__name__} must return "
+                    f"pa.RecordBatchReader, got {type(result).__name__}."
+                )
+            return result
+ 
+    raise TypeError(
+        f"Cannot convert {type(data).__name__} to pa.RecordBatchReader. "
+        "Register a converter with register_reader_converter()."
+    )
+ 
+ 
+_READER_CONVERTERS: list[tuple] = []
+def register_reader_converter(predicate, converter) -> None:
+    """
+    Register a converter for a third-party type.
+ 
+    predicate : callable(obj) -> bool
+    converter : callable(obj) -> pa.RecordBatchReader
+    """
+    _READER_CONVERTERS.append((predicate, converter))

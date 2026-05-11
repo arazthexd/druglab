@@ -1,12 +1,45 @@
+"""
+Abstract engine interface.
+
+This module defines the abstract contracts and concrete implementations
+for moving data in and out of various storage backends.
+
+**Hierarchy**
+ 
+`BaseEngine`
+    Universal contract. Every engine, regardless of storage medium, must
+    implement these methods. Includes delete_rows and drop as base contracts.
+ 
+`InMemoryEngine(BaseEngine)`
+    Adds: no-op lifecycle, clear(), memory_usage(), backend property,
+    shared helpers: _collect_reader, _apply_schema_evolution, _check_if_exists.
+ 
+`PersistentEngine(BaseEngine)`
+    Abstract mid-layer shared by OnDiskEngine and CloudEngine.
+    Adds: connect/disconnect as abstract (persistence requires real I/O),
+    is_connected tracking, flush().
+ 
+`OnDiskEngine(PersistentEngine)`
+    Adds: root path, dataset_path(), compact().
+ 
+`CloudEngine(PersistentEngine)`
+    Adds: URI, region/credential hints, async read/write contract.
+"""
+
+
 from __future__ import annotations
 
 from typing import Any, Self, Iterator
 from abc import ABC, abstractmethod
 from pathlib import Path
 
+import numpy as np
 import pyarrow as pa
+import pyarrow.dataset as pad
 
 from .utils import ReadOptions, WriteOptions, EngineCapabilities, DatasetInfo
+from .utils import normalize_to_reader
+from .utils import WriteMode, IfExists, SchemaEvolution, SchemaError
 
 # ---------------------------------------------------------------------------
 # BASE ENGINE
@@ -28,11 +61,6 @@ class BaseEngine(ABC):
     @abstractmethod
     def name(self) -> str:
         """Human-readable engine name, e.g. 'pandas', 'duckdb'."""
- 
-    @property
-    @abstractmethod
-    def capabilities(self) -> EngineCapabilities:
-        """Declare what this engine supports."""
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -65,32 +93,90 @@ class BaseEngine(ABC):
         self.disconnect()
 
     # ------------------------------------------------------------------
-    # Core I/O — Arrow as the main language
+    # Core read
     # ------------------------------------------------------------------
- 
+
     @abstractmethod
-    def _read_arrow(self, dataset: str, options: ReadOptions) -> pa.Table:
+    def _scan(self, dataset: str, options: "ReadOptions") -> pad.Scanner:
         """
-        Return the dataset as a pyarrow.Table.
-        Engines that cannot produce Arrow natively must convert internally.
-        """
+        Return a Scanner with filters and projections attached but NO data read.
  
+        For on-disk engines (DuckDB, Parquet, Zarr): produce a native scanner.
+        For in-memory engines (pandas, numpy): wrap in InMemoryDataset.
+ 
+        The Scanner is engine-internal.  It exists so:
+
+            1.  filters are pushed into the source before data crosses boundaries
+            2.  other engines can consume it without going through Python objects 
+                DuckDB can FROM a Scanner directly via conn.execute("SELECT ... FROM scanner"))
+        """
+
+    def read(self, dataset: str, options: "ReadOptions | None" = None) -> pa.RecordBatchReader:
+        """
+        Public streaming read.  Returns a RecordBatchReader.
+ 
+        Nothing is loaded into memory until the caller iterates batches.
+        The caller controls memory pressure by choosing batch_size in options.
+ 
+        **Usage**
+        ```python
+        reader = engine.read("molecules")
+        for batch in reader:                     # pa.RecordBatch per iteration
+            process(batch)
+ 
+        # Or read everything at once (explicit opt-in):
+        table = engine.to_table("molecules")
+
+        # Which is just the short hand for this:
+        table = engine.read("molecules").to_table()
+        ```
+        """
+        opts = options or ReadOptions()
+        scanner = self._scan(dataset, opts)
+        return scanner.to_reader()
+    
+    def to_table(self, dataset: str, options: "ReadOptions | None" = None) -> pa.Table:
+        """
+        Materialise the entire output dataset into a pa.Table.
+ 
+        This is an explicit, named operation — the caller is saying
+        "I know this fits in memory and I want a Table."
+        It is NOT the default return type.
+        """
+        opts = options or ReadOptions()
+        scanner = self._scan(dataset, opts)
+        return scanner.to_table()
+    
+    def to_pandas(self, dataset: str, options: "ReadOptions | None" = None):
+        """Materialise as a pandas DataFrame.  Explicit opt-in."""
+        return self.to_table(dataset, options).to_pandas()
+    
+    # ------------------------------------------------------------------
+    # Core write
+    # ------------------------------------------------------------------
+
     @abstractmethod
-    def _write_arrow(self, dataset: str, table: pa.Table, options: WriteOptions) -> None:
+    def _write_reader(self, dataset: str, reader: pa.RecordBatchReader, options: "WriteOptions") -> None:
         """
-        Persist a pyarrow.Table.
-        `dataset` is the logical name (table name, file path, key, etc.).
+        Persist data arriving as a RecordBatchReader.
+ 
+        Engines consume the reader in batches — they never need to load the
+        full dataset into memory.  This is the only write path engines implement.
+ 
+        The reader may be consumed exactly once.
         """
  
-    def read(self, dataset: str, options: ReadOptions | None = None) -> pa.Table:
-        """Public read — returns a pyarrow.Table."""
-        self._assert_connected()
-        return self._read_arrow(dataset, options or ReadOptions())
+    def write(self, dataset: str, data: Any, options: "WriteOptions | None" = None) -> None:
+        """
+        Write data to a dataset.
  
-    def write(self, dataset: str, table: pa.Table, options: WriteOptions | None = None) -> None:
-        """Public write — accepts a pyarrow.Table."""
-        self._assert_connected()
-        self._write_arrow(dataset, table, options or WriteOptions())
+        Accepts pa.Table, pa.RecordBatchReader, pa.dataset.Scanner,
+        pa.dataset.Dataset, pd.DataFrame, np.ndarray (structured), or dict.
+        Normalises to RecordBatchReader internally — engines only see one type.
+        """
+        opts = options or WriteOptions()
+        reader = normalize_to_reader(data)
+        self._write_reader(dataset, reader, opts)
 
     # ------------------------------------------------------------------
     # Schema & metadata
@@ -116,69 +202,72 @@ class BaseEngine(ABC):
         """Return True if the dataset exists."""
 
     # ------------------------------------------------------------------
-    # Streaming / batched reads  (optional — check capabilities first)
+    # Scanner first-class escape hatch
     # ------------------------------------------------------------------
  
-    def stream(
+    def scanner(
         self,
         dataset: str,
-        options: ReadOptions | None = None,
-    ) -> Iterator:
+        options: "ReadOptions | None" = None,
+    ) -> pad.Scanner:
         """
-        Yield pyarrow.RecordBatches one at a time.
-        Default implementation reads everything and then yields batches;
-        engines with native streaming should override this.
+        Return the Scanner directly for advanced use cases:
+ 
+        - Pass to another engine:    duckdb_engine.from_scanner(scanner)
+        - Inspect the schema:        scanner.projected_schema
+        - Count without reading:     scanner.count_rows()
+        - Write to Parquet directly: pad.write_dataset(scanner, "/out", format="parquet")
+ 
+        Most callers should use read() or to_table() instead.
         """
-        opts = options or ReadOptions()
-        table = self.read(dataset, opts)
-        batch_size = opts.batch_size or len(table)
-        for batch in table.to_batches(max_chunksize=batch_size):
-            yield batch
+        return self._scan(dataset, options or ReadOptions())
  
-    # ------------------------------------------------------------------
-    # Mutations  (optional — check capabilities first)
-    # ------------------------------------------------------------------
- 
-    def append(self, dataset: str, table, options: WriteOptions | None = None) -> None:
-        """Append rows to an existing dataset."""
-        opts = WriteOptions(**(vars(options) if options else {}))
-        opts.mode = "append"
-        self.write(dataset, table, opts)
- 
-    def delete(self, dataset: str, filters: list[tuple] | None = None) -> int:
+    def from_scanner(self, dataset: str, scanner: pad.Scanner, options: "WriteOptions | None" = None) -> None:
         """
-        Delete rows matching `filters`, or the entire dataset if None.
-        Returns the number of rows deleted (-1 if unknown).
-        Engines that support deletes must override this.
-        """
-        raise NotImplementedError(
-            f"{self.name} does not support row-level deletes. "
-            "Check engine.capabilities.supports_delete before calling."
-        )
+        Write directly from a Scanner produced by another engine.
+        Avoids materialising a Table as an intermediary.
  
-    def upsert(self, dataset: str, table, key_columns: list[str]) -> None:
-        """Insert or update rows identified by `key_columns`."""
-        raise NotImplementedError(
-            f"{self.name} does not support upserts. "
-            "Check engine.capabilities.supports_upsert before calling."
-        )
+        Example: copy a filtered DuckDB result into a Parquet file engine:
+        ```python
+            parquet_engine.from_scanner("output", duckdb_engine.scanner("molecules",
+                ReadOptions(filters=[("mw", "<=", 500)])))
+        ```
+        """
+        self._write_reader(dataset, scanner.to_reader(), options or WriteOptions())
 
     # ------------------------------------------------------------------
-    # Native execution escape hatch
+    # Delete — base contract, present on every engine
     # ------------------------------------------------------------------
- 
-    def execute(self, query: str, parameters: dict[str, Any] | None = None):
+
+    @abstractmethod
+    def delete_rows(
+        self,
+        dataset: str,
+        row_filter: list[tuple] | None = None,
+    ) -> int:
         """
-        Run a backend-native query (SQL, pandas query string, etc.)
-        and return results as a pyarrow.Table.
+        Delete rows from a dataset.
  
-        This is intentionally *not* abstract — not all engines support it —
-        but engines that do (DuckDB, SQLite, …) should override it.
+        Parameters
+        ----------
+        dataset     Target dataset.
+        row_filter  (col, op, val) filter list. Matching rows are deleted.
+                    If None, ALL rows are deleted (dataset is emptied but
+                    its schema is preserved — analogous to SQL TRUNCATE).
+                    This is intentionally distinct from drop().
+ 
+        Returns the number of rows deleted.
         """
-        raise NotImplementedError(
-            f"{self.name} does not expose a native query interface. "
-            "Check engine.capabilities.supports_sql before calling."
-        )
+
+    @abstractmethod
+    def drop(self, dataset: str, col_filter: list[tuple] | None = None) -> None:
+        """
+        Remove an entire dataset or specific columns of it, including its schema 
+        and any associated metadata (analogous to SQL DROP TABLE if col_filter=None).
+ 
+        Raises KeyError if the dataset does not exist.
+        Use exists() to check first if unsure.
+        """
 
     # ------------------------------------------------------------------
     # Introspection helpers
@@ -194,13 +283,6 @@ class BaseEngine(ABC):
                 f"{self.name} engine is not connected. "
                 "Call connect() or use the engine as a context manager."
             )
- 
-    def _require_capability(self, flag: str) -> None:
-        if not getattr(self.capabilities, flag):
-            raise NotImplementedError(
-                f"{self.name} does not support '{flag}'. "
-                f"Check engine.capabilities.{flag} before calling."
-            )
         
 # ---------------------------------------------------------------------------
 # IN-MEMORY ENGINE (abstract mid-layer)
@@ -208,124 +290,367 @@ class BaseEngine(ABC):
  
 class InMemoryEngine(BaseEngine, ABC):
     """
-    Base for engines whose data lives in process memory.
+    Abstract base for engines whose data lives entirely in process memory.
  
-    **Extra contract**
-    - Must expose the raw backend object via `.backend` for power users.
-    - Must support `.clear()` to free memory.
-    - Persistence is always False; remote is always False.
+    **Overrides**
+    - connect / disconnect / is_connected — no-ops; always ready.
+ 
+    **Adds**
+    - memory_usage()  Approximate bytes consumed.
+    - backend         Property exposing raw internal storage for power users.
+    - _collect_reader / _apply_schema_evolution / _check_if_exists
+                      Shared write-time helpers used by all in-memory engines.
     """
+
+    # ------------------------------------------------------------------
+    # Lifecycle — no-ops for in-memory
+    # ------------------------------------------------------------------
  
-    @property
-    @abstractmethod
-    def backend(self) -> Any:
-        """
-        The raw backend object, e.g. a dict of DataFrames for PandasEngine.
-        Useful for power users who want to reach past the abstraction layer.
-        """
- 
-    @abstractmethod
-    def clear(self, dataset: str | None = None) -> None:
-        """
-        Drop all data for `dataset`, or everything if dataset is None.
-        Useful for resetting state between tests.
-        """
- 
-    @abstractmethod
-    def memory_usage(self, dataset: str | None = None) -> int:
-        """Return approximate memory usage in bytes."""
- 
-    # In-memory engines are always "connected" — no I/O to open.
     def connect(self) -> None:
-        pass
+        """No-op. In-memory engines require no connection setup."""
  
     def disconnect(self) -> None:
-        pass
+        """No-op. In-memory engines have no connection to close."""
  
     @property
     def is_connected(self) -> bool:
         return True
  
+    def __enter__(self) -> "InMemoryEngine":
+        return self
+ 
+    def __exit__(self, *_: Any) -> None:
+        pass
+
+    # ------------------------------------------------------------------
+    # Abstract contract
+    # ------------------------------------------------------------------
+
+    @property
+    @abstractmethod
+    def backend(self) -> Any:
+        """Raw internal storage (e.g. dict[str, pa.Table])."""
+ 
+    @abstractmethod
+    def memory_usage(self, dataset: str | None = None) -> int:
+        """Return approximate memory usage in bytes for one or all datasets."""
+
+    # ------------------------------------------------------------------
+    # Shared helpers available to all in-memory subclasses
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _collect_reader(reader: pa.RecordBatchReader) -> pa.Table:
+        """
+        Drain a RecordBatchReader into a pa.Table.
+ 
+        In-memory engines always need the full table before they can do
+        anything with it (merge, upsert, etc.), so this helper avoids
+        repeating the same pattern in every subclass.
+        """
+        return pa.Table.from_batches(list(reader), schema=reader.schema)
+ 
+    @staticmethod
+    def _apply_schema_evolution(
+        existing: pa.Table,
+        incoming: pa.Table,
+        evolution: SchemaEvolution,
+    ) -> tuple[pa.Table, pa.Table]:
+        """
+        Reconcile the schemas of `existing` and `incoming` according to `evolution`.
+ 
+        Returns (existing_reconciled, incoming_reconciled) — both cast to the
+        agreed schema so the caller can safely concatenate or merge them.
+ 
+        STRICT     → raise SchemaError if schemas differ.
+        MERGE      → union of both schemas; fill missing columns with null.
+        OVERWRITE  → adopt incoming schema; drop columns absent from incoming.
+        """
+        e_names = set(existing.schema.names)
+        i_names = set(incoming.schema.names)
+ 
+        if evolution == SchemaEvolution.STRICT:
+            if existing.schema != incoming.schema:
+                raise SchemaError(
+                    f"Schema mismatch (SchemaEvolution.STRICT).\n"
+                    f"  Existing : {existing.schema}\n"
+                    f"  Incoming : {incoming.schema}\n"
+                    f"  Only in existing : {e_names - i_names}\n"
+                    f"  Only in incoming : {i_names - e_names}"
+                )
+            return existing, incoming
+ 
+        if evolution == SchemaEvolution.OVERWRITE:
+            # Drop columns from existing that are absent in incoming.
+            keep = [c for c in existing.schema.names if c in i_names]
+            return existing.select(keep), incoming
+ 
+        # MERGE: full outer union of columns.
+        all_columns = list(existing.schema.names) + [
+            c for c in incoming.schema.names if c not in e_names
+        ]
+        # Pad existing with nulls for new columns.
+        for col in i_names - e_names:
+            dtype = incoming.schema.field(col).type
+            existing = existing.append_column(
+                col, pa.array([None] * existing.num_rows, type=dtype)
+            )
+        # Pad incoming with nulls for columns only in existing.
+        for col in e_names - i_names:
+            dtype = existing.schema.field(col).type
+            incoming = incoming.append_column(
+                col, pa.array([None] * incoming.num_rows, type=dtype)
+            )
+        # Reorder both to the same column order.
+        return existing.select(all_columns), incoming.select(all_columns)
+ 
+    def _check_if_exists(self, dataset: str, if_exists: IfExists) -> bool:
+        """
+        Enforce the IfExists policy before a write.
+ 
+        Returns True  → proceed with the write.
+        Returns False → skip the write (IGNORE case).
+        Raises        → ERROR / CREATE_ONLY violations.
+        """
+        dataset_exists = self.exists(dataset)
+ 
+        if if_exists == IfExists.ERROR and dataset_exists:
+            raise FileExistsError(
+                f"Dataset '{dataset}' already exists "
+                f"(if_exists={IfExists.ERROR})."
+            )
+        if if_exists == IfExists.IGNORE and dataset_exists:
+            return False    # caller should skip the write
+        if if_exists == IfExists.CREATE_ONLY and not dataset_exists:
+            raise FileNotFoundError(
+                f"Dataset '{dataset}' does not exist "
+                f"(if_exists={IfExists.CREATE_ONLY}). "
+                "Create the dataset first before writing to it."
+            )
+        return True
  
 # ---------------------------------------------------------------------------
-# ON-DISK ENGINE (abstract mid-layer)
+# PERSISTENT ENGINE (shared mid-layer for OnDisk and Cloud)
 # ---------------------------------------------------------------------------
  
-class OnDiskEngine(BaseEngine, ABC):
+class PersistentEngine(BaseEngine, ABC):
     """
-    Base for engines that persist data on the local filesystem.
+    Abstract mid-layer for engines that persist data outside the process.
  
-    **Extra contract**
-    - Construction takes a `root` path; all dataset paths are relative to it.
-    - Exposes `.flush()` and `.compact()` for explicit durability control.
-    - Exposes `.dataset_path()` so callers can hand off the raw path to other
-      tools without going through the engine API.
+    **Shared behaviour**
+    - connect / disconnect are abstract — persistent engines always have
+      real I/O to set up (file handles, network connections, auth tokens).
+    - is_connected is tracked via a _connected flag set by subclasses.
+    - flush() is abstract — persistent engines must expose explicit durability
+      control since data lives outside the process.
+ 
+    **Not included here**
+    - Filesystem paths (OnDiskEngine)
+    - URIs and async I/O (CloudEngine)
     """
- 
-    def __init__(self, root: str | Path) -> None:
-        self._root = Path(root)
-        self._connected = False
+
+    def __init__(self) -> None:
+        self._connected: bool = False
  
     @property
-    def root(self) -> Path:
-        return self._root
+    def is_connected(self) -> bool:
+        return self._connected
  
-    def dataset_path(self, dataset: str) -> Path:
-        """Return the absolute filesystem path for a dataset."""
-        return self._root / dataset
+    @abstractmethod
+    def connect(self) -> None:
+        """
+        Open connections, acquire file handles, resolve credentials.
+        Must set self._connected = True on success.
+        """
+ 
+    @abstractmethod
+    def disconnect(self) -> None:
+        """
+        Flush in-flight writes and release all resources.
+        Must set self._connected = False.
+        """
  
     @abstractmethod
     def flush(self) -> None:
         """
-        Force any buffered writes to durable storage.
-        For engines with write-behind caches (e.g. Zarr chunk buffers).
+        Force any buffered or in-flight writes to durable storage.
+        For engines with write-behind caches (Zarr chunk buffers,
+        DuckDB WAL, object-store multipart uploads).
         """
+    
+# ---------------------------------------------------------------------------
+# ON-DISK ENGINE
+# ---------------------------------------------------------------------------
+
+class OnDiskEngine(PersistentEngine, ABC):
+    """
+    Abstract base for engines that persist data on the local filesystem.
+ 
+    **Adds**
+    
+    - root          The directory under which all datasets live.
+    - dataset_path  Resolve a dataset name to an absolute Path.
+    - compact()     Rewrite fragmented files into optimally-sized ones.
+                    Default is a documented no-op; engines that benefit
+                    (DuckDB VACUUM, Parquet rewrite) override it.
+ 
+    **Lifecycle**
+
+    connect() should validate that self.root exists and is writable,
+    open any persistent connections (e.g. DuckDB file handle), and
+    set self._connected = True.
+ 
+    disconnect() should call flush() then release all handles.
+    """
+ 
+    def __init__(self, root: str | Path) -> None:
+        super().__init__()
+        self._root = Path(root)
+ 
+    @property
+    def root(self) -> Path:
+        """Root directory. All dataset paths are relative to this."""
+        return self._root
+ 
+    def dataset_path(self, dataset: str) -> Path:
+        """
+        Resolve a logical dataset name to an absolute filesystem path.
+        Exposes the raw path so other tools (rsync, S3 sync, nbformat)
+        can work with the data directly without going through the engine.
+        """
+        return self._root / dataset
  
     def compact(self, dataset: str) -> None:
         """
-        Rewrite fragmented files into a single, optimally-sized file.
-        Optional; engines that support it (DuckDB VACUUM, Parquet rewrite)
-        should override this.
+        Rewrite fragmented storage into optimally-sized files.
+ 
+        Default: documented no-op — not all on-disk engines fragment.
+        Override in engines where compaction is meaningful:
+          DuckDB  → VACUUM
+          Parquet → rewrite row groups
+          Zarr    → rechunk
         """
-        # Default no-op — override in engines that benefit from compaction.
  
-    @property
-    def is_connected(self) -> bool:
-        return self._connected
+    def connect(self) -> None:
+        """
+        Default implementation: validate root exists and is writable.
+        Engines with additional setup (DuckDB connection, file locks)
+        should call super().connect() then do their own setup.
+        """
+        self._root.mkdir(parents=True, exist_ok=True)
+        if not self._root.is_dir():
+            raise NotADirectoryError(f"root is not a directory: {self._root}")
+        self._connected = True
  
- 
-# ---------------------------------------------------------------------------
-# CLOUD ENGINE (abstract mid-layer — placeholder for future use)
-# ---------------------------------------------------------------------------
- 
-class CloudEngine(BaseEngine, ABC):
-    """
-    Base for engines backed by remote object stores (S3, GCS, Azure Blob).
- 
-    **Extra contract**
-    - Construction takes a URI (e.g. s3://bucket/prefix).
-    - Credential resolution is backend-specific (boto3 chain, GCP ADC, …);
-      the base class does not touch credentials.
-    - Async I/O is recommended — engines should expose `aread` / `awrite`
-      if the backend supports it.
-    """
- 
-    def __init__(self, uri: str) -> None:
-        self._uri = uri
+    def disconnect(self) -> None:
+        """Default: flush then mark disconnected."""
+        self.flush()
         self._connected = False
+
+# ---------------------------------------------------------------------------
+# CLOUD ENGINE
+# ---------------------------------------------------------------------------
+ 
+class CloudEngine(PersistentEngine, ABC):
+    """
+    Abstract base for engines backed by remote object stores
+    (S3, GCS, Azure Blob, etc.).
+ 
+    Adds
+    ----
+    - uri           The root URI (e.g. 's3://bucket/prefix').
+    - region        Optional region hint passed to the SDK.
+    - dataset_uri   Resolve a dataset name to a full URI.
+    - aread / awrite  Async variants of read/write.
+                    Cloud I/O is latency-bound, not CPU-bound, so async
+                    is a first-class concern here. Engines that support
+                    async should implement these; those that don't can
+                    raise NotImplementedError with a clear message.
+ 
+    Credentials
+    -----------
+    Credential resolution is intentionally left to the backend SDK:
+      AWS  → boto3 credential chain (env, ~/.aws, instance profile)
+      GCP  → Application Default Credentials
+      Azure→ DefaultAzureCredential
+    The engine should not accept raw secrets as constructor arguments.
+    Use environment variables or SDK-native credential providers instead.
+ 
+    Lifecycle
+    ---------
+    connect() should initialise the SDK client and validate that the
+    root URI is reachable (e.g. a lightweight HEAD / list operation).
+    disconnect() should flush multipart uploads and release SDK clients.
+    """
+ 
+    def __init__(self, uri: str, region: str | None = None) -> None:
+        super().__init__()
+        self._uri = uri.rstrip("/")
+        self._region = region
  
     @property
     def uri(self) -> str:
+        """Root URI. All dataset URIs are relative to this."""
         return self._uri
  
     @property
-    def is_connected(self) -> bool:
-        return self._connected
+    def region(self) -> str | None:
+        return self._region
+ 
+    def dataset_uri(self, dataset: str) -> str:
+        """Resolve a logical dataset name to a full URI."""
+        return f"{self._uri}/{dataset}"
  
     @abstractmethod
-    async def aread(self, dataset: str, options: ReadOptions | None = None):
-        """Async read — returns a pyarrow.Table."""
+    async def aread(
+        self,
+        dataset: str,
+        options: ReadOptions | None = None,
+    ) -> pa.RecordBatchReader:
+        """
+        Async streaming read. Returns a RecordBatchReader.
+ 
+        Use when the caller is in an async context (web server, async
+        pipeline) and cannot afford to block the event loop on network I/O.
+        """
  
     @abstractmethod
-    async def awrite(self, dataset: str, table, options: WriteOptions | None = None) -> None:
-        """Async write — accepts a pyarrow.Table."""
+    async def awrite(
+        self,
+        dataset: str,
+        data: Any,
+        options: WriteOptions | None = None,
+    ) -> None:
+        """
+        Async write. Accepts the same input types as write().
+ 
+        Implementations should use multipart / resumable uploads where
+        available so large datasets don't require holding everything in
+        memory during the upload.
+        """
+ 
+    async def adelete_rows(
+        self,
+        dataset: str,
+        row_filter: list[tuple] | None = None,
+    ) -> int:
+        """
+        Async row deletion. Default: delegates to synchronous delete_rows().
+ 
+        Cloud engines where deletion is expensive (requires rewriting
+        Parquet files on S3) should override this with a proper async
+        implementation or raise NotImplementedError with a clear message
+        explaining the cost.
+        """
+        return self.delete_rows(dataset, row_filter)
+ 
+    async def adrop(self, dataset: str) -> None:
+        """Async dataset drop. Default: delegates to synchronous drop()."""
+        self.drop(dataset)
+ 
+    def flush(self) -> None:
+        """
+        Default: no-op for cloud engines that use atomic uploads.
+        Engines with multipart upload buffers should override this to
+        complete or abort any in-flight uploads.
+        """
