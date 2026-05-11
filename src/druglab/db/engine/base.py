@@ -1,7 +1,7 @@
 """
 Abstract engine interface.
 
-This module defines the abstract contracts and concrete implementations
+This module defines the abstract contracts
 for moving data in and out of various storage backends.
 
 **Hierarchy**
@@ -37,7 +37,7 @@ import numpy as np
 import pyarrow as pa
 import pyarrow.dataset as pad
 
-from .utils import ReadOptions, WriteOptions, EngineCapabilities, DatasetInfo
+from .utils import ReadOptions, WriteOptions, DatasetInfo
 from .utils import normalize_to_reader
 from .utils import WriteMode, IfExists, SchemaEvolution, SchemaError
 
@@ -54,7 +54,7 @@ class BaseEngine(ABC):
     """
 
     # ------------------------------------------------------------------
-    # Identity & capabilities
+    # Identity
     # ------------------------------------------------------------------
  
     @property
