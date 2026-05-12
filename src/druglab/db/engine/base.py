@@ -5,15 +5,18 @@ This module defines the abstract contracts
 for moving data in and out of various storage backends.
 
 **Hierarchy**
- 
+
 `BaseEngine`
     Universal contract. Every engine, regardless of storage medium, must
-    implement these methods. Includes delete_rows and drop as base contracts.
- 
+    implement these methods. Includes delete_rows, drop, and drop_columns
+    as base contracts.
+
 `InMemoryEngine(BaseEngine)`
     Adds: no-op lifecycle, clear(), memory_usage(), backend property,
     shared helpers: _collect_reader, _apply_schema_evolution, _check_if_exists.
- 
+    _apply_schema_evolution and _check_if_exists delegate to module-level
+    functions in utils so on-disk engines can share the same logic.
+
 `PersistentEngine(BaseEngine)`
     Abstract mid-layer shared by OnDiskEngine and CloudEngine.
     Adds: connect/disconnect as abstract (persistence requires real I/O),
@@ -21,9 +24,12 @@ for moving data in and out of various storage backends.
  
 `OnDiskEngine(PersistentEngine)`
     Adds: root path, dataset_path(), compact().
- 
-`CloudEngine(PersistentEngine)`
+    Provides a default no-op flush() for engines that write atomically.
+
+`CloudEngine(PersistentEngine, AsyncEngineMixin)`
     Adds: URI, region/credential hints, async read/write contract.
+    Inherits AsyncEngineMixin for _run_async() bridge between the
+    synchronous BaseEngine interface and async implementations.
 """
 
 
