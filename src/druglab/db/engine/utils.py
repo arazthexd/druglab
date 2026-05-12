@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Iterator, Sequence
 
 import pyarrow as pa
+import pyarrow.compute as pc
 import pyarrow.dataset as pad
 import numpy as np
 
@@ -54,6 +55,16 @@ class EngineCapabilities:
     supports_async: bool = False         # True only for AsyncEngineMixin subclasses
 
 # ---------------------------------------------------------------------------
+# Filter type alias
+# ---------------------------------------------------------------------------
+
+# Filters accept either DNF list-of-tuples (e.g. [("mw", "<=", 500)])
+# or a native PyArrow expression (e.g. pc.field("mw") <= 500).
+# Both forms are accepted natively by pyarrow.dataset.Scanner; this alias
+# just makes the intent visible in every signature that receives a filter.
+FilterType = list[tuple] | pc.Expression | None
+
+# ---------------------------------------------------------------------------
 # Read options
 # ---------------------------------------------------------------------------
 
@@ -61,7 +72,7 @@ class EngineCapabilities:
 class ReadOptions:
     """Options that apply across all engines for a read operation."""
     columns: list[str] | None = None        # column projection (None = all)
-    filters: list[tuple] | None = None      # list of (col, op, val) triples
+    filters: FilterType = None              # DNF tuples OR pc.Expression
     limit: int | None = None                # max rows to return
     offset: int = 0                         # skip first N rows
     batch_size: int = 128_000               # rows per batch in streaming reads
@@ -162,11 +173,12 @@ class WriteOptions:
         key_columns (Optional[List[str]]): 
             Required when mode=UPSERT. The columns that identify a row uniquely. 
             Rows with matching key values are updated; others are inserted.
-        replace_filter (Optional[List[Tuple[str, str, Any]]]): 
-            Required when mode=REPLACE_WHERE. A (col, op, val) filter list — rows 
-            matching this are replaced; rows not matching are kept unchanged.
-        partition_by (Optional[List[str]]): 
-            Hive-partition the output by these columns. Ignored by in-memory 
+        replace_filter (FilterType):
+            Required when mode=REPLACE_WHERE. A (col, op, val) filter list or
+            pc.Expression — rows matching this are replaced; rows not matching
+            are kept unchanged.
+        partition_by (Optional[List[str]]):
+            Hive-partition the output by these columns. Ignored by in-memory
             engines (no filesystem).
         compression (Optional[str]): 
             Codec hint (e.g. "snappy", "zstd"). Ignored by in-memory engines 
@@ -183,8 +195,8 @@ class WriteOptions:
  
     # Mode-specific parameters
     key_columns: list[str] = field(default_factory=list)
-    replace_filter: list[tuple] | None = None
- 
+    replace_filter: FilterType = None        # DNF tuples OR pc.Expression
+
     # On-disk / cloud hints (no-ops for in-memory engines)
     partition_by: list[str] = field(default_factory=list)
     compression: str | None = None
