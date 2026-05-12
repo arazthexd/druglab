@@ -261,11 +261,11 @@ class BaseEngine(ABC):
         """
 
     @abstractmethod
-    def drop(self, dataset: str, col_filter: list[tuple] | None = None) -> None:
+    def drop(self, dataset: str) -> None:
         """
-        Remove an entire dataset or specific columns of it, including its schema 
-        and any associated metadata (analogous to SQL DROP TABLE if col_filter=None).
- 
+        Remove an entire dataset including its schema and all associated
+        metadata (analogous to SQL DROP TABLE).
+
         Raises KeyError if the dataset does not exist.
         Use exists() to check first if unsure.
 
