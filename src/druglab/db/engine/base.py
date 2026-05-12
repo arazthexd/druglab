@@ -267,6 +267,18 @@ class BaseEngine(ABC):
  
         Raises KeyError if the dataset does not exist.
         Use exists() to check first if unsure.
+
+        For column removal use drop_columns().
+        """
+
+    @abstractmethod
+    def drop_columns(self, dataset: str, columns: list[str]) -> None:
+        """
+        Remove specific columns from a dataset, leaving all rows and the
+        remaining schema intact (analogous to SQL ALTER TABLE DROP COLUMN).
+
+        Raises KeyError   if the dataset does not exist.
+        Raises ValueError if any name in *columns* is not present in the schema.
         """
 
     # ------------------------------------------------------------------
