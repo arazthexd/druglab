@@ -41,6 +41,7 @@ from .utils import ReadOptions, WriteOptions, DatasetInfo
 from .utils import normalize_to_reader
 from .utils import WriteMode, IfExists, SchemaEvolution, SchemaError
 from .utils import apply_schema_evolution, should_proceed_with_write
+from .utils import AsyncEngineMixin
 
 # ---------------------------------------------------------------------------
 # BASE ENGINE
@@ -531,12 +532,32 @@ class CloudEngine(PersistentEngine, ABC):
     - uri           The root URI (e.g. 's3://bucket/prefix').
     - region        Optional region hint passed to the SDK.
     - dataset_uri   Resolve a dataset name to a full URI.
-    - aread / awrite  Async variants of read/write.
-                    Cloud I/O is latency-bound, not CPU-bound, so async
-                    is a first-class concern here. Engines that support
-                    async should implement these; those that don't can
-                    raise NotImplementedError with a clear message.
- 
+    - aread / awrite  Async variants of read/write (preferred for cloud I/O).
+
+    Sync / Async contract
+    ----------------------
+    CloudEngine inherits AsyncEngineMixin, which provides _run_async() as a
+    bridge between the synchronous BaseEngine interface and async
+    implementations.  Concrete cloud engines must:
+
+    1.  Implement aread() and awrite().
+    2.  Implement the synchronous _scan() and _write_reader() required by
+        BaseEngine by delegating to the async counterparts via _run_async():
+
+            def _scan(self, dataset, options):
+                tbl = self._run_async(self._afetch_table(dataset, options))
+                return pad.dataset(tbl).scanner()
+
+            def _write_reader(self, dataset, reader, options):
+                self._run_async(self.awrite(dataset, reader, options))
+
+    3.  Never call _run_async() from inside an already-running event loop.
+        Use aread() / awrite() directly in async contexts.
+
+    This keeps LSP intact: CloudEngine IS-A BaseEngine and all synchronous
+    methods work, while the async path remains the preferred and efficient
+    route for cloud I/O.
+
     Credentials
     -----------
     Credential resolution is intentionally left to the backend SDK:

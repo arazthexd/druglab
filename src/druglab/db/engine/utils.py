@@ -1,6 +1,7 @@
 from __future__ import annotations
  
 import abc
+import asyncio
 import os
 from enum import Enum
 from dataclasses import dataclass, field
@@ -304,6 +305,65 @@ def should_proceed_with_write(exists: bool, dataset: str, if_exists: IfExists) -
         )
     return True
 
+# ---------------------------------------------------------------------------
+# AsyncEngineMixin
+# ---------------------------------------------------------------------------
+
+class AsyncEngineMixin:
+    """
+    Mixin that grants an engine class async-capable I/O methods and a
+    bridge between the synchronous BaseEngine interface and async
+    implementations.
+
+    Usage
+    -----
+    Concrete cloud engines inherit from both their PersistentEngine subclass
+    *and* this mixin, then implement aread / awrite.  The mixin provides
+    _run_async() so that the mandatory synchronous BaseEngine methods
+    (_scan, _write_reader) can delegate to the async path without
+    requiring the caller to manage an event loop:
+
+        class S3Engine(CloudEngine, AsyncEngineMixin):
+            async def aread(self, dataset, options=None): ...
+            async def awrite(self, dataset, data, options=None): ...
+
+            # Fulfil the synchronous BaseEngine contract by bridging:
+            def _scan(self, dataset, options):
+                tbl = self._run_async(self._afetch_table(dataset, options))
+                return pad.dataset(tbl).scanner()
+
+            def _write_reader(self, dataset, reader, options):
+                self._run_async(self.awrite(dataset, reader, options))
+
+    Event-loop strategy
+    -------------------
+    _run_async() always runs the coroutine in a *fresh* event loop that is
+    created and destroyed for each call.  This avoids the "cannot run a
+    nested event loop" RuntimeError when synchronous code is called from
+    inside an already-running loop (Jupyter notebooks, FastAPI handlers,
+    Django async views).
+
+    If you are already inside an async context, call aread / awrite directly
+    rather than going through the synchronous bridge.
+
+    For high-throughput engines a dedicated background thread with a
+    persistent event loop is more efficient than creating a new loop per
+    call.  Override _run_async() to adopt that pattern.
+    """
+
+    @staticmethod
+    def _run_async(coro: Coroutine) -> Any:
+        """
+        Run *coro* to completion in a fresh, isolated event loop.
+
+        Never call this from inside an already-running event loop.
+        Use ``await engine.aread(...)`` from async contexts instead.
+        """
+        loop = asyncio.new_event_loop()
+        try:
+            return loop.run_until_complete(coro)
+        finally:
+            loop.close()
 
 
 # ---------------------------------------------------------------------------
