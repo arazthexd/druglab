@@ -208,6 +208,105 @@ class DatasetInfo:
     extra: dict[str, Any] = field(default_factory=dict)
 
 # ---------------------------------------------------------------------------
+# Schema helpers  (module-level so any engine layer can import them)
+# ---------------------------------------------------------------------------
+
+def apply_schema_evolution(
+    existing: pa.Table,
+    incoming: pa.Table,
+    evolution: SchemaEvolution,
+) -> tuple[pa.Table, pa.Table]:
+    """
+    Reconcile the schemas of *existing* and *incoming* according to *evolution*.
+
+    Returns (existing_reconciled, incoming_reconciled) — both aligned to the
+    agreed schema so the caller can safely concatenate or merge them.
+
+    STRICT     → raise SchemaError if schemas differ at all.
+    MERGE      → union of both schemas; fill missing columns with null.
+    OVERWRITE  → adopt incoming schema; drop columns absent from incoming.
+
+    Note for on-disk / cloud engines
+    ---------------------------------
+    This helper materialises full pa.Table objects and is appropriate for
+    in-memory engines and small-scale on-disk engines.  Large on-disk engines
+    (Parquet, DuckDB) should compare schemas via their footer /
+    INFORMATION_SCHEMA without materialising tables, then implement column-
+    level reconciliation directly rather than calling this function.  It
+    remains the canonical reference for the intended semantics.
+    """
+    e_names = set(existing.schema.names)
+    i_names = set(incoming.schema.names)
+
+    if evolution == SchemaEvolution.STRICT:
+        if existing.schema != incoming.schema:
+            raise SchemaError(
+                f"Schema mismatch (SchemaEvolution.STRICT).\n"
+                f"  Existing : {existing.schema}\n"
+                f"  Incoming : {incoming.schema}\n"
+                f"  Only in existing : {e_names - i_names}\n"
+                f"  Only in incoming : {i_names - e_names}"
+            )
+        return existing, incoming
+
+    if evolution == SchemaEvolution.OVERWRITE:
+        keep = [c for c in existing.schema.names if c in i_names]
+        return existing.select(keep), incoming
+
+    # MERGE: full outer union of columns.
+    all_columns = list(existing.schema.names) + [
+        c for c in incoming.schema.names if c not in e_names
+    ]
+    for col in i_names - e_names:
+        dtype = incoming.schema.field(col).type
+        existing = existing.append_column(
+            col, pa.array([None] * existing.num_rows, type=dtype)
+        )
+    for col in e_names - i_names:
+        dtype = existing.schema.field(col).type
+        incoming = incoming.append_column(
+            col, pa.array([None] * incoming.num_rows, type=dtype)
+        )
+    return existing.select(all_columns), incoming.select(all_columns)
+
+
+def should_proceed_with_write(exists: bool, dataset: str, if_exists: IfExists) -> bool:
+    """
+    Enforce the IfExists policy before a write.
+
+    Parameters
+    ----------
+    exists      Whether the dataset already exists.  The caller must resolve
+                this using whatever method is cheapest for its storage backend
+                (Parquet footer, information_schema, S3 HEAD request, …).
+    dataset     Dataset name used in error messages only.
+    if_exists   The policy to enforce.
+
+    Returns True  → proceed with the write.
+    Returns False → skip the write (IGNORE branch).
+    Raises        → ERROR / CREATE_ONLY violations.
+
+    Accepting a plain bool decouples the policy check from how existence is
+    determined, letting each engine do the cheapest possible check without
+    being forced through a generic self.exists() call.
+    """
+    if if_exists == IfExists.ERROR and exists:
+        raise FileExistsError(
+            f"Dataset '{dataset}' already exists (if_exists={IfExists.ERROR})."
+        )
+    if if_exists == IfExists.IGNORE and exists:
+        return False
+    if if_exists == IfExists.CREATE_ONLY and not exists:
+        raise FileNotFoundError(
+            f"Dataset '{dataset}' does not exist "
+            f"(if_exists={IfExists.CREATE_ONLY}). "
+            "Create the dataset first before writing to it."
+        )
+    return True
+
+
+
+# ---------------------------------------------------------------------------
 # I/O helpers
 # ---------------------------------------------------------------------------
 

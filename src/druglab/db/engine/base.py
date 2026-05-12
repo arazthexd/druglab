@@ -40,11 +40,12 @@ import pyarrow.dataset as pad
 from .utils import ReadOptions, WriteOptions, DatasetInfo
 from .utils import normalize_to_reader
 from .utils import WriteMode, IfExists, SchemaEvolution, SchemaError
+from .utils import apply_schema_evolution, should_proceed_with_write
 
 # ---------------------------------------------------------------------------
 # BASE ENGINE
 # ---------------------------------------------------------------------------
- 
+
 class BaseEngine(ABC):
     """
     The universal contract every engine must honour.
@@ -312,6 +313,10 @@ class InMemoryEngine(BaseEngine, ABC):
     - backend         Property exposing raw internal storage for power users.
     - _collect_reader / _apply_schema_evolution / _check_if_exists
                       Shared write-time helpers used by all in-memory engines.
+                      
+    NOTE: _apply_schema_evolution and _check_if_exists delegate to module-level 
+    functions in utils so on-disk engines can reuse the same logic without 
+    inheriting from this class.
     """
 
     # ------------------------------------------------------------------
@@ -361,86 +366,25 @@ class InMemoryEngine(BaseEngine, ABC):
         repeating the same pattern in every subclass.
         """
         return pa.Table.from_batches(list(reader), schema=reader.schema)
- 
-    @staticmethod
-    def _apply_schema_evolution(
-        existing: pa.Table,
-        incoming: pa.Table,
-        evolution: SchemaEvolution,
-    ) -> tuple[pa.Table, pa.Table]:
-        """
-        Reconcile the schemas of `existing` and `incoming` according to `evolution`.
- 
-        Returns (existing_reconciled, incoming_reconciled) — both cast to the
-        agreed schema so the caller can safely concatenate or merge them.
- 
-        STRICT     → raise SchemaError if schemas differ.
-        MERGE      → union of both schemas; fill missing columns with null.
-        OVERWRITE  → adopt incoming schema; drop columns absent from incoming.
-        """
-        e_names = set(existing.schema.names)
-        i_names = set(incoming.schema.names)
- 
-        if evolution == SchemaEvolution.STRICT:
-            if existing.schema != incoming.schema:
-                raise SchemaError(
-                    f"Schema mismatch (SchemaEvolution.STRICT).\n"
-                    f"  Existing : {existing.schema}\n"
-                    f"  Incoming : {incoming.schema}\n"
-                    f"  Only in existing : {e_names - i_names}\n"
-                    f"  Only in incoming : {i_names - e_names}"
-                )
-            return existing, incoming
- 
-        if evolution == SchemaEvolution.OVERWRITE:
-            # Drop columns from existing that are absent in incoming.
-            keep = [c for c in existing.schema.names if c in i_names]
-            return existing.select(keep), incoming
- 
-        # MERGE: full outer union of columns.
-        all_columns = list(existing.schema.names) + [
-            c for c in incoming.schema.names if c not in e_names
-        ]
-        # Pad existing with nulls for new columns.
-        for col in i_names - e_names:
-            dtype = incoming.schema.field(col).type
-            existing = existing.append_column(
-                col, pa.array([None] * existing.num_rows, type=dtype)
-            )
-        # Pad incoming with nulls for columns only in existing.
-        for col in e_names - i_names:
-            dtype = existing.schema.field(col).type
-            incoming = incoming.append_column(
-                col, pa.array([None] * incoming.num_rows, type=dtype)
-            )
-        # Reorder both to the same column order.
-        return existing.select(all_columns), incoming.select(all_columns)
- 
-    def _check_if_exists(self, dataset: str, if_exists: IfExists) -> bool:
+
+    # Delegate to the module-level helper
+    _apply_schema_evolution = staticmethod(apply_schema_evolution)
+
+    def _should_proceed_with_write(self, dataset: str, if_exists: IfExists) -> bool:
         """
         Enforce the IfExists policy before a write.
- 
+
+        Resolves existence via self.exists() and delegates the policy logic
+        to utils.should_proceed_with_write().
+
         Returns True  → proceed with the write.
         Returns False → skip the write (IGNORE case).
         Raises        → ERROR / CREATE_ONLY violations.
         """
-        dataset_exists = self.exists(dataset)
- 
-        if if_exists == IfExists.ERROR and dataset_exists:
-            raise FileExistsError(
-                f"Dataset '{dataset}' already exists "
-                f"(if_exists={IfExists.ERROR})."
-            )
-        if if_exists == IfExists.IGNORE and dataset_exists:
-            return False    # caller should skip the write
-        if if_exists == IfExists.CREATE_ONLY and not dataset_exists:
-            raise FileNotFoundError(
-                f"Dataset '{dataset}' does not exist "
-                f"(if_exists={IfExists.CREATE_ONLY}). "
-                "Create the dataset first before writing to it."
-            )
-        return True
- 
+        return should_proceed_with_write(
+            self.exists(dataset), dataset, if_exists
+        )
+    
 # ---------------------------------------------------------------------------
 # PERSISTENT ENGINE (shared mid-layer for OnDisk and Cloud)
 # ---------------------------------------------------------------------------
