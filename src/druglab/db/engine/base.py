@@ -47,7 +47,7 @@ from .utils import ReadOptions, WriteOptions, DatasetInfo
 from .utils import normalize_to_reader
 from .utils import WriteMode, IfExists, SchemaEvolution, SchemaError
 from .utils import apply_schema_evolution, should_proceed_with_write
-from .utils import AsyncEngineMixin
+from .utils import AsyncEngineMixin, EngineCapabilities
 
 # ---------------------------------------------------------------------------
 # BASE ENGINE
@@ -69,6 +69,31 @@ class BaseEngine(ABC):
     @abstractmethod
     def name(self) -> str:
         """Human-readable engine name, e.g. 'pandas', 'duckdb'."""
+
+    @property
+    @abstractmethod
+    def capabilities(self) -> EngineCapabilities:
+        """
+        Declare what this engine actually supports.
+
+        Callers should inspect this before invoking optional operations
+        (upsert, delete, async I/O, schema evolution, etc.) rather than
+        catching NotImplementedError at runtime.
+
+        Concrete engines should return a module-level constant to avoid
+        allocating a new dataclass on every access:
+
+            _CAPS = EngineCapabilities(
+                supports_append=True,
+                supports_delete=True,
+                is_persistent=True,
+                supports_sql=True,
+            )
+
+            @property
+            def capabilities(self) -> EngineCapabilities:
+                return _CAPS
+        """
 
     # ------------------------------------------------------------------
     # Lifecycle

@@ -50,6 +50,9 @@ class EngineCapabilities:
     # Schema evolution
     supports_schema_evolution: bool = False
 
+    # Async I/O
+    supports_async: bool = False         # True only for AsyncEngineMixin subclasses
+
 # ---------------------------------------------------------------------------
 # Read options
 # ---------------------------------------------------------------------------
