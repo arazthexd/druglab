@@ -503,6 +503,20 @@ class OnDiskEngine(PersistentEngine, ABC):
         self.flush()
         self._connected = False
 
+    def flush(self) -> None:
+        """
+        Default no-op flush for engines that write atomically
+        (e.g. write-then-rename).  Override for engines with write-behind
+        caches (DuckDB WAL, Zarr chunk buffers).
+
+        This default is provided so that OnDiskEngine.disconnect() — which
+        calls flush() — does not leave the abstract method unresolved in
+        subclasses that do not need explicit flushing.  Without it, any
+        concrete subclass that writes atomically and omits flush() would
+        raise TypeError at instantiation rather than at the point where
+        flushing is actually relevant.
+        """
+
 # ---------------------------------------------------------------------------
 # CLOUD ENGINE
 # ---------------------------------------------------------------------------
