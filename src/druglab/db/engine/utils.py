@@ -6,7 +6,7 @@ import os
 from enum import Enum
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterator, Sequence
+from typing import Any, Coroutine, Iterator, Sequence
 
 import pyarrow as pa
 import pyarrow.compute as pc
