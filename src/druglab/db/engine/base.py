@@ -59,6 +59,20 @@ class BaseEngine(ABC):
  
     Concrete engines implement the `_*` private methods; the public API adds
     validation, connection-state checks, and logging around them.
+
+    If inheriting directly from `BaseEngine`, the concrete engine must
+    implement the following methods:
+    - `name`
+    - `capabilities`
+    - `is_connected` (optionally: `connect`, `disconnect`)
+    - `_scan`
+    - `_write_reader`
+    - `info`
+    - `list_datasets`
+    - `exists`
+    - `drop`
+    - `drop_columns`
+    - `delete_rows`
     """
 
     # ------------------------------------------------------------------
@@ -349,6 +363,23 @@ class InMemoryEngine(BaseEngine, ABC):
     NOTE: _apply_schema_evolution and _check_if_exists delegate to module-level 
     functions in utils so on-disk engines can reuse the same logic without 
     inheriting from this class.
+
+    **Subclassing**
+    
+    If inheriting directly from `InMemoryEngine`, the concrete engine must
+    implement the following methods:
+    - `name`
+    - `capabilities`
+    - `backend`
+    - `memory_usage`
+    - `_scan`
+    - `_write_reader`
+    - `info`
+    - `list_datasets`
+    - `exists`
+    - `drop`
+    - `drop_columns`
+    - `delete_rows`
     """
 
     # ------------------------------------------------------------------
@@ -435,6 +466,23 @@ class PersistentEngine(BaseEngine, ABC):
     **Not included here**
     - Filesystem paths (OnDiskEngine)
     - URIs and async I/O (CloudEngine)
+
+    **Subclassing**
+    
+    If inheriting directly from `PersistentEngine`, the concrete engine must
+    implement the following methods:
+    - `name`
+    - `capabilities`
+    - `connect` and `disconnect`
+    - `flush`
+    - `_scan`
+    - `_write_reader`
+    - `info`
+    - `list_datasets`
+    - `exists`
+    - `drop`
+    - `drop_columns`
+    - `delete_rows`
     """
 
     def __init__(self) -> None:
@@ -489,6 +537,22 @@ class OnDiskEngine(PersistentEngine, ABC):
     set self._connected = True.
  
     disconnect() should call flush() then release all handles.
+
+    **Subclassing**
+    
+    If inheriting directly from `PersistentEngine`, the concrete engine must
+    implement the following methods:
+    - `name`
+    - `capabilities`
+    - `flush` (optional for write-behind engines)
+    - `_scan`
+    - `_write_reader`
+    - `info`
+    - `list_datasets`
+    - `exists`
+    - `drop`
+    - `drop_columns`
+    - `delete_rows`
     """
  
     def __init__(self, root: str | Path) -> None:
